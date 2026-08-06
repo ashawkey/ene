@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="mark" x1="14" y1="12" x2="50" y2="52" gradientUnits="userSpaceOnUse"
+                    gradientTransform="rotate(-45 32 32)">
+      <stop stop-color="#83dfff"/>
+      <stop offset="1" stop-color="#7db7ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Four diamonds around an empty centre. They are squares in a single rotated group,
+       so one gradient sweeps the whole mark; rotating each square on its own would give
+       each diamond its own copy of the ramp. The gradient is counter-rotated to keep its
+       axis aligned with the tile. Squares of side 9*sqrt(2) offset 11/sqrt(2) from centre
+       put each diamond's tip 11 from the middle, leaving a diamond of negative space. -->
+  <g transform="rotate(45 32 32)" fill="url(#mark)">
+    <rect x="17.86" y="17.86" width="12.73" height="12.73" rx="2"/>
+    <rect x="33.41" y="17.86" width="12.73" height="12.73" rx="2"/>
+    <rect x="17.86" y="33.41" width="12.73" height="12.73" rx="2"/>
+    <rect x="33.41" y="33.41" width="12.73" height="12.73" rx="2"/>
+  </g>
+</svg>

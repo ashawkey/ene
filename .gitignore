@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.vscode/
+build/
+docs/build/
+dist/
+node_modules/
+*.tsbuildinfo
+ene/frontend/vite.config.js
+ene/frontend/vite.config.d.ts
+.kia/
+
+# The built Web UI is runtime package data.
+!ene/frontend/dist/
+!ene/frontend/dist/**
