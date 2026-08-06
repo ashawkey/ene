@@ -5,7 +5,7 @@
 Ene requires Python 3.10 or newer.
 
 ```bash
-pip install -U ene
+pip install ene-agent
 ```
 
 Confirm that the CLI is available:
