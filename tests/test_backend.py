@@ -127,6 +127,7 @@ def test_oauth_commands_use_current_provider():
         ("/clear", False),
         ("/compact", False),
         ("/recap", False),
+        ("/export response.md", False),
         ("/continue", False),
         ("/rewind", False),
         ("/exit", False),
@@ -398,6 +399,45 @@ def test_recap_handles_empty_history_bad_usage_and_provider_failure(monkeypatch)
     ], FailingProvider())
     agent._cmd_recap()
     assert warnings == ["Could not generate recap: offline"]
+
+
+def test_export_writes_last_assistant_response_to_relative_path(tmp_path):
+    output = []
+    warnings = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.work_dir = str(tmp_path)
+    agent.context = NS(messages=[
+        {"role": "assistant", "content": "earlier response"},
+        {"role": "user", "content": "revise it"},
+        {"role": "assistant", "content": "# Result\n\nFinal **answer**.\n"},
+    ])
+    agent.console = NS(system=output.append, warn=warnings.append)
+
+    agent._handle_command("/export notes/result.md")
+
+    exported = tmp_path / "notes" / "result.md"
+    assert exported.read_text(encoding="utf-8") == "# Result\n\nFinal **answer**.\n"
+    assert output == [f"Exported the last assistant response to {exported}."]
+    assert warnings == []
+
+
+def test_export_validates_path_and_requires_assistant_response(tmp_path):
+    warnings = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.work_dir = str(tmp_path)
+    agent.context = NS(messages=[{"role": "user", "content": "hello"}])
+    agent.console = NS(system=lambda message: pytest.fail(message), warn=warnings.append)
+
+    agent._cmd_export()
+    agent._cmd_export("/export   ")
+    agent._cmd_export("/export response.md")
+
+    assert warnings == [
+        "Usage: /export <path/filename>",
+        "Usage: /export <path/filename>",
+        "There is no assistant response to export yet.",
+    ]
+    assert not (tmp_path / "response.md").exists()
 
 
 def test_context_detail_shows_untruncated_message_content():

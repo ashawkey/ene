@@ -1,6 +1,6 @@
 # Web UI
 
-Ene's optional Web UI mirrors terminal sessions in a browser. 
+Ene's optional Web UI mirrors terminal sessions in a browser.
 It does not replace the terminal agent: a hub serves the browser, while each agent continues to run in its own working directory and terminal process.
 
 ## Architecture
@@ -28,9 +28,9 @@ Start the hub in a dedicated terminal:
 ene hub --web-port 8765
 ```
 
-The command prints the URL and access token. If `ene_web_token` is absent, Ene generates a new token for that hub process.
+The command prints the URL and access token. If `ene_web_token` is absent, Ene generates a temporary token for that hub process.
 
-Open the printed URL—normally <http://127.0.0.1:8765>—and enter the token. Keep the hub terminal running while using the Web UI.
+Open the printed URL—normally <http://127.0.0.1:8765>—and enter the token. A successful login creates an httponly browser session cookie; signing out invalidates it. Keep the hub terminal running while using the Web UI.
 
 ## Connect agents
 
@@ -48,18 +48,19 @@ cd ~/projects/project-b
 ene --model gpt
 ```
 
-The hub writes discovery information to `~/.ene/hub.json`. Agents on the same machine read this file and verify that the recorded hub is reachable. 
+The hub writes discovery information to `~/.ene/hub.json`. Agents on the same machine read this file and verify that the recorded hub is reachable.
 A stale file from a crashed process is ignored. Agents that were already running before the hub started must be restarted to connect.
 
 ## Browser behavior
 
-The browser shows the same conversation, tool activity, prompts, and process status as the terminal. Input from either interface is sent to the same agent session.
+The browser shows the same conversation, tool activity, interactive selections, draft text, queued message, and process status as the terminal. Input from either interface goes to the same agent session; only one message can be queued while a round is active.
 
-If the browser loses its hub connection, it shows a reconnecting state, preserves draft input, and disables actions until the connection recovers. Stopping the hub does not stop terminal agents; they continue running without the browser connection.
+If the browser loses its hub connection, it shows a reconnecting state, preserves draft input, and disables actions until the connection recovers. The agent link also reconnects after transient hub interruptions. Stopping the hub does not stop terminal agents; they continue running without the browser connection.
 
 ## Remote access
 
-Because the hub listens only on loopback, use an authenticated tunnel or reverse proxy rather than exposing it directly. 
+Because the hub listens only on loopback, use a tunnel or reverse proxy rather than exposing it directly. Browser access still requires the Ene token; protect the tunnel or proxy as well.
+
 For example, with Cloudflare Tunnel:
 
 ```bash

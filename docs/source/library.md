@@ -1,6 +1,6 @@
 # Library
 
-`ene lib` synchronizes reusable skills and personas through a Git repository. 
+`ene lib` synchronizes reusable skills and personas through a Git repository.
 It manages authored resources under the current project's `./.ene/skills/` and `./.ene/personas/`.
 
 The bundled [library skill](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/library/SKILL.md) lets the agent operate this feature for you.
@@ -13,12 +13,13 @@ Set an accessible repository URL in `~/.ene.yaml`:
 ene_lib: git@github.com:username/ene-resources.git
 ```
 
-The repository uses its `main` branch and stores resources under `skills/<name>/` and `personas/<name>/`. 
+The repository uses its `main` branch and stores resources under `skills/<name>/` and `personas/<name>/`.
 Ene uses your existing Git and SSH credentials. An empty repository is initialized by the first upload.
 
-## Typical Use
+## Typical workflow
 
-Let say you created a skill when working on project A, and want to use it in project B, you can simply:
+If you create a skill in project A and want to use it in project B:
+
 ```bash
 # project A
 cd /path/to/A
@@ -28,8 +29,8 @@ ene lib upload <my-skill>
 cd /path/to/B
 ene lib install <my-skill>
 
-# if you updated the skill, the update command will do the sync:
-ene lib update # sync local changes to the remote and download any remote changes
+# synchronize later changes in either direction
+ene lib update
 ```
 
 ## Commands
@@ -48,6 +49,8 @@ ene lib remove <name> [<name> ...]
 ene lib remove <name> --local
 ```
 
+Add `--verbose` to any library command to show Git operation details.
+
 Add `--kind persona` to operate on personas:
 
 ```bash
@@ -62,7 +65,7 @@ ene lib upload my-coder --kind persona
 - `upload` publishes project resources. `--force` replaces an existing remote resource.
 - `remove` deletes remote resources. `--local` deletes only project copies.
 
-Remote resources are not available to an agent until installed. 
+Remote resources are not available to an agent until installed.
 After installing or updating a skill, run `/skills reload`; for a persona, run `/persona reload`.
 
 ## Synchronization and conflicts
@@ -70,13 +73,12 @@ After installing or updating a skill, run `/skills reload`; for a persona, run `
 Each installed resource records its last synchronized tree in `.ene-lib.json`.
 This base allows Ene to distinguish local-only changes, remote-only changes, and conflicts even on another machine.
 
-A normal update uploads local-only changes and downloads remote-only changes. 
-If both copies changed, it stops and asks you to merge both versions into the project-local resource. 
-Validate that merged copy, then run:
+A normal update uploads local-only changes and downloads remote-only changes.
+If both copies changed, it leaves both copies unchanged so you can merge the desired changes into the project-local resource. Validate the merged copy, then run:
 
 ```bash
 ene lib update <name> --force
 ```
 
-Repository checkouts are cached under `~/.ene/library/`. 
+Repository checkouts are cached under `~/.ene/library/`.
 

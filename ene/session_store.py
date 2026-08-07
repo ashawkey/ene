@@ -550,29 +550,6 @@ class SessionStore:
         self._text_stats[key] = stats
         return stats
 
-    def text_hunks(
-        self, before: dict[str, Any] | None, after: dict[str, Any] | None
-    ) -> list[tuple[int, str, str]]:
-        """Return ``(start line, removed text, added text)`` for each changed hunk.
-
-        Empty when either side is binary or a directory tree.
-        """
-        old_text = self.read_text(before)
-        new_text = self.read_text(after)
-        if (old_text is None and before is not None) or (new_text is None and after is not None):
-            return []
-        old_lines = (old_text or "").splitlines()
-        new_lines = (new_text or "").splitlines()
-        if max(len(old_lines), len(new_lines)) > DIFF_LINE_LIMIT:
-            # Too large to align cheaply; hand back one whole-file hunk instead.
-            return [(1, old_text or "", new_text or "")]
-        matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
-        return [
-            (i1 + 1, "\n".join(old_lines[i1:i2]), "\n".join(new_lines[j1:j2]))
-            for tag, i1, i2, j1, j2 in matcher.get_opcodes()
-            if tag != "equal"
-        ]
-
     def revision_prompt(self, revision_id: str) -> str:
         """Last user message in a revision, collapsed to a single line."""
         for message_id in reversed(self.revisions[revision_id]["messageIds"]):

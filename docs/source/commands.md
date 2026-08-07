@@ -53,6 +53,7 @@ The agent supports the following slash commands while chatting:
 | `/system_prompt` | Print the current full system prompt |
 | `/compact` | Force context compaction via LLM summarization |
 | `/recap` | Summarize the conversation's task in one sentence, focusing on user requests |
+| `/export <path/filename>` | Export the last assistant response as UTF-8 text; relative paths are resolved from the working directory |
 | `/continue` | Resume an unfinished round without adding a user message; warns if the last round is complete (output-limit, missing-terminal, and empty responses continue automatically, except a response truncated mid tool call, whose calls are answered as never executed so the history stays valid) |
 | `/usage` | Show token usage for this session |
 | `/ps [process-id]` | List managed background processes, or show one process with recent output |
@@ -61,12 +62,12 @@ The agent supports the following slash commands while chatting:
 | `/logout [provider\|model-alias]` | Remove stored OAuth credentials |
 | `/auth [provider\|model-alias]` | Show authentication status |
 | `/effort [level]` | Show or set reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) |
-| `/rewind` | Return to before a user prompt, restore it to the chatbox, then branch |
+| `/rewind` | Preview an earlier prompt boundary; restore conversation, tracked files, or both; then edit the restored prompt and branch |
 | `/skills` | List installed skills; `/skills reload` to re-scan; `/skills <name>` to load one |
 | `/<skill-name> [task]` | Invoke a skill for an optional task; without one, run its declared default or ask what to do |
 | `/persona` | List personas; `/persona <name>` to switch (restarts the conversation) |
-| `/wait <duration> <prompt>` | Send a prompt after a delay, e.g. `/wait 1h check whether the other agent finished` |
-| `/clear` | Clear conversation history and start a new session |
+| `/wait <duration> <prompt>` | Queue a prompt for later using seconds, minutes, or hours, e.g. `/wait 1h check whether the other agent finished` |
+| `/clear` | Save the current session, stop its managed processes, and start a new session |
 | `/resume [session_id]` | Save the current session, then resume a previous one (bare `/resume` picks interactively) |
 | `/exit` or `/quit` | Exit the agent |
 
@@ -99,8 +100,13 @@ Prefix a command with `!` to run it directly without involving the model:
 | `Escape` → `Enter` | Insert a newline |
 | `Ctrl+C` (non-empty prompt) | Clear the current input |
 | `Ctrl+C` (empty prompt, twice) | Exit the agent |
-| `Ctrl+C` / `Esc` (during API call) | Cancel the in-flight request |
+| `Ctrl+C` / `Esc` (while Ene is working) | Cancel the current operation |
+| `Up` (empty prompt with a queued message) | Move the queued message back into the editor |
+
+## Working while a round is active
+
+You may submit one message while Ene is working; it is shown as `pending: … · runs next` and starts after the current round. Press `Up` at an empty prompt to move it back into the editor. Read-only commands such as `/usage`, `/context`, `/ps`, and `/auth` run immediately; commands that change conversation state wait for the current round.
 
 ## Tool execution
 
-All tools execute automatically; ene has no permission modes, confirmation prompts, or command screening. It is not a security boundary and does not attempt to contain what a model runs — use an OS-level sandbox or container when commands must be constrained, and review a task before handing it to an autonomous agent.
+All tools execute automatically; Ene has no permission modes, confirmation prompts, or command screening. It is not a security boundary and does not attempt to contain what a model runs. Use an OS-level sandbox or container when commands must be constrained, and review a task before handing it to an autonomous agent.

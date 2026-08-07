@@ -33,9 +33,6 @@ class _Console:
     def tool_result(self, message, success=True):
         self._log(f"{'ok' if success else 'fail'}: {message}")
 
-    def diff_edit(self, path, old_text, new_text, line_num=None, **kwargs):
-        self._log(f"diff {path}@{line_num} -{old_text!r} +{new_text!r}")
-
     def reset_timeline(self):
         self._log("[timeline reset]")
 
@@ -130,6 +127,8 @@ def test_picker_and_preview_describe_the_conversation_and_the_files(tmp_path: Pa
     assert "3 → 1 messages" in modes[0]
     assert "2 file(s) reverted" in modes[0]
     assert "files untouched" in modes[1]
+    assert modes[3] == "4. Cancel"
+    assert all("diff" not in mode.lower() for mode in modes)
 
     assert (work / "parser.py").read_text() == "def parse():\n    return 1\n"
     assert (work / "util.py").read_text() == "X = 1\n"
@@ -139,7 +138,7 @@ def test_picker_and_preview_describe_the_conversation_and_the_files(tmp_path: Pa
 
 def test_picker_options_are_the_listing_and_name_the_revision_type(tmp_path: Path):
     """No table precedes the picker, so every option must stand on its own."""
-    agent, _, console = _build(tmp_path, [" 1.", "5."])
+    agent, _, console = _build(tmp_path, [" 1.", "4."])
     agent.context.messages.append({"role": "user", "content": "one more thought"})
     agent.save_session(reason="pre-compaction")
     agent._cmd_rewind()
@@ -165,25 +164,21 @@ def test_conversation_only_rewind_leaves_the_files_alone(tmp_path: Path):
     assert len(agent.context.messages) == 1
 
 
-def test_diffs_can_be_reviewed_before_choosing_a_mode(tmp_path: Path):
-    agent, work, console = _build(tmp_path, [" 1.", "4.", "5."])
-    agent._cmd_rewind()
-
-    assert "diff parser.py@1" in console.text
-    assert "diff util.py@1" in console.text
-    assert "Rewind cancelled." in console.text
-    # Cancelling changes nothing.
-    assert (work / "parser.py").read_text() == "def parse(text):\n    return float(text)\n"
-    assert agent.replayed == 0
-
-
-def test_preview_warns_about_files_edited_outside_the_agent(tmp_path: Path):
-    agent, work, console = _build(tmp_path, [" 1.", "5."])
+def test_external_file_changes_disable_code_rewind(tmp_path: Path):
+    agent, work, console = _build(tmp_path, [" 1.", "1."])
     (work / "parser.py").write_text("hand edited\n")
     agent._cmd_rewind()
 
+    assert "Code cannot be reverted" in console.text
     assert "changed on disk" in console.text
     assert "parser.py" in console.text
+    assert console.prompts[1] == [
+        "1. Conversation only — 3 → 1 messages, files untouched",
+        "2. Cancel",
+    ]
+    assert (work / "parser.py").read_text() == "hand edited\n"
+    assert not (work / "util.py").exists()
+    assert len(agent.context.messages) == 1
 
 
 def test_replay_shows_tool_calls_the_way_the_live_view_does(tmp_path: Path):
@@ -233,14 +228,16 @@ def test_replay_shows_reasoning_only_assistant_messages(tmp_path: Path):
     assert "the retained final reasoning" in console.text
 
 
-def test_preview_states_when_a_revision_touches_no_files(tmp_path: Path):
-    # Round 3 changed no files, so rewinding to round 2 reverts none either, and
-    # with nothing to revert the mode menu offers no diff view: Cancel is item 4.
-    agent, _, console = _build(tmp_path, [" 1.", "4."])
+def test_no_file_changes_only_offers_conversation_rewind(tmp_path: Path):
+    agent, _, console = _build(tmp_path, [" 1.", "1."])
     agent.round_id = 3
     agent.context.messages.append({"role": "user", "content": "just talking"})
     agent.save_session(reason="round")
     agent._cmd_rewind()
 
     assert "no files will change" in console.text
-    assert "no file changes" in console.prompts[1][0]
+    assert console.prompts[1] == [
+        "1. Conversation only — 4 → 3 messages, files untouched",
+        "2. Cancel",
+    ]
+    assert len(agent.context.messages) == 3

@@ -67,7 +67,6 @@ class SessionMixin:
     SESSIONS_DIR_NAME = "sessions"
     REWIND_PROMPT_WIDTH = 56
     REWIND_MAX_FILES = 12
-    REWIND_MAX_HUNKS = 10
     REWIND_MAX_DROPPED = 6
 
     @staticmethod
@@ -285,9 +284,10 @@ class SessionMixin:
             detail.add_row("", Text(line, style=style))
 
         if plan:
+            change = "would change" if plan.dirty else "will change"
             detail.add_row(
                 "Files",
-                Text(f"{plan.files} will change  (+{plan.added} / -{plan.removed})", style="yellow"),
+                Text(f"{plan.files} {change}  (+{plan.added} / -{plan.removed})", style="yellow"),
             )
             for delta in plan.deltas[: self.REWIND_MAX_FILES]:
                 detail.add_row(
@@ -303,8 +303,8 @@ class SessionMixin:
                 detail.add_row(
                     "",
                     Text(
-                        f"! {len(plan.dirty)} file(s) changed on disk since they were recorded "
-                        f"and would be overwritten: {', '.join(plan.dirty[:5])}",
+                        f"! Code cannot be reverted because {len(plan.dirty)} file(s) changed "
+                        f"on disk since they were recorded: {', '.join(plan.dirty[:5])}",
                         style="bold red",
                     ),
                 )
@@ -347,54 +347,26 @@ class SessionMixin:
         Returns ``"both"``, ``"conversation"``, ``"code"``, or ``None`` to cancel.
         """
         conversation = f"{len(self.context.messages)} → {len(target['messages'])} messages"
-        code = (
-            f"{plan.files} file(s) reverted (+{plan.added} / -{plan.removed})" if plan
-            else "no file changes"
-        )
-        modes = ["both", "conversation", "code"]
-        while True:
+        if not plan or plan.dirty:
+            modes = ["conversation"]
+            choices = [
+                f"1. Conversation only — {conversation}, files untouched",
+                "2. Cancel",
+            ]
+        else:
+            code = f"{plan.files} file(s) reverted (+{plan.added} / -{plan.removed})"
+            modes = ["both", "conversation", "code"]
             choices = [
                 f"1. Conversation + code — {conversation}, {code}",
                 f"2. Conversation only — {conversation}, files untouched",
                 f"3. Code only — conversation kept, {code}",
+                "4. Cancel",
             ]
-            if plan:
-                choices.append(f"{len(choices) + 1}. Show the file diffs")
-            choices.append(f"{len(choices) + 1}. Cancel")
-
-            picked = self.console.select(message="Choose rewind mode", choices=choices)
-            if picked is None:
-                return None
-            index = choices.index(picked)
-            if index < len(modes):
-                return modes[index]
-            if plan and index == len(modes):
-                self._show_rewind_diffs(plan)
-                continue
+        picked = self.console.select(message="Choose rewind mode", choices=choices)
+        if picked is None:
             return None
-
-    def _show_rewind_diffs(self, plan: CheckoutPlan) -> None:
-        """Render each file the checkout would touch, hunk by hunk."""
-        store = self._session_store
-        for delta in plan.deltas[: self.REWIND_MAX_FILES]:
-            hunks = store.text_hunks(delta.before, delta.after)
-            if not hunks:
-                self.console.system(f"{delta.path}: {delta.op} (binary or directory — no text diff)")
-                continue
-            for line_num, old_chunk, new_chunk in hunks[: self.REWIND_MAX_HUNKS]:
-                self.console.diff_edit(
-                    path=delta.path,
-                    old_text=old_chunk,
-                    new_text=new_chunk,
-                    line_num=line_num,
-                )
-            if len(hunks) > self.REWIND_MAX_HUNKS:
-                self.console.system(
-                    f"{delta.path}: {len(hunks) - self.REWIND_MAX_HUNKS} more hunk(s) not shown"
-                )
-        hidden = plan.files - self.REWIND_MAX_FILES
-        if hidden > 0:
-            self.console.system(f"{hidden} more file(s) not shown")
+        index = choices.index(picked)
+        return modes[index] if index < len(modes) else None
 
     def _sessions_dir(self) -> Path:
         directory = self._ene_dir() / self.SESSIONS_DIR_NAME

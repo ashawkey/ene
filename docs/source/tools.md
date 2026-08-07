@@ -28,26 +28,18 @@ the `/ps` command, and the live terminal/web status use the same process registr
 Like other built-in model tools, their advertisement is subject to the active
 persona's tool policy; `/ps` and live status remain available to the UI.
 
-The status bar shows `(Proc: N running [M finished])` while jobs are active.
-Use `/ps` to list jobs and `/ps <process-id>` for details and recent output.
-Processes are terminated on `/clear`, session switch, and exit. The bundled
-`monitor` skill adds an active-monitoring workflow. For periodic monitoring,
-call the core `wait` tool first and put the inspection or status calls after it
-in the same sequential tool-call batch; do not group the wait and checks in
-parallel.
+While any jobs are active, the terminal and Web UI show `N/T running processes`, where `N` is running jobs and `T` is all jobs started in the current session. The indicator disappears when none are running. Use `/ps` to list jobs and `/ps <process-id>` (or its supervisor PID) for details and recent output. Combined output is stored in `.ene/processes/<process-id>.log`.
+
+Processes are session-scoped and are terminated on `/clear`, session switch, and exit. The bundled `monitor` skill adds an active-monitoring workflow. For periodic monitoring, call the core `wait` tool first and put the inspection or status calls after it in the same sequential tool-call batch; do not group the wait and checks in parallel.
 
 ## Skill-provided tools
 
-A skill may ship a `tools.py` at its root (a module-level `TOOLS` list of
-`{schema, run, describe, describe_output}` entries; both descriptors are
-optional). `describe(arguments)` returns a `ToolCallDescription` for the call
+A trusted skill may ship executable Python in a root `tools.py` (a module-level `TOOLS` list of `{schema, run, describe, describe_output}` entries; both descriptors are optional). `describe(arguments)` returns a `ToolCallDescription` for the call
 label. `describe_output(result)` returns a concise string for the successful
 result; failures use the standard error formatter. This keeps each skill's
 call and result semantics beside its tools while the shared UI owns rendering.
 The full result still goes to the model, while the concise output is persisted
-for consistent live and replay display. Those tools are registered and
-advertised to the model only while the skill is loaded, and removed when it is
-unloaded.
+for consistent live and replay display. A skill's tools are registered on its first load and remain available for that session. `/skills reload` removes tools only when their skill is no longer discovered; use `/clear` or restart Ene to reload an edited `tools.py`. A schema collision or broken `tools.py` fails the skill load instead of partially registering its tools.
 
 The bundled **batch** skill follows the same split: the agent owns the
 context-isolated turn, while the skill owns everything around it. See its

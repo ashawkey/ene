@@ -18,9 +18,9 @@ ene --help
 
 Ene reads model and global settings from `~/.ene.yaml`:
 
-### OpenAI-compatible API keys
+### OpenAI-compatible APIs
 
-Use the API key and base URL supplied by your service. For example:
+Add one entry under `openai` for each model alias. Use the model ID, API key, and base URL supplied by your service:
 
 ```yaml
 openai:
@@ -29,12 +29,14 @@ openai:
     api_key: replace-with-your-api-key
     base_url: https://api.deepseek.com
 
-  pro:
-    model: deepseek-v4-pro
+  my_model:
+    model: provider-model
     api_key: replace-with-your-api-key
-    base_url: https://api.deepseek.com
-    reasoning_effort: high # optional
+    base_url: https://provider.example/v1
+    reasoning_effort: high # optional; defaults to high
 ```
+
+The alias (`fast` or `my_model` above) is what you pass to `--model`.
 
 ### ChatGPT Plus/Pro subscription
 
@@ -57,14 +59,11 @@ ene --model codex
 /login openai-codex
 ```
 
-Choose one of the offered browser, manual redirect, or device-code flows. 
-OAuth credentials are stored in `~/.ene/auth.json`.
+Choose one of the offered browser, manual-redirect, or device-code flows. OAuth credentials are stored in `~/.ene/auth.json`. Use `/auth` to check login status and `/logout` to remove the credentials.
 
+## List configured models
 
-## List available models
-
-```bash
-List the resolved aliases and settings:
+List resolved aliases, providers, context windows, and reasoning settings:
 
 ```bash
 ene list
@@ -75,6 +74,7 @@ When `--model` is omitted, the first configured entry is used.
 ## CLI
 
 Run Ene in the current directory:
+
 ```bash
 ene
 ```
@@ -87,6 +87,7 @@ Useful commands during a session include:
 | `/context [id]` | List context messages, or inspect one in full. |
 | `/usage` | Show token usage. |
 | `/recap` | Summarize the current task in one sentence. |
+| `/export <path/filename>` | Export the last assistant response to a file. |
 | `/model` | Show or switch the active model. |
 | `/persona` | List or switch personas. |
 | `/skills` | List reusable skills. |
@@ -100,13 +101,14 @@ Prefix a shell command with `!` to run it directly without asking the model:
 !pytest -q
 ```
 
-Tool calls execute automatically. Ene has the same permission as the shell user, use at your own risk.
+Tool calls execute automatically. Ene has the same permissions as the shell user and is not a security boundary. Use an OS-level sandbox or container when commands must be constrained.
 
 See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
 
 ## Resume a session
 
-Sessions and project state are stored under `./.ene/`. It's self-gitignored so nothing will be committed accidentally.
+Sessions and other project-local Ene state are stored under `./.ene/`. Ene maintains `./.ene/.gitignore` with `*`, so this state is not committed accidentally.
+
 Choose a previous session interactively:
 
 ```bash
@@ -119,4 +121,4 @@ Or resume a known session directly:
 ene --resume SESSION_ID
 ```
 
-Within a running session, `/rewind` can restore conversation, changed files, or both.
+Within a running session, `/rewind` previews an earlier prompt boundary and lets you restore the conversation, tracked file changes, or both. The selected prompt returns to the editor so you can revise it before branching.

@@ -468,17 +468,6 @@ def test_line_endings_do_not_make_a_clean_tree_look_edited(tmp_path: Path):
     assert (plan.added, plan.removed) == (0, 1)
 
 
-def test_text_hunks_cover_only_changed_regions(tmp_path: Path):
-    store, tracker, work = _session(tmp_path)
-    _write(tracker, work, 1, "a.py", "one\ntwo\nthree\nfour\n")
-    root = _round(store, tracker, None, 1, "one")
-    _write(tracker, work, 2, "a.py", "one\nTWO\nthree\nfour\nfive\n")
-    _round(store, tracker, root, 2, "two")
-
-    delta = tracker.plan_checkout(store.materialize(root)["code_revision_id"]).deltas[0]
-    assert store.text_hunks(delta.before, delta.after) == [(2, "TWO", "two"), (5, "five", "")]
-
-
 def test_directory_trees_are_compared_against_disk_without_being_stored(tmp_path: Path):
     store, tracker, work = _session(tmp_path)
     package = work / "package"

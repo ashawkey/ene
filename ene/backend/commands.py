@@ -1,6 +1,7 @@
 """Interactive slash commands for :class:`LLMAgent`."""
 
 from contextlib import nullcontext
+from pathlib import Path
 
 from rich.markup import escape
 
@@ -43,6 +44,7 @@ class AgentCommandsMixin:
         "system_prompt": "Print the current full system prompt",
         "compact": "Force context compaction via LLM summarization",
         "recap": "Summarize the conversation's task in one sentence",
+        "export": "Export the last assistant response (/export <path/filename>)",
         "continue": "Resume an unfinished round without adding a user message",
         "usage": "Show token usage for this session",
         "ps": "List background processes; /ps <process-id|pid> shows its recent log",
@@ -100,6 +102,8 @@ class AgentCommandsMixin:
             self._cmd_compact()
         elif cmd == "recap":
             self._cmd_recap(raw)
+        elif cmd == "export":
+            self._cmd_export(raw)
         elif cmd == "continue":
             self._cmd_continue(raw)
         elif cmd == "usage":
@@ -296,6 +300,37 @@ class AgentCommandsMixin:
         finally:
             if owned and provider is not None:
                 provider.close()
+
+    def _cmd_export(self, raw: str = "/export") -> None:
+        """Write the most recent assistant response to a file."""
+        parts = raw.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            self.console.warn("Usage: /export <path/filename>")
+            return
+
+        response = next(
+            (
+                get_text(message)
+                for message in reversed(self.context.messages)
+                if get_role(message) == "assistant" and get_text(message)
+            ),
+            None,
+        )
+        if response is None:
+            self.console.warn("There is no assistant response to export yet.")
+            return
+
+        path = Path(parts[1].strip()).expanduser()
+        if not path.is_absolute():
+            path = Path(self.work_dir) / path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(response, encoding="utf-8")
+        except OSError as e:
+            self.console.warn(f"Could not export assistant response: {e}")
+            return
+
+        self.console.system(f"Exported the last assistant response to {path}.")
 
     def _cmd_continue(self, raw: str = "/continue"):
         """Resume a transcript that is waiting for an assistant response."""

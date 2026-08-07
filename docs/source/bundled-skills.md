@@ -19,12 +19,13 @@ The source `SKILL.md` is the authoritative introduction and usage guide for each
 | `skill-creator` | Create, revise, or validate Agent Skills packages. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/skill-creator/SKILL.md) |
 | `subagent` | Delegate substantial independent tasks to fresh Ene agents. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/subagent/SKILL.md) |
 
-Skills will be invoked automatically when the model determines they are needed. You can also call them explicitly in the chat prompt:
+The model loads a skill automatically when your request matches its description. You can also invoke one explicitly:
 
-```bash
-Please make a plan to support for a JSON output mode. # Ene automatically detect and load the plan skill.
-
-/plan Add support for a JSON output mode. # explicitly load the plan skill and then run the task.
+```text
+Please make a plan for JSON output mode.
+/plan Add support for JSON output mode.
 ```
 
-Some skills have external requirements. In particular, `browser` needs a Chromium-based browser with remote debugging enabled, while `pdf-reading` needs the external MinerU CLI and its runtime resources. Check each linked `SKILL.md` before first use.
+The first request should cause Ene to load `plan`; the second selects it directly.
+
+Some skills have external requirements. In particular, `browser` needs Chrome or Chromium with remote debugging enabled, while `pdf-reading` needs the external MinerU CLI and its runtime resources. Check each linked `SKILL.md` before first use.
