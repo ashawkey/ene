@@ -28,7 +28,7 @@ class _Console:
     def _log(self, message, **kwargs):
         self.rich.print(message, markup=False)
 
-    system = warn = error = user_input = response = tool = _log
+    system = warn = error = user_input = response = thinking_message = tool = _log
 
     def tool_result(self, message, success=True):
         self._log(f"{'ok' if success else 'fail'}: {message}")
@@ -61,6 +61,7 @@ class _Agent(SessionMixin):
         self.context = types.SimpleNamespace(messages=[])
         self.round_id = 0
         self.replayed = 0
+        self.show_thinking = True
 
     def save_session(self, name=None, *, reason="autosave"):
         revision_id, code_revision_id, _ = self._session_store.commit(
@@ -212,6 +213,24 @@ def test_replay_shows_tool_calls_the_way_the_live_view_does(tmp_path: Path):
     # Only the result actually formatted as a failure is marked as one.
     assert "ok: 1 line read" in console.text
     assert "fail: Error: File not found: a.txt" in console.text
+
+
+def test_replay_shows_reasoning_only_assistant_messages(tmp_path: Path):
+    """A visible live thinking message must not disappear from replay."""
+    agent, _, console = _build(tmp_path, [])
+    agent.context.messages = [
+        {"role": "user", "content": "work it out"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "the retained final reasoning",
+            "provider_state": {"openai-codex": {}},
+        },
+    ]
+
+    SessionMixin._replay_context(agent)
+
+    assert "the retained final reasoning" in console.text
 
 
 def test_preview_states_when_a_revision_touches_no_files(tmp_path: Path):

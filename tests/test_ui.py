@@ -253,6 +253,24 @@ def test_response_stream_discards_pending_thinking_on_abort():
     assert output.getvalue() == "complete\n"
 
 
+def test_completed_thinking_message_renders_and_emits_event():
+    from ene.ui import AgentConsole
+    from ene.utils.io import EventHub
+
+    output = io.StringIO()
+    console = AgentConsole()
+    console._console = Console(file=output, width=80, no_color=True)
+    events = EventHub()
+    console.events = events
+
+    console.thinking_message("first line\nsecond line")
+
+    assert output.getvalue() == "first line\nsecond line\n"
+    event = events.after(0)[-1]
+    assert event.type == "thinking"
+    assert event.data["text"] == "first line\nsecond line"
+
+
 def test_console_stream_output_writes_raw_block_and_emits_event():
     from ene.ui import AgentConsole
     from ene.utils.io import EventHub

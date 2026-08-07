@@ -23,7 +23,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
 from rich.status import Status
-from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -1280,6 +1279,13 @@ class AgentConsole:
                 new_lines, "+", f"bold {SIGN_GREEN}", BG_GREEN,
                 indent, pad_to, language, start_line,
             )
+
+    def thinking_message(self, msg: str):
+        """Render a completed reasoning block outside the streaming path."""
+        stream = _TerminalTextStream(self._console, "thinking")
+        stream.feed(msg)
+        stream.flush()
+        self._emit("thinking", text=msg)
 
     def response(self, msg: str):
         _print_markdown_response(self._console, msg)

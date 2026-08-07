@@ -547,6 +547,9 @@ class SessionMixin:
                 self.console.user_input(text)
 
             elif role == "assistant":
+                reasoning = msg.get("reasoning_content")
+                if self.show_thinking and isinstance(reasoning, str) and reasoning:
+                    self.console.thinking_message(reasoning)
                 text = get_text(msg)
                 if text:
                     self.console.response(text)
