@@ -2,7 +2,7 @@ export type Theme = 'light' | 'dark'
 
 const STORAGE_KEY = 'ene-theme'
 // Browser-chrome colors matching each palette's page background.
-const chrome: Record<Theme, string> = { light: '#eaf3ff', dark: '#070b16' }
+const chrome: Record<Theme, string> = { light: '#f3faf9', dark: '#070b16' }
 
 export function hasStoredTheme(): boolean {
   const stored = localStorage.getItem(STORAGE_KEY)

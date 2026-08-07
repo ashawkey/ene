@@ -2,37 +2,37 @@
 :root {
   color-scheme: light;
 
-  --lg-field: radial-gradient(70rem 46rem at 8% 12%, rgba(46, 144, 255, 0.36), transparent 60%),
-    radial-gradient(62rem 44rem at 88% 22%, rgba(164, 112, 255, 0.28), transparent 62%),
-    radial-gradient(72rem 50rem at 52% 92%, rgba(55, 221, 190, 0.26), transparent 60%) #eaf3ff;
-  --lg-pane: rgba(255, 255, 255, 0.58);
-  --lg-gloss: rgba(255, 255, 255, 0.68);
-  --lg-pane-inner: rgba(255, 255, 255, 0.18);
-  --lg-chip: rgba(255, 255, 255, 0.42);
-  --lg-sheen: rgba(255, 255, 255, 0.85);
-  --lg-rim: rgba(63, 94, 133, 0.14);
-  --lg-shadow: 0 18px 54px rgba(57, 89, 130, 0.16);
+  --lg-field: radial-gradient(70rem 46rem at 8% 12%, rgba(74, 174, 190, 0.14), transparent 60%),
+    radial-gradient(62rem 44rem at 88% 22%, rgba(91, 190, 178, 0.12), transparent 62%),
+    radial-gradient(72rem 50rem at 52% 92%, rgba(103, 203, 163, 0.12), transparent 60%) #f3faf9;
+  --lg-pane: rgba(255, 255, 255, 0.68);
+  --lg-gloss: rgba(255, 255, 255, 0.74);
+  --lg-pane-inner: rgba(255, 255, 255, 0.16);
+  --lg-chip: rgba(255, 255, 255, 0.50);
+  --lg-sheen: rgba(255, 255, 255, 0.88);
+  --lg-rim: rgba(48, 91, 96, 0.12);
+  --lg-shadow: 0 18px 54px rgba(44, 85, 90, 0.10);
   --lg-blur: saturate(175%) blur(26px);
   --lg-blur-inner: saturate(210%) blur(10px);
 
-  --kiwi-bg: #eaf3ff;
-  --kiwi-ink: #12213a;
-  --kiwi-ink-strong: #0a172b;
-  --kiwi-ink-soft: #53647b;
-  --kiwi-ink-faint: #7c8ba0;
-  --kiwi-rule: rgba(63, 94, 133, 0.14);
-  --kiwi-wash: rgba(255, 255, 255, 0.40);
-  --kiwi-wash-edge: rgba(56, 87, 126, 0.24);
-  --kiwi-accent: #087cff;
-  --kiwi-accent-ink: #006fd6;
-  --kiwi-accent-wash: rgba(9, 105, 218, 0.16);
-  --kiwi-select: rgba(9, 105, 218, 0.24);
+  --kiwi-bg: #f3faf9;
+  --kiwi-ink: #173136;
+  --kiwi-ink-strong: #10282c;
+  --kiwi-ink-soft: #536a6d;
+  --kiwi-ink-faint: #7b8f91;
+  --kiwi-rule: rgba(48, 91, 96, 0.12);
+  --kiwi-wash: rgba(255, 255, 255, 0.50);
+  --kiwi-wash-edge: rgba(48, 91, 96, 0.20);
+  --kiwi-accent: #147d86;
+  --kiwi-accent-ink: #0b707b;
+  --kiwi-accent-wash: rgba(20, 125, 134, 0.14);
+  --kiwi-select: rgba(20, 125, 134, 0.20);
 
   --cm-comment: #6e7781;
   --cm-keyword: #cf222e;
   --cm-string: #0a3069;
   --cm-number: #0550ae;
   --cm-name: #1f2328;
-  --cm-punct: #53647b;
-  --cm-error: #d52d4b;
+  --cm-punct: #536a6d;
+  --cm-error: #c93a50;
 }

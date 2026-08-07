@@ -2,9 +2,9 @@
 :root {
   color-scheme: dark;
 
-  --lg-field: radial-gradient(70rem 46rem at 8% 12%, rgba(36, 147, 255, 0.30), transparent 60%),
-    radial-gradient(62rem 44rem at 88% 22%, rgba(140, 74, 255, 0.24), transparent 62%),
-    radial-gradient(72rem 50rem at 52% 92%, rgba(31, 220, 190, 0.20), transparent 60%) #070b16;
+  --lg-field: radial-gradient(70rem 46rem at 8% 12%, rgba(64, 130, 154, 0.12), transparent 60%),
+    radial-gradient(62rem 44rem at 88% 22%, rgba(72, 113, 126, 0.08), transparent 62%),
+    radial-gradient(72rem 50rem at 52% 92%, rgba(57, 146, 132, 0.08), transparent 60%) #070b16;
   --lg-pane: rgba(20, 28, 48, 0.56);
   --lg-gloss: rgba(255, 255, 255, 0.08);
   --lg-pane-inner: rgba(255, 255, 255, 0.045);
@@ -12,8 +12,8 @@
   --lg-sheen: rgba(255, 255, 255, 0.13);
   --lg-rim: rgba(255, 255, 255, 0.11);
   --lg-shadow: 0 18px 54px rgba(0, 4, 16, 0.28);
-  --lg-blur: saturate(165%) blur(28px);
-  --lg-blur-inner: saturate(200%) blur(10px);
+  --lg-blur: saturate(125%) blur(28px);
+  --lg-blur-inner: saturate(140%) blur(10px);
 
   --kiwi-bg: #070b16;
   --kiwi-ink: #f5f8ff;

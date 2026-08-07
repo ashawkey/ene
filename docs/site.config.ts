@@ -14,10 +14,7 @@ export const siteConfig = {
   navigation: [
     {
       title: 'Getting Started',
-      pages: [
-        { slug: '', label: 'Introduction' },
-        { slug: 'getting-started', label: 'Tutorial' },
-      ],
+      pages: [{ slug: '' }],
     },
     {
       title: 'Skills',
