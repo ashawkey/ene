@@ -6,6 +6,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+from rich.cells import cell_len, chop_cells
 from rich.table import Table
 from rich.text import Text
 
@@ -39,7 +40,40 @@ def _reason_label(reason: str) -> str:
 
 
 def _shorten(text: str, width: int) -> str:
-    return text if len(text) <= width else text[: width - 1] + "…"
+    if width <= 0:
+        return ""
+    if cell_len(text) <= width:
+        return text
+    if width == 1:
+        return "…"
+    return chop_cells(text, width - 1)[0] + "…"
+
+
+def _session_preview(messages: list) -> str:
+    for message in reversed(messages):
+        if get_role(message) != "user":
+            continue
+        return get_display_text(message).replace("\n", " ").strip()
+    return ""
+
+
+def _session_choice_labels(rows: list[tuple[str, object, object, str]], width: int) -> list[str]:
+    """Format aligned session metadata and use remaining line width for previews."""
+    name_width = max(cell_len(name) for name, *_ in rows)
+    message_width = max(len(str(message_count)) for _, message_count, _, _ in rows)
+    round_width = max(len(str(round_id)) for _, _, round_id, _ in rows)
+    labels = []
+    for name, message_count, round_id, preview in rows:
+        label = (
+            f"{name}{' ' * (name_width - cell_len(name))}  │  "
+            f"msgs:{str(message_count):>{message_width}}  rounds:{str(round_id):>{round_width}}"
+        )
+        separator = "  │  "
+        preview_width = width - cell_len(label) - cell_len(separator)
+        if preview and preview_width > 0:
+            label += separator + _shorten(preview, preview_width)
+        labels.append(label)
+    return labels
 
 
 def _file_label(count: int) -> str:
@@ -69,15 +103,6 @@ class SessionMixin:
     REWIND_MAX_FILES = 12
     REWIND_MAX_DROPPED = 6
 
-    @staticmethod
-    def _session_preview(messages: list) -> str:
-        for message in reversed(messages):
-            if get_role(message) != "user":
-                continue
-            text = get_display_text(message).replace("\n", " ").strip()
-            return text[:60] + ("..." if len(text) > 60 else "")
-        return ""
-
     def _session_store_for(self, name: str) -> SessionStore:
         return SessionStore(self._sessions_dir(), name)
 
@@ -93,25 +118,24 @@ class SessionMixin:
             self.console.system(f"No other saved sessions in {sessions_dir}")
             return None
 
-        names: list[str] = []
-        labels: list[str] = []
+        rows: list[tuple[str, object, object, str]] = []
         for path in paths:
             name = path.name
             try:
                 meta = self._session_store_for(name).summary()
-                messages = meta["messages"]
-                label = (
-                    f"{name}  │  msgs:{meta['message_count']}  rounds:{meta['round_id']} "
-                    f" model:{meta['model']}"
+                row = (
+                    name,
+                    meta["message_count"],
+                    meta["round_id"],
+                    _session_preview(meta["messages"]),
                 )
-                preview = self._session_preview(messages)
-                if preview:
-                    label += f"  │  {preview}"
             except Exception:
-                label = f"{name}  │  unreadable"
-            names.append(name)
-            labels.append(label)
+                row = (name, "?", "?", "unreadable")
+            rows.append(row)
 
+        # Leave room for questionary's selection indicator and padding.
+        labels = _session_choice_labels(rows, max(1, self.console.width - 4))
+        names = [row[0] for row in rows]
         picked = self.console.select(message="Pick a session to resume", choices=labels)
         if picked is None:
             return None

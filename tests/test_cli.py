@@ -2,7 +2,22 @@
 
 from ene.config import conf
 from ene import cli
+from ene.backend.sessions import _session_choice_labels
 from ene.cli import Args, get_agent
+
+
+def test_session_choices_align_counts_and_truncate_preview_to_width():
+    labels = _session_choice_labels(
+        [
+            ("20260101_120000", 9, 2, "short"),
+            ("20260102_120000", 123, 45, "a long preview that should be truncated"),
+        ],
+        55,
+    )
+
+    assert labels[0] == "20260101_120000  │  msgs:  9  rounds: 2  │  short"
+    assert labels[1] == "20260102_120000  │  msgs:123  rounds:45  │  a long pre…"
+    assert all(len(label) <= 55 for label in labels)
 
 
 def test_get_agent_passes_token_limits(monkeypatch):

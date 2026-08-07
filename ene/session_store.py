@@ -326,7 +326,6 @@ class SessionStore:
             "messages": messages,
             "message_count": len(messages),
             "round_id": data.get("round_id", 0),
-            "model": data.get("model", "?"),
         }
 
     def materialize(self, revision_id: str | None = None) -> dict[str, Any]:

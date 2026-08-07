@@ -763,6 +763,11 @@ class AgentConsole:
         self._visible_depth = 0
 
     @property
+    def width(self) -> int:
+        """Current terminal rendering width."""
+        return self._console.width
+
+    @property
     def quiet(self) -> bool:
         """Whether output is currently suppressed (see :meth:`suppressed`)."""
         return self._quiet_depth > 0 and self._visible_depth == 0

@@ -22,6 +22,7 @@ from urllib.request import url2pathname
 from rich.table import Table
 
 from ene.backend import LLMAgent
+from ene.backend.sessions import _session_choice_labels, _session_preview
 from ene.config import CONFIG_PATH, conf
 from ene.hub import discover_hub
 from ene.hubclient import HubClient
@@ -161,24 +162,6 @@ def get_agent(args: Args) -> "tuple[LLMAgent | None, HubClient | None]":
     return agent, hub_client
 
 
-def _last_user_preview(messages: list) -> str:
-    """Extract a short preview from the last user message."""
-    for m in reversed(messages):
-        if isinstance(m, dict) and m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, list):
-                text = " ".join(
-                    item.get("text", "")
-                    for item in content
-                    if isinstance(item, dict) and item.get("type") == "text"
-                )
-            else:
-                text = str(content)
-            text = text.replace("\n", " ").strip()
-            return text[:60] + ("..." if len(text) > 60 else "")
-    return ""
-
-
 def _pick_session(console: AgentConsole) -> str | None:
     """List saved sessions and let the user pick one interactively."""
     from ene.session_store import SessionStore
@@ -198,25 +181,23 @@ def _pick_session(console: AgentConsole) -> str | None:
         console.system(f"No saved sessions in {sessions_dir}")
         return None
 
-    entries: list[str] = []
-    choice_labels: list[str] = []
-    for f in files:
-        stem = f.name
+    rows: list[tuple[str, object, object, str]] = []
+    for path in files:
+        name = path.name
         try:
-            meta = SessionStore(sessions_dir, stem).summary()
-            messages = meta["messages"]
-            n_msgs = meta["message_count"]
-            rnd = meta["round_id"]
-            model = meta["model"]
-            preview = _last_user_preview(messages)
+            meta = SessionStore(sessions_dir, name).summary()
+            row = (
+                name,
+                meta["message_count"],
+                meta["round_id"],
+                _session_preview(meta["messages"]),
+            )
         except Exception:
-            n_msgs, rnd, model, preview = "?", "?", "?", ""
-        entries.append(stem)
-        label = f"{stem}  │  msgs:{n_msgs}  rounds:{rnd}  model:{model}"
-        if preview:
-            label += f"  │  {preview}"
-        choice_labels.append(label)
+            row = (name, "?", "?", "unreadable")
+        rows.append(row)
 
+    entries = [row[0] for row in rows]
+    choice_labels = _session_choice_labels(rows, max(1, console.width - 4))
     picked = console.select(
         message="Pick a session to resume",
         choices=choice_labels,
