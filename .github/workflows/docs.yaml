@@ -54,8 +54,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
-        with:
-          # The action's 10 minute default aborts *and cancels* a deployment that
-          # GitHub's Pages backend is still working through; first deploys of this
-          # site consistently needed ~12 minutes to go live.
-          timeout: 1800000
