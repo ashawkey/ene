@@ -16,6 +16,7 @@ The source `SKILL.md` is the authoritative introduction and usage guide for each
 | `persona-creator` | Create and validate custom Ene personas. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/persona-creator/SKILL.md) |
 | `plan` | Inspect a repository and produce an implementation-ready plan. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/plan/SKILL.md) |
 | `project-info` | Create or refine concise repository instructions in `AGENTS.md`. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/project-info/SKILL.md) |
+| `reflection` | Persist verified lessons from the current conversation in project-local skills. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/reflection/SKILL.md) |
 | `skill-creator` | Create, revise, or validate Agent Skills packages. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/skill-creator/SKILL.md) |
 | `subagent` | Delegate substantial independent tasks to fresh Ene agents. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/subagent/SKILL.md) |
 
@@ -27,5 +28,7 @@ Please make a plan for JSON output mode.
 ```
 
 The first request should cause Ene to load `plan`; the second selects it directly.
+
+Invoking `/reflection` reviews the available conversation and directly creates or updates focused skills under `.ene/skills/` when it finds verified, reusable lessons. It never writes to bundled or personal skills, and leaves the filesystem unchanged when there is nothing durable to retain. Run `/skills reload` afterward when it reports a change.
 
 Some skills have external requirements. In particular, `browser` needs Chrome or Chromium with remote debugging enabled, while `pdf-reading` needs the external MinerU CLI and its runtime resources. Check each linked `SKILL.md` before first use.

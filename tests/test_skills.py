@@ -107,6 +107,23 @@ def test_plan_is_bundled():
     assert "implementation-ready plan" in skills["plan"]["description"]
 
 
+def test_reflection_is_bundled_with_project_only_default_workflow():
+    skills = discover_skills()
+    reflection = skills["reflection"]
+    body = reflection["body"]
+
+    assert reflection["source"] == "bundled"
+    assert "conversation outcomes" in reflection["description"]
+    assert "project-local skills" in reflection["description"]
+    assert "## Default invocation" in body
+    assert "<work_dir>/.ene/skills/" in body
+    assert "Never modify bundled skills" in body
+    assert "personal skills under `~/.ene/skills/`" in body
+    assert "Load `skill-creator`" in body
+    assert "make no filesystem changes" in body
+    assert "/skills reload" in body
+
+
 def test_skills_summary_counts_only_registry_in_persona_prompt():
     skills = {"alpha": {"description": "Use for alpha tasks."}}
     section = build_skills_prompt_section(skills)
