@@ -15,6 +15,7 @@ class _FakeTerminal:
         self.starts = 0
         self.defaults = []
         self.text = ""
+        self.clears = 0
 
     async def prompt_async(self, default: str = "") -> str:
         assert not self.running, "Application is already running."
@@ -28,6 +29,10 @@ class _FakeTerminal:
             await asyncio.sleep(0)
             self.running = False
         return ""
+
+    def clear_screen(self) -> None:
+        assert not self.running
+        self.clears += 1
 
 
 async def _ask(driver, answers, label, hold=0.0):
@@ -107,6 +112,26 @@ async def _test_restart_replaces_a_finished_prompt():
     assert terminal.defaults[-1] == "retry me"
     await driver.stop()
     assert not terminal.running
+
+
+def test_timeline_reset_clears_while_editor_is_stopped_then_reopens_it():
+    asyncio.run(_test_timeline_reset_clears_while_editor_is_stopped_then_reopens_it())
+
+
+async def _test_timeline_reset_clears_while_editor_is_stopped_then_reopens_it():
+    terminal = _FakeTerminal()
+    driver = PromptDriver(terminal)
+    driver.start()
+    await asyncio.sleep(0)
+
+    terminal.text = "selected rewind prompt"
+    await driver.reset_timeline()
+    await asyncio.sleep(0)
+
+    assert terminal.clears == 1
+    assert terminal.running
+    assert terminal.defaults[-1] == "selected rewind prompt"
+    await driver.stop()
 
 
 def test_starting_a_second_prompt_directly_is_rejected():

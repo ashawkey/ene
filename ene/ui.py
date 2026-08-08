@@ -756,6 +756,7 @@ class AgentConsole:
         self.status_sink: (
             Callable[[list[tuple[str, str]] | None], None] | None
         ) = None
+        self.timeline_reset_sink: Callable[[], None] | None = None
         self._indicator_stack: list[ThinkingIndicator] = []
         self._indicator_lock = threading.RLock()
         self._round_timer_state = threading.local()
@@ -1013,7 +1014,10 @@ class AgentConsole:
     def reset_timeline(self):
         """Clear rendered history before replaying authoritative context."""
         if self._console.is_terminal:
-            print("\033[3J\033[2J\033[H", end="", file=self._console.file, flush=True)
+            if self.timeline_reset_sink is not None:
+                self.timeline_reset_sink()
+            else:
+                print("\033[3J\033[2J\033[H", end="", file=self._console.file, flush=True)
         self._emit("timeline_reset")
 
     # -- block helper -------------------------------------------------------

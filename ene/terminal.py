@@ -746,6 +746,12 @@ class TerminalInput:
         """Read input without moving prompt_toolkit off the main thread."""
         return await self._session.prompt_async(self._message, default=default)
 
+    def clear_screen(self) -> None:
+        """Clear terminal history while the prompt application is stopped."""
+        output = self._session.app.output
+        output.write_raw("\033[3J\033[2J\033[H")
+        output.flush()
+
     @property
     def app(self):
         return self._session.app
@@ -797,6 +803,11 @@ class PromptDriver:
         async with self._lock:
             await self.stop()
             self.start(default)
+
+    async def reset_timeline(self) -> None:
+        """Clear terminal history before reopening the editor."""
+        async with self.paused():
+            self.terminal.clear_screen()
 
     @asynccontextmanager
     async def paused(self) -> AsyncGenerator[None, None]:

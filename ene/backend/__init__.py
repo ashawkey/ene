@@ -1263,6 +1263,14 @@ class LLMAgent(
             prompts = PromptDriver(terminal)
             prompts.start()
 
+            def reset_timeline() -> None:
+                future = asyncio.run_coroutine_threadsafe(
+                    prompts.reset_timeline(), ui_loop
+                )
+                future.result()
+
+            self.console.timeline_reset_sink = reset_timeline
+
             async def show_prompt(prompt):
                 async with prompts.paused():
                     terminal_message = prompt.message.splitlines()[0]
@@ -1386,6 +1394,7 @@ class LLMAgent(
                 stop_wait_indicator()
                 self.input_broker.remove_listener(wake_input)
                 await prompts.stop()
+                self.console.timeline_reset_sink = None
                 if active is not None:
                     await asyncio.wrap_future(active)
 
@@ -1401,6 +1410,7 @@ class LLMAgent(
                 set_process_status("")
             self.console.interactive_input = False
             self.console.status_sink = None
+            self.console.timeline_reset_sink = None
 
     def _run_round(self) -> bool:
         """Run one queued submission, absorbing an unexpected failure.
