@@ -1,15 +1,15 @@
 # Web UI
 
 Ene's optional Web UI mirrors terminal sessions in a browser.
-It does not replace the terminal agent: a hub serves the browser, while each agent continues to run in its own working directory and terminal process.
+It does not replace the persistent agent worker: a hub serves the browser, while each agent continues to run in its own detached worker process and working directory. Terminals attach and detach independently.
 
 ## Architecture
 
 The Web UI uses a **hub + agents** design:
 
 - One `ene hub` process owns the HTTP port, serves the UI, authenticates browsers, and multiplexes connected agents.
-- Each ordinary `ene` process checks for a local hub at startup and links to it automatically.
-- Terminal and browser input operate the same live session. Agents continue terminal-only when no hub is available.
+- Each detached worker checks for a local hub at startup and links to it automatically.
+- Terminal and browser input operate the same live session. Detaching or closing the terminal does not stop the worker or its Web UI connection. Agents continue without the browser when no hub is available.
 - Agents from different directories and terminals appear as separate browser tabs.
 
 The hub binds to `127.0.0.1`, so it is local-only unless you explicitly add a tunnel or proxy.

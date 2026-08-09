@@ -433,6 +433,7 @@ def test_pending_message_steers_next_agentic_iteration():
     assert broker.submission is None
     assert user_inputs[0][0] == "use config.py instead"
     assert user_inputs[0][1]["source"] == "web"
+    assert user_inputs[0][1]["steer"] is True
     assert agent.round_id == 4
 
 

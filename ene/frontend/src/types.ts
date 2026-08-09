@@ -52,6 +52,7 @@ export type StateMessage = {
 export type SessionSummary = {
   id: string
   title: string
+  name: string
   cwd: string
   model: string
   host: string

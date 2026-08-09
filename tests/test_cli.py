@@ -194,6 +194,205 @@ def test_explicit_chat_resume_value(monkeypatch):
     assert chats[0].resume == "abc123"
 
 
+def test_attach_switches_to_record_selected_before_detach(monkeypatch):
+    current = {"runtime_id": "current"}
+    other = {"runtime_id": "other"}
+    attached = []
+    startup_flags = []
+
+    class Terminal:
+        def __init__(self, record, *, switch_picker, new_session):
+            attached.append(record)
+            self.switch_record = None
+            self.switch_picker = switch_picker
+            self.new_session = new_session
+            self.force_startup_panel = False
+
+        def run(self):
+            startup_flags.append(self.force_startup_panel)
+            if len(attached) == 1:
+                self.switch_record = self.switch_picker()
+                return "switch", ""
+            return "detach", ""
+
+    monkeypatch.setattr("ene.live_terminal.LiveTerminal", Terminal)
+    monkeypatch.setattr(cli, "_pick_live_record", lambda *args, **kwargs: other)
+
+    cli._attach_live(current)
+
+    assert attached == [current, other]
+    assert startup_flags == [False, True]
+
+
+def test_live_picker_has_cancel_option(monkeypatch):
+    record = {
+        "runtime_id": "other",
+        "workspace": "/tmp/project",
+        "busy": False,
+    }
+    choices_seen = []
+    monkeypatch.setattr("ene.live.list_records", lambda: [record])
+    monkeypatch.setattr(
+        cli.AgentConsole,
+        "select_terminal",
+        lambda self, message, choices: choices_seen.extend(choices) or choices[-1],
+    )
+
+    current = {
+        "name": "current",
+        "runtime_id": "current-id",
+        "workspace": "/tmp/current-project",
+        "busy": True,
+    }
+    selected = cli._pick_live_record(
+        cli.AgentConsole(), allow_cancel=True, current_record=current
+    )
+
+    assert selected is None
+    assert choices_seen[0] == "other  │  done  │  /tmp/project"
+    assert choices_seen[-1] == (
+        "Cancel (stay in current)  │  working  │  /tmp/current-project"
+    )
+
+
+def test_attach_loop_starts_named_new_session(monkeypatch):
+    first = {
+        "runtime_id": "first",
+        "workspace": "/tmp/project",
+        "options": {"model": "test", "resume": "old"},
+    }
+    second = {"runtime_id": "second"}
+    actions = iter([("new", "fresh"), ("detach", "")])
+    started = []
+
+    class Terminal:
+        def __init__(self, record, *, switch_picker, new_session):
+            self.record = record
+            self.new_record = None
+            self.new_session = new_session
+
+        def run(self):
+            action = next(actions)
+            if action[0] == "new":
+                self.new_record = self.new_session(action[1])
+            return action
+
+    monkeypatch.setattr("ene.live_terminal.LiveTerminal", Terminal)
+    monkeypatch.setattr(
+        "ene.live.start_session",
+        lambda **kwargs: started.append(kwargs) or second,
+    )
+
+    cli._attach_live(first)
+
+    assert started == [{
+        "name": "fresh",
+        "workspace": "/tmp/project",
+        "options": {"model": "test", "resume": None},
+    }]
+
+
+def test_attach_accepts_no_identifier(monkeypatch):
+    attached = []
+    monkeypatch.setattr(cli, "cmd_attach", attached.append)
+
+    assert cli.main(["attach"]) == 0
+    assert attached == [None]
+
+
+def test_attach_short_alias(monkeypatch):
+    attached = []
+    monkeypatch.setattr(cli, "cmd_attach", attached.append)
+
+    assert cli.main(["a", "agent"]) == 0
+    assert attached == ["agent"]
+
+
+def test_kill_short_alias(monkeypatch):
+    killed = []
+    monkeypatch.setattr(cli, "cmd_kill", killed.append)
+
+    assert cli.main(["k", "agent"]) == 0
+    assert killed == ["agent"]
+
+
+def test_live_list_aliases(monkeypatch):
+    listed = []
+    monkeypatch.setattr(cli, "cmd_live_list", lambda: listed.append(True))
+
+    for command in ("list", "ls", "l"):
+        assert cli.main([command]) == 0
+
+    assert listed == [True, True, True]
+
+
+def test_models_lists_configured_models(monkeypatch):
+    listed = []
+    monkeypatch.setattr(cli, "cmd_models", lambda: listed.append(True))
+
+    assert cli.main(["models"]) == 0
+    assert listed == [True]
+
+
+def test_live_picker_excludes_starting_sessions(monkeypatch):
+    records = [{
+        "runtime_id": "starting",
+        "status": "starting",
+        "workspace": "/tmp/project",
+    }]
+    monkeypatch.setattr("ene.live.list_records", lambda: records)
+    messages = []
+    monkeypatch.setattr(cli.AgentConsole, "system", lambda self, text: messages.append(text))
+
+    assert cli._pick_live_record(cli.AgentConsole()) is None
+    assert messages == ["No detached live sessions available."]
+
+
+def test_live_list_shows_starting_state(monkeypatch):
+    records = [{
+        "name": "agent",
+        "runtime_id": "123456789",
+        "status": "starting",
+        "attached": False,
+        "busy": False,
+        "model": "model",
+        "conversation_id": "",
+        "workspace": "/tmp/project",
+    }]
+    tables = []
+    monkeypatch.setattr("ene.live.list_records", lambda: records)
+    monkeypatch.setattr(cli.AgentConsole, "table", lambda self, table: tables.append(table))
+
+    cli.cmd_live_list()
+
+    assert str(tables[0].columns[2]._cells[0]) == "starting"
+
+
+def test_live_list_only_lists(monkeypatch):
+    records = [{
+        "name": "agent",
+        "runtime_id": "123456789",
+        "attached": False,
+        "busy": False,
+        "model": "model",
+        "conversation_id": "conversation",
+        "workspace": "/tmp/project",
+    }]
+    tables = []
+    monkeypatch.setattr("ene.live.list_records", lambda: records)
+    monkeypatch.setattr(cli.AgentConsole, "table", lambda self, table: tables.append(table))
+    monkeypatch.setattr(
+        cli.AgentConsole,
+        "select_terminal",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not prompt")),
+    )
+
+    cli.cmd_live_list()
+
+    assert len(tables) == 1
+    assert str(tables[0].columns[2]._cells[0]) == "done"
+
+
 def test_lib_dispatches_remaining_arguments(monkeypatch):
     received = []
     monkeypatch.setattr("ene.library_cli.main", lambda argv: received.append(argv) or 7)

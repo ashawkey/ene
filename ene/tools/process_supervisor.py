@@ -17,11 +17,14 @@ def _request_stop(signum, frame) -> None:
     _STOPPING = True
 
 
-def _set_child_subreaper() -> None:
+def _configure_process_lifetime(owner_pid: int) -> None:
+    """Become a subreaper and verify the expected owner is still alive."""
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno))
+    if os.getppid() != owner_pid:
+        raise RuntimeError("Managed-process owner exited during startup")
 
 
 def _descendants(root_pid: int) -> list[int]:
@@ -86,17 +89,21 @@ def _terminate_descendants(shell_pid: int, shell_status: int | None) -> int | No
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: process_supervisor.py <command>")
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: process_supervisor.py <owner-pid> <command>")
+    try:
+        owner_pid = int(sys.argv[1])
+    except ValueError as exc:
+        raise SystemExit("owner-pid must be an integer") from exc
 
-    _set_child_subreaper()
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, _request_stop)
+    _configure_process_lifetime(owner_pid)
 
-    shell = subprocess.Popen(["/bin/bash", "-lc", sys.argv[1]])
+    shell = subprocess.Popen(["/bin/bash", "-lc", sys.argv[2]])
     shell_status = None
     while True:
-        if _STOPPING:
+        if _STOPPING or os.getppid() != owner_pid:
             _terminate_descendants(shell.pid, shell_status)
             return 128 + signal.SIGTERM
 

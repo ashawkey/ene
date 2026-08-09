@@ -24,14 +24,18 @@ Chat options are:
 | `--verbose` | Show detailed output. |
 | `--stream` / `--no-stream` | Enable or disable response-token streaming; streaming is the default. |
 | `--reasoning-effort LEVEL` | Override effort with `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `--resume [SESSION_ID]` | Resume a specific session, or omit the ID to choose interactively. |
+| `--resume [SESSION_ID]` | Resume a specific conversation, or omit the ID to choose interactively. |
+| `--name NAME` | Give the new persistent live session a friendly name. |
 
 ## Top-level commands
 
 | Command | Purpose |
 |---|---|
 | `ene chat [OPTIONS]` | Start an interactive chat. |
-| `ene list` | List configured model aliases and resolved defaults. |
+| `ene models` | List configured model aliases and resolved defaults. |
+| `ene list` (`ls`, `l`) | List live sessions and whether each is working or done. |
+| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; omit the identifier to choose interactively. |
+| `ene kill NAME_OR_ID` (`k`) | Terminate a live session and its managed processes. |
 | `ene status` | Show disk usage for entries under the current project's `.ene/`. |
 | `ene clean [--history] [ENTRY ...]` | Remove disposable project state or selected entries; `--history` also removes sessions. |
 | `ene hub --web-port PORT` | Run the shared Web UI hub; the default port is `8765`. |
@@ -62,13 +66,16 @@ The agent supports the following slash commands while chatting:
 | `/logout [provider\|model-alias]` | Remove stored OAuth credentials |
 | `/auth [provider\|model-alias]` | Show authentication status |
 | `/effort [level]` | Show or set reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) |
-| `/rewind` | Preview an earlier prompt boundary; restore conversation, tracked files, or both; then edit the restored prompt and branch |
+| `/rewind` | From an attached terminal, preview an earlier prompt boundary; restore conversation, tracked files, or both; then edit the restored prompt and branch |
 | `/skills` | List installed skills; `/skills reload` to re-scan; `/skills <name>` to load one |
 | `/<skill-name> [task]` | Invoke a skill for an optional task; without one, run its declared default or ask what to do |
 | `/persona` | List personas; `/persona <name>` to switch (restarts the conversation) |
 | `/wait <duration> <prompt>` | Queue a prompt for later using seconds, minutes, or hours, e.g. `/wait 1h check whether the other agent finished` |
-| `/clear` | Save the current session, stop its managed processes, and start a new session |
-| `/resume [session_id]` | Save the current session, then resume a previous one (bare `/resume` picks interactively) |
+| `/detach` | Detach the terminal without stopping the live session (also Ctrl+D) |
+| `/switch` | Detach and choose another live session (also Ctrl+S); choose Cancel or press Ctrl+C to return to the current session |
+| `/new [name]` | Detach and start a new live session, optionally with a name |
+| `/resume [session_id]` | From an attached terminal, save the current conversation, activate a stopped one, and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions (bare `/resume` picks interactively and shows saved names) |
+| `/name [name]` | Show or set the live session name; use `/name` to inspect it |
 | `/exit` or `/quit` | Exit the agent |
 
 
@@ -105,7 +112,7 @@ Prefix a command with `!` to run it directly without involving the model:
 
 ## Working while a round is active
 
-You may submit one message while Ene is working; it is shown as `pending: … · runs next` and starts after the current round. Press `Up` at an empty prompt to move it back into the editor. Read-only commands such as `/usage`, `/context`, `/ps`, and `/auth` run immediately; commands that change conversation state wait for the current round.
+You may submit one message while Ene is working; it is shown as `pending: … · runs next` and starts after the current round. Press `Up` at an empty prompt to move it back into the editor. Read-only commands such as `/usage`, `/context`, `/ps`, and `/auth` run immediately. `/name [name]` also runs immediately because it changes only session metadata; commands that change conversation state wait for the current round.
 
 ## Tool execution
 

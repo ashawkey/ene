@@ -20,6 +20,7 @@ from filelock import FileLock
 from ene.context import get_display_text, get_role, get_text
 from ene.utils.persistence import (
     append_jsonl,
+    atomic_write_json,
     read_jsonl,
     truncate_torn_jsonl_tail,
     write_immutable,
@@ -138,6 +139,7 @@ class SessionStore:
         self.session_id = session_id
         self.path = sessions_dir / session_id
         self.history_path = self.path / "history.jsonl"
+        self.meta_path = self.path / "meta.json"
         self.objects_path = self.path / "objects"
         self.lock = FileLock(str(self.path / ".lock"))
         self.messages: dict[str, dict[str, Any]] = {}
@@ -145,6 +147,7 @@ class SessionStore:
         self.code_revisions: dict[str, dict[str, Any]] = {}
         self.revision_order: list[str] = []
         self.head_id: str | None = None
+        self.session_name = ""
         self._text_stats: dict[tuple[tuple[str, int] | None, ...], tuple[int, int]] = {}
         # id(message) -> (message, content hash). A message that has entered the
         # history is never mutated in place — rewrites (compaction, eviction)
@@ -184,6 +187,7 @@ class SessionStore:
 
     def _load(self) -> None:
         self._history_stat = self._stat_history()
+        has_session_metadata = False
         for record in read_jsonl(self.history_path):
             kind = record.get("type")
             if kind == "message":
@@ -203,8 +207,16 @@ class SessionStore:
                 if target not in self.revisions:
                     raise ValueError(f"Session head references unknown revision: {target}")
                 self.head_id = target
+            elif kind == "session_metadata":
+                session_name = record.get("sessionName")
+                if not isinstance(session_name, str):
+                    raise ValueError("Session metadata has an invalid name")
+                self.session_name = session_name
+                has_session_metadata = True
             else:
                 raise ValueError(f"Unknown session history record type: {kind!r}")
+        if not has_session_metadata and self.head_id is not None:
+            self.session_name = self.revisions[self.head_id]["state"].get("session_name", "")
 
     @property
     def exists(self) -> bool:
@@ -318,15 +330,102 @@ class SessionStore:
             raise ValueError(f"Invalid session object ID: {object_id!r}")
         return self.objects_path / object_id[:2] / object_id[2:]
 
-    def summary(self) -> dict[str, Any]:
-        """Materialize only the metadata needed by session pickers."""
-        data = self.materialize()
-        messages = data["messages"]
+    def _summary_from_head(self) -> dict[str, Any]:
+        if self.head_id is None:
+            raise ValueError("Session has no head revision")
+        revision = self.revisions[self.head_id]
+        state = revision["state"]
+        history_stat = self._stat_history()
+        last_user_message = ""
+        for message_id in reversed(revision["messageIds"]):
+            message = self.messages.get(message_id)
+            if message is not None and get_role(message) == "user":
+                last_user_message = get_display_text(message).replace("\n", " ").strip()
+                break
         return {
-            "messages": messages,
-            "message_count": len(messages),
-            "round_id": data.get("round_id", 0),
+            "version": 1,
+            "session_id": self.session_id,
+            "session_name": self.session_name,
+            "updated_at": history_stat[1] / 1_000_000_000 if history_stat else revision["createdAt"],
+            "history_size": history_stat[0] if history_stat else 0,
+            "history_mtime_ns": history_stat[1] if history_stat else 0,
+            "head_revision_id": self.head_id,
+            "round_id": state.get("round_id", 0),
+            "message_count": len(revision["messageIds"]),
+            "last_user_message": last_user_message,
         }
+
+    def _write_summary(self) -> dict[str, Any]:
+        summary = self._summary_from_head()
+        atomic_write_json(self.meta_path, summary)
+        return summary
+
+    @staticmethod
+    def _read_summary_file(
+        meta_path: Path, session_id: str, history_stat: tuple[int, int] | None
+    ) -> dict[str, Any] | None:
+        try:
+            summary = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if (
+            not isinstance(summary, dict)
+            or summary.get("version") != 1
+            or summary.get("session_id") != session_id
+            or history_stat is None
+            or summary.get("history_size") != history_stat[0]
+            or summary.get("history_mtime_ns") != history_stat[1]
+            or not isinstance(summary.get("head_revision_id"), str)
+            or not isinstance(summary.get("last_user_message"), str)
+        ):
+            return None
+        return summary
+
+    @classmethod
+    def load_summary(cls, sessions_dir: Path, session_id: str) -> dict[str, Any]:
+        """Read picker metadata without parsing history, rebuilding old caches lazily."""
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", session_id):
+            raise ValueError(f"Invalid session ID: {session_id!r}")
+        path = sessions_dir / session_id
+        history_path = path / "history.jsonl"
+        try:
+            info = history_path.stat()
+            history_stat = (info.st_size, info.st_mtime_ns)
+        except OSError:
+            history_stat = None
+        summary = cls._read_summary_file(path / "meta.json", session_id, history_stat)
+        if summary is not None:
+            return summary
+        return cls(sessions_dir, session_id).summary()
+
+    def summary(self) -> dict[str, Any]:
+        """Return picker metadata, rebuilding its sidecar when necessary."""
+        summary = self._read_summary_file(
+            self.meta_path, self.session_id, self._stat_history()
+        )
+        if summary is not None and summary.get("head_revision_id") == self.head_id:
+            return summary
+        if self.head_id is None:
+            raise ValueError("Session has no head revision")
+        with self.lock:
+            self._sync()
+            return self._write_summary()
+
+    def rename(self, session_name: str) -> None:
+        """Persist a session-level name without adding a conversation revision."""
+        with self.lock:
+            self._sync()
+            if self.head_id is None:
+                raise ValueError("Session has no head revision")
+            truncate_torn_jsonl_tail(self.history_path)
+            append_jsonl(self.history_path, [{
+                "type": "session_metadata",
+                "sessionName": session_name,
+                "createdAt": time.time(),
+            }])
+            self._history_stat = self._stat_history()
+            self.session_name = session_name
+            self._write_summary()
 
     def materialize(self, revision_id: str | None = None) -> dict[str, Any]:
         revision_id = revision_id or self.head_id
@@ -350,6 +449,7 @@ class SessionStore:
         code_parent_id: str | None,
         changes: list[dict[str, Any]],
         reason: str,
+        session_name: str | None = None,
     ) -> tuple[str, str | None, bool]:
         """Append a conversation revision and optional code revision."""
         messages = data["messages"]
@@ -364,6 +464,8 @@ class SessionStore:
         self.path.mkdir(parents=True, exist_ok=True)
         with self.lock:
             self._sync()
+            if self.head_id is None and session_name is not None:
+                self.session_name = session_name
             truncate_torn_jsonl_tail(self.history_path)
             records: list[dict[str, Any]] = []
             for mid, message in zip(message_ids, messages):
@@ -421,6 +523,10 @@ class SessionStore:
             self.revisions[revision_id] = revision
             self.revision_order.append(revision_id)
             self.head_id = revision_id
+            try:
+                self._write_summary()
+            except OSError:
+                pass  # Derived metadata can be rebuilt from the durable history.
             return revision_id, code_revision_id, True
 
     def checkout(self, revision_id: str, *, reason: str = "rewind") -> dict[str, Any]:
@@ -441,6 +547,10 @@ class SessionStore:
             append_jsonl(self.history_path, [head])
             self._history_stat = self._stat_history()
             self.head_id = revision_id
+            try:
+                self._write_summary()
+            except OSError:
+                pass  # Derived metadata can be rebuilt from the durable history.
             return self.materialize(revision_id)
 
     def code_walk(self, from_id: str | None, to_id: str | None) -> list[tuple[dict[str, Any], bool]]:
@@ -632,4 +742,5 @@ class SessionStore:
         self.code_revisions.clear()
         self.revision_order.clear()
         self.head_id = None
+        self.session_name = ""
         self._load()

@@ -181,8 +181,7 @@ def test_external_file_changes_disable_code_rewind(tmp_path: Path):
     assert len(agent.context.messages) == 1
 
 
-def test_replay_shows_tool_calls_the_way_the_live_view_does(tmp_path: Path):
-    """Replay runs after a rewind or a resume; it must not fall back to raw JSON."""
+def test_replay_omits_tool_activity(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [
         {"role": "user", "content": "check the file"},
@@ -202,16 +201,33 @@ def test_replay_shows_tool_calls_the_way_the_live_view_does(tmp_path: Path):
     ]
     SessionMixin._replay_context(agent)
 
-    assert "read_file a.txt · lines 1–1000" in console.text
-    assert "edit_file a.txt" in console.text
-    assert '{"file"' not in console.text
-    # Only the result actually formatted as a failure is marked as one.
-    assert "ok: 1 line read" in console.text
-    assert "fail: Error: File not found: a.txt" in console.text
+    assert "check the file" in console.text
+    assert "read_file" not in console.text
+    assert "edit_file" not in console.text
+    assert "1 line read" not in console.text
+    assert "File not found" not in console.text
+    assert "4 messages hidden" in console.text
 
 
-def test_replay_shows_reasoning_only_assistant_messages(tmp_path: Path):
-    """A visible live thinking message must not disappear from replay."""
+def test_replay_shows_all_saved_conversation_turns(tmp_path: Path):
+    agent, _, console = _build(tmp_path, [])
+    agent.context.messages = []
+    for iteration in range(1, 13):
+        agent.context.messages.extend([
+            {"role": "user", "content": f"prompt {iteration}"},
+            {"role": "assistant", "content": f"answer {iteration}"},
+        ])
+
+    SessionMixin._replay_context(agent)
+
+    assert "prompt 1\n" in console.text
+    assert "answer 2\n" in console.text
+    assert "prompt 3\n" in console.text
+    assert "answer 12\n" in console.text
+    assert "messages hidden" not in console.text
+
+
+def test_replay_omits_reasoning_only_assistant_messages(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [
         {"role": "user", "content": "work it out"},
@@ -225,7 +241,28 @@ def test_replay_shows_reasoning_only_assistant_messages(tmp_path: Path):
 
     SessionMixin._replay_context(agent)
 
-    assert "the retained final reasoning" in console.text
+    assert "work it out" in console.text
+    assert "the retained final reasoning" not in console.text
+
+
+def test_replay_shows_only_final_text_response_for_a_user_turn(tmp_path: Path):
+    agent, _, console = _build(tmp_path, [])
+    agent.context.messages = [
+        {"role": "user", "content": "finish this"},
+        {"role": "assistant", "content": "intermediate", "tool_calls": [
+            {"id": "1", "function": {"name": "read_file", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "1", "content": "tool output"},
+        {"role": "assistant", "content": "final answer"},
+    ]
+
+    SessionMixin._replay_context(agent)
+
+    assert "finish this" in console.text
+    assert "final answer" in console.text
+    assert "intermediate" not in console.text
+    assert "tool output" not in console.text
+    assert "2 messages hidden" in console.text
 
 
 def test_no_file_changes_only_offers_conversation_rewind(tmp_path: Path):

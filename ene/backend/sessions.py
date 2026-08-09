@@ -1,6 +1,5 @@
 """Session selection, branchable persistence, loading, and replay."""
 
-import json
 import os
 import time
 from dataclasses import asdict
@@ -15,11 +14,9 @@ from ene.context import (
     get_display_text,
     get_role,
     get_text,
-    get_tool_calls,
 )
 from ene.personas import get_persona
 from ene.session_store import SessionStore
-from ene.tools import format_tool_summary, log_tool_call, result_text_failed
 from ene.utils.rewind import CheckoutPlan
 
 _OP_STYLES = {"create": "green", "modify": "yellow", "delete": "red"}
@@ -47,14 +44,6 @@ def _shorten(text: str, width: int) -> str:
     if width == 1:
         return "…"
     return chop_cells(text, width - 1)[0] + "…"
-
-
-def _session_preview(messages: list) -> str:
-    for message in reversed(messages):
-        if get_role(message) != "user":
-            continue
-        return get_display_text(message).replace("\n", " ").strip()
-    return ""
 
 
 def _session_choice_labels(rows: list[tuple[str, object, object, str]], width: int) -> list[str]:
@@ -122,12 +111,13 @@ class SessionMixin:
         for path in paths:
             name = path.name
             try:
-                meta = self._session_store_for(name).summary()
+                meta = SessionStore.load_summary(sessions_dir, name)
+                display_name = f"{meta['session_name']} ({name})" if meta.get("session_name") else name
                 row = (
-                    name,
+                    display_name,
                     meta["message_count"],
                     meta["round_id"],
-                    _session_preview(meta["messages"]),
+                    meta["last_user_message"],
                 )
             except Exception:
                 row = (name, "?", "?", "unreadable")
@@ -135,7 +125,7 @@ class SessionMixin:
 
         # Leave room for questionary's selection indicator and padding.
         labels = _session_choice_labels(rows, max(1, self.console.width - 4))
-        names = [row[0] for row in rows]
+        names = [path.name for path in paths]
         picked = self.console.select(message="Pick a session to resume", choices=labels)
         if picked is None:
             return None
@@ -166,12 +156,71 @@ class SessionMixin:
                 self.console.warn(f"Could not save current session: {e}")
 
         old_id = self._session_id
+        old_name = getattr(self, "session_name", "")
+        try:
+            target_name = SessionStore.load_summary(
+                self._sessions_dir(), target
+            ).get("session_name", "")
+        except (OSError, ValueError):
+            target_name = ""
+        callback = getattr(self, "_session_changed", None)
+        try:
+            if callback is not None:
+                callback(target, target_name)
+        except Exception as exc:
+            self.console.error(str(exc))
+            return
+        self.session_name = ""
         if not self.load_session(target):
             self._session_id = old_id
+            self.session_name = old_name
+            if callback is not None:
+                try:
+                    callback(old_id, old_name)
+                except Exception:
+                    pass
             return
         self._session_id = target
         self.tool_executor.shutdown_processes(clear=True)
         self._install_change_tracker()
+
+    def _cmd_name(self, raw: str):
+        parts = raw.split(maxsplit=1)
+        if len(parts) == 1:
+            current = getattr(self, "session_name", "")
+            self.console.system(
+                f"Session name: {current}" if current else "This session is unnamed."
+            )
+            return
+        requested = parts[1].strip()
+        old_name = getattr(self, "session_name", "")
+        try:
+            callback = getattr(self, "_session_name_changed", None)
+            if callback is not None:
+                requested = callback(requested)
+        except Exception as exc:
+            self.console.error(str(exc))
+            return
+        self.session_name = requested
+        try:
+            store = getattr(self, "_session_store", None)
+            if store is None or store.session_id != self._session_id:
+                store = self._session_store_for(self._session_id)
+                self._session_store = store
+            store.rename(requested)
+        except Exception as exc:
+            self.session_name = old_name
+            if callback is not None:
+                try:
+                    callback(old_name)
+                except Exception:
+                    pass
+            self.console.error(f"Could not save session name: {exc}")
+            return
+        if requested:
+            self.console.system(f"Session named '{requested}'.")
+        else:
+            self.console.system("Session name cleared.")
 
     def _cmd_rewind(self):
         """Move to the checkpoint before a prompt; subsequent work branches."""
@@ -409,6 +458,7 @@ class SessionMixin:
             "system_prompt": self.context.system_prompt,
             "persona": self.persona.name,
             "persona_digest": self.persona.digest,
+            "session_name": getattr(self, "session_name", ""),
             "loaded_skills": sorted(self.tool_executor._loaded_skills),
             "skill_loads": self.tool_executor._skill_loads,
             "messages": self.context.messages,
@@ -429,6 +479,7 @@ class SessionMixin:
             code_parent_id=code_parent,
             changes=changes,
             reason=reason,
+            session_name=getattr(self, "session_name", ""),
         )
         self._session_revision_id = revision_id
         if self.changes and self.changes.session_id == name:
@@ -442,6 +493,7 @@ class SessionMixin:
                 self.console.error(f"Session not found: {name}")
                 return False
             data = store.materialize()
+            data["session_name"] = store.summary().get("session_name", "")
         except (OSError, ValueError) as e:
             self.console.error(f"Failed to read session: {e}")
             return False
@@ -495,6 +547,8 @@ class SessionMixin:
             skills=tuple(carried.get("skills", ())),
         )
         self.round_id = data.get("round_id", 0)
+        if not getattr(self, "session_name", ""):
+            self.session_name = data.get("session_name", "")
         self.token_totals.update(data.get("token_totals") or {})
         self.tool_compaction_totals.update(data.get("tool_compaction_totals") or {})
         self.compaction_totals.update(data.get("compaction_totals") or {})
@@ -529,49 +583,29 @@ class SessionMixin:
         self.tool_executor._get_round_id = lambda: self.round_id
 
     def _replay_context(self):
-        """Replay all messages using the same display methods as live chat."""
-        msgs = self.context.messages
+        """Replay the full conversation with omitted messages marked in place."""
+        from ene.context import SUMMARY_MARKER
+        from ene.replay import HiddenMessages, compact_replay, hidden_message
+
+        msgs = compact_replay(
+            self.context.messages,
+            is_user=lambda msg: (
+                get_role(msg) == "user"
+                and not get_text(msg).startswith(SUMMARY_MARKER)
+            ),
+            is_assistant=lambda msg: get_role(msg) == "assistant",
+            has_text=lambda msg: bool(get_text(msg).strip()),
+        )
         if not msgs:
             return
 
         self.console.system("── Session context (replay) ──")
-
         for msg in msgs:
-            role = get_role(msg)
-            if role == "user":
-                text = get_display_text(msg)
-                self.console.user_input(text)
-
-            elif role == "assistant":
-                reasoning = msg.get("reasoning_content")
-                if self.show_thinking and isinstance(reasoning, str) and reasoning:
-                    self.console.thinking_message(reasoning)
-                text = get_text(msg)
-                if text:
-                    self.console.response(text)
-                for tc in get_tool_calls(msg):
-                    fn = tc.get("function", {})
-                    fname = fn.get("name", "?")
-                    try:
-                        fargs = json.loads(fn.get("arguments") or "{}")
-                    except json.JSONDecodeError:
-                        fargs = {}
-                    executor = getattr(self, "tool_executor", None)
-                    registry = getattr(executor, "registry", None)
-                    spec = registry.get(fname) if registry is not None else None
-                    log_tool_call(
-                        self.console,
-                        fname,
-                        fargs,
-                        spec.describe if spec is not None else None,
-                    )
-
-            elif role == "tool":
-                result_text = get_text(msg)
-                summary = get_display_text(msg)
-                if summary == result_text:
-                    summary = format_tool_summary(result_text)
-                self.console.tool_result(summary, success=not result_text_failed(result_text))
-
+            if isinstance(msg, HiddenMessages):
+                self.console.system(hidden_message(msg.count))
+            elif get_role(msg) == "user":
+                self.console.user_input(get_display_text(msg))
+            else:
+                self.console.response(get_text(msg))
         self.console.system("── End of replay ──")
 

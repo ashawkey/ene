@@ -57,8 +57,8 @@ class AgentCommandsMixin:
         "persona": "List/switch personas; /persona reload to re-scan",
         "wait": "Send a prompt after a delay (/wait <30s|5m|1h> <prompt>)",
         "rewind": "Return to before a user prompt, edit it, then branch",
-        "clear": "Clear conversation history (keep system prompt)",
         "resume": "Save current, then resume a previous session (/resume [session_id])",
+        "name": "Show or set the live session name (/name [name])",
         "exit": "Exit the agent (also: /quit)",
         "quit": "Exit the agent (alias of /exit)",
     }
@@ -69,10 +69,10 @@ class AgentCommandsMixin:
     # prompt, so only commands that read session state or take effect on the
     # *next* API call qualify.
     INSTANT_COMMANDS = frozenset({
-        "help", "usage", "ps", "context", "system_prompt", "auth", "effort",
+        "help", "usage", "ps", "context", "system_prompt", "auth", "effort", "name",
     })
-    # The same, but only in their bare listing form: given an argument these
-    # switch model or persona, or load a skill into the running conversation.
+    # The same, but only in their bare inspection/listing form: given an
+    # argument these mutate state used or persisted by the running round.
     INSTANT_LISTING_COMMANDS = frozenset({"model", "persona", "skills"})
 
     def is_instant_command(self, raw: str) -> bool:
@@ -110,10 +110,10 @@ class AgentCommandsMixin:
             self._cmd_usage()
         elif cmd == "ps":
             self._cmd_ps(raw)
-        elif cmd == "clear":
-            self._cmd_clear()
         elif cmd == "resume":
             self._cmd_resume(raw)
+        elif cmd == "name":
+            self._cmd_name(raw)
         elif cmd == "model":
             self._cmd_model(raw)
         elif cmd == "login":
@@ -153,6 +153,8 @@ class AgentCommandsMixin:
             self._slash_commands.update(commands)
         else:
             self._slash_commands = commands
+        if self.events is not None:
+            self.events.publish("commands", commands=commands)
 
     def _cmd_help(self):
         width = max(len(name) for name in self.COMMAND_HELP) + 1  # +1 for the slash
@@ -460,9 +462,6 @@ class AgentCommandsMixin:
                 for n, c in sorted(skill_loads.items(), key=lambda kv: (-kv[1], kv[0]))
             )
             self.console.print(f"  Skills loaded  : {summary}")
-
-    def _cmd_clear(self):
-        self._restart_session()
 
     def _cmd_persona(self, raw: str = "/persona"):
         """List personas, or switch to one (switching restarts the conversation).

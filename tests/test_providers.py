@@ -46,18 +46,51 @@ class _Client:
 def test_reasoning_effort_maps_provider_specific_max_levels():
     assert reasoning_kwargs("openai", "max") == {"reasoning_effort": "xhigh"}
     assert reasoning_kwargs("anthropic", "max") == {
-        "reasoning_effort": "max",
-        "extra_body": {
-            "thinking": {"type": "adaptive"},
-            "output_config": {"effort": "max"},
-        },
+        "extra_body": {"output_config": {"effort": "max"}},
     }
     assert reasoning_kwargs("anthropic", "xhigh") == {
+        "extra_body": {"output_config": {"effort": "max"}},
+    }
+
+
+def test_reasoning_effort_preserves_openai_and_deepseek_mappings():
+    assert reasoning_kwargs("openai", "none") == {"reasoning_effort": "none"}
+    assert reasoning_kwargs("openai", "high") == {"reasoning_effort": "high"}
+    assert reasoning_kwargs("openai", "max") == {"reasoning_effort": "xhigh"}
+    assert reasoning_kwargs("deepseek", "none") == {
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+    assert reasoning_kwargs("deepseek", "low") == {
+        "reasoning_effort": "high",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+    assert reasoning_kwargs("deepseek", "max") == {
         "reasoning_effort": "max",
-        "extra_body": {
-            "thinking": {"type": "adaptive"},
-            "output_config": {"effort": "max"},
-        },
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+
+def test_openai_provider_uses_only_native_effort_for_anthropic(monkeypatch):
+    response = NS(
+        choices=[NS(message=_message(), finish_reason="stop")],
+        usage=_usage(),
+    )
+    client = _Client(response)
+    provider = OpenAICompatibleProvider(
+        ProviderSettings(api_key="key", base_url="url", reasoning_style="anthropic")
+    )
+    monkeypatch.setattr(provider, "_new_client", lambda: client)
+
+    provider.complete(CompletionRequest(
+        model="claude-test",
+        messages=[{"role": "user", "content": "hello"}],
+        stream=False,
+        reasoning_effort="high",
+    ))
+
+    assert "reasoning_effort" not in client.kwargs
+    assert client.kwargs["extra_body"] == {
+        "output_config": {"effort": "high"},
     }
 
 

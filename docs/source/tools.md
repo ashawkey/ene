@@ -30,7 +30,7 @@ persona's tool policy; `/ps` and live status remain available to the UI.
 
 While any jobs are active, the terminal and Web UI show `N/T running processes`, where `N` is running jobs and `T` is all jobs started in the current session. The indicator disappears when none are running. Use `/ps` to list jobs and `/ps <process-id>` (or its supervisor PID) for details and recent output. Combined output is stored in `.ene/processes/<process-id>.log`.
 
-Processes are session-scoped and are terminated on `/clear`, session switch, and exit. The bundled `monitor` skill adds an active-monitoring workflow. For periodic monitoring, call the core `wait` tool first and put the inspection or status calls after it in the same sequential tool-call batch; do not group the wait and checks in parallel.
+Processes are live-session-scoped. They survive terminal detach and session switching, but are terminated on explicit exit or `ene kill`. The bundled `monitor` skill adds an active-monitoring workflow. For periodic monitoring, call the core `wait` tool first and put the inspection or status calls after it in the same sequential tool-call batch; do not group the wait and checks in parallel.
 
 ## Skill-provided tools
 

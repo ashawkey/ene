@@ -17,6 +17,21 @@ def test_thinking_indicator_can_render_a_countdown():
     assert "Waiting... (1m 00s)" in status
 
 
+def test_thinking_indicator_resumes_remote_elapsed_time(monkeypatch):
+    times = iter([110.0, 210.0])
+    monkeypatch.setattr("ene.ui.time.monotonic", lambda: next(times))
+    indicator = ThinkingIndicator(
+        Console(file=io.StringIO(), no_color=True),
+        initial_elapsed=10,
+        render_terminal=False,
+    )
+
+    indicator.__enter__()
+    assert indicator._start_time == 100.0
+    assert indicator._label_plain(10) == "Working... (10s)"
+    indicator.__exit__(None, None, None)
+
+
 def test_thinking_indicator_shows_frozen_accumulated_round_time():
     output = io.StringIO()
     console = Console(file=output, width=80, no_color=True)
@@ -292,6 +307,35 @@ def test_console_stream_output_writes_raw_block_and_emits_event():
     evs = events.after(0)
     assert evs and evs[-1].type == "output"
     assert evs[-1].data["text"] == "a\n[/bad] [dim] tag\n\x1b[31mred\x1b[0m"
+
+
+def test_headless_console_suppression_hides_events_and_nested_indicators():
+    from ene.utils.io import EventHub
+
+    events = EventHub()
+    console = AgentConsole(events=events, render_terminal=False)
+
+    with console.suppressed():
+        console.system("hidden system")
+        console.tool_result("hidden tool result")
+        console.response("hidden assistant")
+        with console.thinking():
+            pass
+        with console.stream_response() as stream:
+            stream.on_content("hidden stream")
+        console.stream_output("hidden output")
+
+    assert events.snapshot() == []
+
+    with console.suppressed():
+        with console.visible():
+            console.system("visible system")
+            with console.thinking():
+                pass
+
+    assert [event.type for event in events.snapshot()] == [
+        "system", "thinking_start", "thinking_stop",
+    ]
 
 
 def test_console_stream_output_is_plain_when_not_ansi():

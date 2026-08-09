@@ -9,6 +9,28 @@ from pathlib import Path
 from typing import Any
 
 
+def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    """Durably replace a JSON object without exposing a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    fd, staging_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staging = Path(staging_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(staging, path)
+        if os.name == "posix":
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
 def write_immutable(path: Path, data: bytes) -> None:
     """Durably create a content-addressed object if it is not already present."""
     if path.exists():

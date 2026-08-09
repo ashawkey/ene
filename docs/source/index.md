@@ -66,7 +66,7 @@ Choose one of the offered browser, manual-redirect, or device-code flows. OAuth 
 List resolved aliases, providers, context windows, and reasoning settings:
 
 ```bash
-ene list
+ene models
 ```
 
 When `--model` is omitted, the first configured entry is used.
@@ -104,6 +104,10 @@ Prefix a shell command with `!` to run it directly without asking the model:
 Tool calls execute automatically. Ene has the same permissions as the shell user and is not a security boundary. Use an OS-level sandbox or container when commands must be constrained.
 
 See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
+
+## Persistent live sessions
+
+Interactive sessions run in detached workers and survive closing the terminal or shell. Name one with `ene --name api-refactor`, detach without interruption using `/detach` or Ctrl+D, rename it later with `/name api-refactor`, list workers with `ene ls`, reattach with `ene attach api-refactor` (or choose with bare `ene attach`), switch sessions using `/switch` or Ctrl+S, and terminate one with `ene kill api-refactor`. `/resume` shows saved names and activates the selected stopped conversation in the current live worker. Resume, attach, and switch consistently replay the latest 10 user turns as prompts and final assistant responses, omitting historical tool activity and warnings. Cancelling the switch picker leaves the current attachment and its work untouched. Double Ctrl+C at an idle prompt and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
 
 ## Resume a session
 

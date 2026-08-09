@@ -56,20 +56,14 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
         # OpenAI's highest reasoning level is named xhigh.
         return {"reasoning_effort": "xhigh" if effort == "max" else effort}
     if style == "anthropic":
-        # OpenAI-compatible Anthropic gateways commonly consume both the generic
-        # effort field and the native adaptive-thinking controls.
         if effort == "none":
             return {"extra_body": {"thinking": {"type": "disabled"}}}
-        # Anthropic has no minimal level. Its broadly supported top level is max;
-        # newer models may also name an intermediate extended level xhigh.
+        # Adaptive-thinking models use adaptive mode by default. Omitting the
+        # explicit thinking field also avoids OpenAI-compatible gateways that
+        # incorrectly translate it back to the unsupported legacy "enabled"
+        # mode. Anthropic has no minimal level, and names its top level max.
         mapped = {"minimal": "low", "xhigh": "max"}.get(effort, effort)
-        return {
-            "reasoning_effort": mapped,
-            "extra_body": {
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": mapped},
-            },
-        }
+        return {"extra_body": {"output_config": {"effort": mapped}}}
     if style == "gemini":
         # Gemini 3 uses qualitative thinking levels; it has no xhigh/max level.
         mapped = {"none": "minimal", "xhigh": "high", "max": "high"}.get(effort, effort)

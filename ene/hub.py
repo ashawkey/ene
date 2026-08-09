@@ -158,7 +158,7 @@ class RemoteSession:
             pass
         return self.events.after(after_seq)
 
-    def ingest(self, event: dict) -> None:
+    def ingest(self, event: dict) -> bool:
         """Consume one agent event: update derived state and re-publish it."""
         etype = event.get("type", "")
         data = event.get("data", {}) or {}
@@ -190,13 +190,22 @@ class RemoteSession:
         elif etype == "process_status":
             text = data.get("text", "")
             self.process_status = text if isinstance(text, str) else ""
+        elif etype == "session_meta":
+            name = data.get("name")
+            title = data.get("title")
+            if isinstance(name, str):
+                self.meta["name"] = name
+            if isinstance(title, str):
+                self.meta["title"] = title
         self.events.publish(etype, **data)
         self.touch()
+        return etype == "session_meta"
 
     def summary(self) -> dict:
         return {
             "id": self.id,
             "title": self.meta.get("title", self.id),
+            "name": self.meta.get("name", ""),
             "cwd": self.meta.get("cwd", ""),
             "model": self.meta.get("model", ""),
             "host": self.meta.get("host", ""),
@@ -589,7 +598,8 @@ class Hub:
             if message.get("type") == "event":
                 event = message.get("event")
                 if isinstance(event, dict):
-                    session.ingest(event)
+                    if session.ingest(event):
+                        self._notify_control()
 
     # -- browser: control channel (session list) ---------------------------
 

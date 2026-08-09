@@ -199,7 +199,9 @@ class ProcessManagerMixin:
             elif sys.platform.startswith("linux"):
                 job_handle = None
                 supervisor = Path(__file__).parent / "process_supervisor.py"
-                shell_cmd = [sys.executable, str(supervisor), command]
+                shell_cmd = [
+                    sys.executable, str(supervisor), str(os.getpid()), command
+                ]
                 proc = subprocess.Popen(
                     shell_cmd,
                     stdin=subprocess.DEVNULL,

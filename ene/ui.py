@@ -176,6 +176,7 @@ class ThinkingIndicator:
         progress: bool = False,
         countdown: float | None = None,
         round_elapsed: float | None = None,
+        initial_elapsed: float = 0.0,
         render_terminal: bool = True,
         status_sink: Callable[[list[tuple[str, str]] | None], None] | None = None,
         indicator_stack: list["ThinkingIndicator"] | None = None,
@@ -188,6 +189,7 @@ class ThinkingIndicator:
         self._progress = progress
         self._countdown = countdown
         self._round_elapsed = round_elapsed
+        self._initial_elapsed = initial_elapsed
         self._render_terminal = render_terminal
         self._status_sink = status_sink
         self._status: Status | None = None
@@ -199,11 +201,11 @@ class ThinkingIndicator:
         self._indicator_lock = indicator_lock
 
     def __enter__(self) -> "ThinkingIndicator":
-        self._start_time = time.monotonic()
+        self._start_time = time.monotonic() - self._initial_elapsed
         self._started_at = time.time()
         self._running = True
         if self._indicator_stack is None:
-            self._start_visual(0.0)
+            self._start_visual(self._initial_elapsed)
             self._publish_start()
         else:
             assert self._indicator_lock is not None
@@ -211,7 +213,7 @@ class ThinkingIndicator:
                 if self._indicator_stack:
                     self._indicator_stack[-1]._stop_visual(clear_sink=False)
                 self._indicator_stack.append(self)
-                self._start_visual(0.0)
+                self._start_visual(self._initial_elapsed)
                 self._publish_start()
         if self._status_sink is not None or self._render_terminal:
             self._thread = threading.Thread(target=self._tick, daemon=True)
@@ -748,8 +750,10 @@ class ResponseStream:
 class AgentConsole:
     """Thin wrapper around ``rich.Console`` with typed convenience methods."""
 
-    def __init__(self, events: EventHub | None = None):
+    def __init__(self, events: EventHub | None = None, *, render_terminal: bool = True):
         self._console = Console(theme=AGENT_THEME)
+        self.render_terminal = render_terminal
+        self._console.quiet = not render_terminal
         self.events = events
         self.prompt_broker: PromptBroker | None = None
         self.interactive_input = False
@@ -794,7 +798,7 @@ class AgentConsole:
         finally:
             self._quiet_depth -= 1
             if self._quiet_depth == 0:
-                self._console.quiet = False
+                self._console.quiet = not self.render_terminal
 
     @contextmanager
     def visible(self) -> Iterator[None]:
@@ -850,6 +854,8 @@ class AgentConsole:
         label: str = "Working",
         progress: bool = False,
         countdown: float | None = None,
+        initial_elapsed: float = 0.0,
+        round_elapsed: float | None = None,
     ) -> ThinkingIndicator:
         """Return a context manager that displays an animated thinking indicator.
 
@@ -871,7 +877,8 @@ class AgentConsole:
                 None,
                 status_suffix=status_suffix,
                 label=label,
-                round_elapsed=self._round_elapsed(),
+                round_elapsed=self._round_elapsed() if round_elapsed is None else round_elapsed,
+                initial_elapsed=initial_elapsed,
                 render_terminal=False,
             )
         return ThinkingIndicator(
@@ -881,8 +888,9 @@ class AgentConsole:
             label=label,
             progress=progress,
             countdown=countdown,
-            round_elapsed=self._round_elapsed(),
-            render_terminal=not self.interactive_input,
+            round_elapsed=self._round_elapsed() if round_elapsed is None else round_elapsed,
+            initial_elapsed=initial_elapsed,
+            render_terminal=self.render_terminal and not self.interactive_input,
             status_sink=self.status_sink if self.interactive_input else None,
             indicator_stack=self._indicator_stack,
             indicator_lock=self._indicator_lock,
@@ -898,14 +906,15 @@ class AgentConsole:
         """
         return ResponseStream(
             self._console,
-            None if self.quiet else self.events,
+            self.events if not self.quiet else None,
             show_thinking=show_thinking,
         )
 
     # -- raw pass-through (for rich markup, tables, etc.) -------------------
 
     def print(self, *args, **kwargs):
-        self._console.print(*args, **kwargs)
+        if self.render_terminal:
+            self._console.print(*args, **kwargs)
         if args and self.events is not None:
             self._emit(
                 "output",
@@ -922,7 +931,8 @@ class AgentConsole:
             self._console.print(*args, **kwargs)
 
     def table(self, table: Table):
-        self._console.print(table)
+        if self.render_terminal:
+            self._console.print(table)
         if self.events is not None:
             self._emit("output", text=self._render_plain(table))
 
@@ -939,13 +949,14 @@ class AgentConsole:
         if not text or self.quiet:
             return
         console = self._console
-        if dim and console.is_terminal and console.color_system not in (None, "windows"):
-            console.file.write(f"\x1b[2m{text}\x1b[22m")
-        else:
-            console.file.write(text)
-        if not text.endswith("\n"):
-            console.file.write("\n")
-        console.file.flush()
+        if self.render_terminal:
+            if dim and console.is_terminal and console.color_system not in (None, "windows"):
+                console.file.write(f"\x1b[2m{text}\x1b[22m")
+            else:
+                console.file.write(text)
+            if not text.endswith("\n"):
+                console.file.write("\n")
+            console.file.flush()
         if self.events is not None:
             self._emit("output", text=text.rstrip("\n"))
 
@@ -1008,12 +1019,13 @@ class AgentConsole:
         ], show_logo=False)
 
     def rule(self):
-        self._console.rule(style="dim color(240)")
+        if self.render_terminal:
+            self._console.rule(style="dim color(240)")
         self._emit("rule")
 
     def reset_timeline(self):
         """Clear rendered history before replaying authoritative context."""
-        if self._console.is_terminal:
+        if self.render_terminal and self._console.is_terminal:
             if self.timeline_reset_sink is not None:
                 self.timeline_reset_sink()
             else:
@@ -1024,6 +1036,8 @@ class AgentConsole:
 
     def _block(self, msg: str, style: str, *, prefix: str, markup: bool = False):
         """Print a block: first line with *prefix*, continuation lines indented."""
+        if not self.render_terminal:
+            return
         lines = msg.splitlines()
         indent = " " * len(prefix)
         if not lines:
@@ -1306,6 +1320,7 @@ class AgentConsole:
         *,
         source: str = "replay",
         submission_id: str | None = None,
+        steer: bool = False,
         with_rule: bool = True,
     ):
         """Print user input with a horizontal rule for visual separation.
@@ -1328,6 +1343,8 @@ class AgentConsole:
         data = {"text": msg, "source": source}
         if submission_id is not None:
             data["submission_id"] = submission_id
+        if steer:
+            data["steer"] = True
         self._emit("user_message", **data)
 
     # -- interactive prompts ------------------------------------------------

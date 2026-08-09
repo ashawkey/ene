@@ -4,6 +4,7 @@ import base64
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -691,6 +692,26 @@ def test_inspect_processes_no_longer_accepts_wait(tmp_path):
     assert "unexpected keyword argument 'wait'" in result["error"]
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux supervisor")
+def test_process_supervisor_rejects_stale_owner_before_starting_command(tmp_path):
+    marker = tmp_path / "started"
+    supervisor = Path(tools.__file__).parent / "process_supervisor.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(supervisor),
+            "999999999",
+            f"touch {shlex.quote(str(marker))}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
+
+
 def test_wait_processes_returns_when_any_selected_process_exits(tmp_path):
     te = _executor_with_monitor(tmp_path)
     fast = te.execute(
@@ -925,6 +946,29 @@ def test_managed_background_process_lifecycle(tmp_path):
         assert stopped["success"]
         assert stopped["status"] == "exited"
         assert stopped["exit_code"] is not None
+    finally:
+        te.shutdown_processes()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process semantics")
+def test_managed_background_process_survives_spawning_thread_exit(tmp_path):
+    te = _executor_with_monitor(tmp_path)
+    started = []
+
+    def spawn():
+        started.append(te.execute(
+            "start_process",
+            {"command": "python -c 'import time; time.sleep(30)'"},
+        ))
+
+    thread = threading.Thread(target=spawn)
+    thread.start()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    try:
+        time.sleep(0.2)
+        process = te.inspect_processes(started[0]["process_id"])["processes"][0]
+        assert process["status"] == "running"
     finally:
         te.shutdown_processes()
 

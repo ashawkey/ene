@@ -66,6 +66,9 @@ class IsolatedTurnMixin:
         skill_state = self.tool_executor.skill_state()
         outer_interrupted = self._last_interrupted
         outer_interrupt_reverts_prompt = self._interrupt_reverts_prompt
+        outer_failure_reverts_prompt = getattr(
+            self, "_failure_reverts_prompt", False
+        )
         outer_finish_reason = self._last_finish_reason
         outer_turn_outcome = self._last_turn_outcome
 
@@ -104,4 +107,5 @@ class IsolatedTurnMixin:
             self._last_interrupted = outer_interrupted
             self._last_turn_outcome = outer_turn_outcome
             self._interrupt_reverts_prompt = outer_interrupt_reverts_prompt
+            self._failure_reverts_prompt = outer_failure_reverts_prompt
             self._last_finish_reason = outer_finish_reason

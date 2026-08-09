@@ -107,6 +107,15 @@ class EventHub:
         self._events: deque[AgentEvent] = deque(maxlen=max_events)
         self._cond = threading.Condition()
         self._seq = 0
+        self._listeners: set[Callable[[AgentEvent], None]] = set()
+
+    def add_listener(self, listener: Callable[[AgentEvent], None]) -> None:
+        with self._cond:
+            self._listeners.add(listener)
+
+    def remove_listener(self, listener: Callable[[AgentEvent], None]) -> None:
+        with self._cond:
+            self._listeners.discard(listener)
 
     def publish(self, event_type: str, **data: Any) -> AgentEvent:
         data = sanitize_unicode(data)
@@ -119,7 +128,22 @@ class EventHub:
             event = AgentEvent(self._seq, event_type, data, time.time())
             self._events.append(event)
             self._cond.notify_all()
+            # Keep delivery serialized with sequence assignment. Attach
+            # forwarders use sequence numbers for replay de-duplication, so a
+            # later event must never reach them before an earlier one.
+            for listener in tuple(self._listeners):
+                try:
+                    listener(event)
+                except Exception:
+                    # Event observers are best-effort side channels. A broken
+                    # journal, client, or status sink must not abort agent work.
+                    continue
             return event
+
+    def snapshot(self) -> list[AgentEvent]:
+        """Return the currently retained bounded event history."""
+        with self._cond:
+            return list(self._events)
 
     def after(self, seq: int) -> list[AgentEvent]:
         with self._cond:

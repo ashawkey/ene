@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -66,6 +67,81 @@ def test_revisions_are_delta_encoded_but_materialize_in_full(tmp_path: Path):
     assert data["messages"] == messages
     assert data["system_prompt"] == system and data["round_id"] == 20
     assert fresh.revisions == store.revisions
+
+
+def test_commit_writes_picker_metadata_and_loads_it_without_history_parse(
+    tmp_path: Path, monkeypatch
+):
+    store = SessionStore(tmp_path, "session")
+    revision, _, _ = store.commit(
+        {
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "done"},
+                {"role": "user", "content": "latest\nrequest"},
+            ],
+            "round_id": 2,
+        },
+        parent_id=None,
+        code_parent_id=None,
+        changes=[],
+        reason="round",
+        session_name="useful work",
+    )
+
+    monkeypatch.setattr(SessionStore, "_load", lambda self: pytest.fail("history was parsed"))
+    summary = SessionStore.load_summary(tmp_path, "session")
+
+    assert summary["head_revision_id"] == revision
+    assert summary["session_name"] == "useful work"
+    assert summary["message_count"] == 3
+    assert summary["round_id"] == 2
+    assert summary["last_user_message"] == "latest request"
+
+
+def test_missing_or_stale_picker_metadata_is_rebuilt(tmp_path: Path):
+    store = SessionStore(tmp_path, "session")
+    revision, _, _ = store.commit(
+        _state(1, "saved"), parent_id=None, code_parent_id=None, changes=[], reason="round"
+    )
+    store.meta_path.unlink()
+
+    rebuilt = SessionStore.load_summary(tmp_path, "session")
+
+    assert rebuilt["head_revision_id"] == revision
+    assert store.meta_path.exists()
+    assert json.loads(store.meta_path.read_text())["last_user_message"] == "saved"
+
+
+def test_rename_updates_metadata_without_adding_history_revision(tmp_path: Path):
+    store = SessionStore(tmp_path, "session")
+    revision, _, _ = store.commit(
+        _state(1, "saved"), parent_id=None, code_parent_id=None, changes=[], reason="round"
+    )
+    revision_count = len(store.revisions)
+
+    store.rename("new name")
+
+    assert len(store.revisions) == revision_count
+    assert store.head_id == revision
+    assert SessionStore.load_summary(tmp_path, "session")["session_name"] == "new name"
+
+
+def test_renamed_metadata_survives_later_commits_and_checkout(tmp_path: Path):
+    store = SessionStore(tmp_path, "session")
+    root, _, _ = store.commit(
+        _state(1, "root"), parent_id=None, code_parent_id=None, changes=[], reason="round"
+    )
+    store.rename("new name")
+    tip, _, _ = store.commit(
+        _state(2, "tip"), parent_id=root, code_parent_id=None, changes=[], reason="round"
+    )
+    store.checkout(root)
+
+    summary = SessionStore.load_summary(tmp_path, "session")
+    assert summary["head_revision_id"] == root
+    assert summary["session_name"] == "new name"
+    assert tip in store.revisions
 
 
 def test_revision_state_is_snapshotted_not_aliased(tmp_path: Path):

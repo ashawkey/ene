@@ -4,10 +4,12 @@ import asyncio
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from types import SimpleNamespace as NS
 
 import pytest
+from prompt_toolkit.validation import ValidationError
 
 import ene.backend as backend
 from ene.backend import LLMAgent, _is_fatal_api_error
@@ -15,7 +17,74 @@ from ene.backend.commands import AgentCommandsMixin
 from ene.context import CompactionState, ContextManager
 from ene.providers import CompletionResult, ProviderError, ProviderUsage
 from ene.utils.interrupt import RequestInterrupted
+from ene.terminal import MessageValidator
 from ene.utils.io import EventHub, InputBroker, UserSubmission
+
+
+def test_reserve_session_id_is_atomic_across_agents(tmp_path):
+    barrier = threading.Barrier(2)
+
+    def reserve():
+        agent = LLMAgent.__new__(LLMAgent)
+        agent._session_id = None
+        agent._session_timestamp = lambda: "20250102_030405"
+        agent._sessions_dir = lambda: tmp_path / "sessions"
+        (tmp_path / "sessions").mkdir(exist_ok=True)
+        barrier.wait()
+        return agent._reserve_session_id()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ids = list(executor.map(lambda _: reserve(), range(2)))
+
+    assert set(ids) == {"20250102_030405", "20250102_030405_2"}
+    assert all((tmp_path / "sessions" / session_id).is_dir() for session_id in ids)
+
+
+def test_initialize_chat_session_prunes_old_tool_result_artifacts(tmp_path):
+    root = tmp_path / ".ene" / "tool-results"
+    (root / "live").mkdir(parents=True)
+    for index in range(21):
+        (root / f"old-{index}").mkdir()
+
+    agent = LLMAgent.__new__(LLMAgent)
+    agent._session_id = None
+    agent._session_store = NS(session_id="live", head_id="revision", exists=True)
+    agent._session_revision_id = "revision"
+    agent.changes = NS(session_id="live")
+    agent.work_dir = str(tmp_path)
+    agent.verbose = False
+    agent.console = NS(warn=lambda _message: None, debug=lambda _message: None)
+
+    agent._initialize_chat_session("live")
+
+    assert (root / "live").is_dir()
+    assert len([path for path in root.iterdir() if path.name != "live"]) == 20
+
+
+def test_headless_agent_routes_console_prompts_through_broker(monkeypatch, tmp_path):
+    from ene.ui import AgentConsole
+    from ene.utils.io import PromptBroker
+
+    events = EventHub()
+    prompts = PromptBroker(events)
+    console = AgentConsole(events=events, render_terminal=False)
+    monkeypatch.setattr(backend, "create_provider", lambda *_args, **_kwargs: NS(close=lambda: None))
+
+    agent = LLMAgent(
+        model="test-model",
+        api_key="",
+        base_url="",
+        provider_name="openai",
+        console=console,
+        events=events,
+        prompt_broker=prompts,
+        terminal_prompts=False,
+        work_dir=str(tmp_path),
+    )
+    try:
+        assert console.prompt_broker is prompts
+    finally:
+        agent.close()
 
 
 def test_close_releases_resources_once():
@@ -118,13 +187,15 @@ def test_oauth_commands_use_current_provider():
         ("/context", True),
         ("/effort", True),
         ("/effort max", True),
+        ("/name", True),
+        ("/name webui", True),
         ("/wait 1h later", False),
         ("/model", True),        # bare form only lists
         ("/model gpt-5", False),  # switching swaps the provider mid-round
         ("/skills", True),
         ("/skills reload", False),
         ("/persona reload", False),
-        ("/clear", False),
+        ("/new", True),
         ("/compact", False),
         ("/recap", False),
         ("/export response.md", False),
@@ -628,7 +699,7 @@ def test_instant_command_runs_while_a_round_is_in_flight():
     assert broker.submission is None
 
 
-@pytest.mark.parametrize("query", ["/clear", "/wait 1h later", "steer the agent", "!git status"])
+@pytest.mark.parametrize("query", ["/wait 1h later", "steer the agent", "!git status"])
 def test_non_instant_input_stays_queued_while_busy(query):
     broker = InputBroker(EventHub())
     submission = broker.submit(query)
@@ -675,6 +746,14 @@ class _ScriptedTerminal:
 
     def set_status(self, status) -> None:
         pass
+
+
+def test_message_validator_allows_instant_command_with_pending_input():
+    validator = MessageValidator(lambda: True, lambda text: text == "/context")
+
+    validator.validate(NS(text="/context"))
+    with pytest.raises(ValidationError, match="already pending"):
+        validator.validate(NS(text="follow up"))
 
 
 def test_terminal_loop_answers_a_command_without_waiting_for_the_round(monkeypatch):
@@ -725,14 +804,14 @@ def test_terminal_loop_answers_a_command_without_waiting_for_the_round(monkeypat
     assert _wait_until(lambda: dispatched == ["/usage"])
     assert not release_round.is_set()
 
-    # A command that touches the conversation queues instead.
-    terminal.lines.put("/clear")
-    assert _wait_until(lambda: broker.submission is not None)
-    assert broker.submission.text == "/clear"
-    assert dispatched == ["/usage"]
+    # A second instant command bypasses the occupied pending slot.
+    queued = broker.submit("steer later")
+    terminal.lines.put("/context")
+    assert _wait_until(lambda: dispatched == ["/usage", "/context"])
+    assert broker.submission == queued
 
     release_round.set()
-    assert _wait_until(lambda: dispatched == ["/usage", "/clear"])
+    assert _wait_until(lambda: broker.submission is None)
 
     terminal.lines.put("exit")
     loop.join(timeout=5)
@@ -815,6 +894,23 @@ def _skill_invocation_agent(tmp_path, name="general-skill"):
     agent.save_session = lambda *a, **k: None
     agent.get_response = lambda: None
     return agent, body
+
+
+@pytest.mark.parametrize("query", ["/resume", "/resume saved-session", "/rewind"])
+def test_web_cannot_resume_or_rewind(query, tmp_path):
+    agent, _ = _skill_invocation_agent(tmp_path)
+    warnings = []
+    dispatched = []
+    agent.console.warn = warnings.append
+    agent._run_command = dispatched.append
+
+    assert agent._process_query(UserSubmission(query, "web", "s1")) is False
+
+    command = query.split()[0]
+    assert warnings == [f"{command} is only available from an attached terminal."]
+    assert dispatched == []
+    assert agent.context.messages == []
+    assert agent.round_id == 0
 
 
 def test_explicit_skill_invocation_without_task_asks_model_not_to_infer(tmp_path):
@@ -967,6 +1063,70 @@ def test_cancelled_initial_request_restores_context_and_message_draft():
     assert [event.data["text"] for event in draft_events] == ["u2 @config.py"]
 
 
+def test_failed_initial_request_restores_context_and_message_draft():
+    context = ContextManager("system")
+    context.add({"role": "user", "content": "u1"})
+    context.add({"role": "assistant", "content": "a1"})
+    messages_before = list(context.messages)
+    state_before = CompactionState(original_request="u1")
+    context.compaction_state = state_before
+
+    events = EventHub()
+    resets = []
+    systems = []
+    errors = []
+    saved = []
+    console = NS(
+        rule=lambda: None,
+        user_input=lambda *args, **kwargs: None,
+        response=lambda *args, **kwargs: None,
+        system=lambda text, **kwargs: systems.append(text),
+        error=lambda text, **kwargs: errors.append(text),
+        warn=lambda *args, **kwargs: None,
+        reset_timeline=lambda: resets.append(True),
+    )
+
+    agent = object.__new__(LLMAgent)
+    agent.context = context
+    agent.events = events
+    agent.console = console
+    agent.round_id = 1
+    agent._session_id = "test"
+    agent._session_revision_id = "before-round"
+    agent._compaction_floor_tokens = 123
+    agent._pending_images = []
+    agent._last_interrupted = False
+    agent.verbose = False
+    agent.tool_executor = NS()
+    agent._operation = lambda _label: nullcontext()
+    agent.save_session = lambda *args, **kwargs: saved.append(
+        (list(context.messages), agent.round_id, agent._session_revision_id, kwargs)
+    )
+
+    def fail_after_context_management():
+        context.replace_messages([{"role": "user", "content": "compacted u2"}])
+        context.compaction_state = CompactionState(original_request="u2")
+        agent._session_revision_id = "failed-round-snapshot"
+        agent._compaction_floor_tokens = 999
+        raise RuntimeError("bad request")
+
+    agent.call_api = fail_after_context_management
+    agent._process_query(UserSubmission("u2 @config.py", "web", "submission-2"))
+
+    assert context.messages == messages_before
+    assert context.compaction_state == state_before
+    assert agent.round_id == 1
+    assert agent._session_revision_id == "before-round"
+    assert agent._compaction_floor_tokens == 123
+    assert agent._rewind_draft == "u2 @config.py"
+    assert resets == [True]
+    assert errors == ["API call failed: bad request", "API call failed: bad request"]
+    assert systems[-1] == "Turn failed. Message restored to the editor."
+    assert saved == [(messages_before, 1, "before-round", {"reason": "round"})]
+    draft_events = [event for event in events.after(0) if event.type == "draft_set"]
+    assert [event.data["text"] for event in draft_events] == ["u2 @config.py"]
+
+
 def test_cancelled_exec_preserves_its_partial_result_in_round_context(tmp_path):
     context = ContextManager("system")
     context.add({"role": "user", "content": "u1"})
@@ -1074,6 +1234,29 @@ def _continue_agent(messages):
     agent._session_id = "test"
     agent.save_session = lambda *args, **kwargs: saved.append((args, kwargs))
     return agent, warnings, calls, saved
+
+
+def test_name_command_shows_sets_and_persists_name():
+    messages = []
+    saved = []
+    changed = []
+    agent = object.__new__(LLMAgent)
+    agent.console = NS(system=messages.append, error=messages.append)
+    agent.session_name = ""
+    agent._session_id = "conversation"
+    agent._session_name_changed = lambda name: changed.append(name) or name.strip()
+    agent._session_store = NS(
+        session_id="conversation",
+        rename=lambda name: saved.append(name),
+    )
+
+    agent._cmd_name("/name")
+    agent._cmd_name("/name useful work")
+
+    assert messages == ["This session is unnamed.", "Session named 'useful work'."]
+    assert agent.session_name == "useful work"
+    assert changed == ["useful work"]
+    assert saved == ["useful work"]
 
 
 def test_continue_resumes_after_tool_result_without_adding_user_message():

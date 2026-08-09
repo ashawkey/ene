@@ -2,7 +2,7 @@
 
 Usage:
     ene [chat] [--model MODEL] [--verbose] [--resume [SESSION_ID]]
-    ene {list,status,clean,hub,update,lib} ...
+    ene {models,list,ls,l,attach,a,kill,k,status,clean,hub,update,lib} ...
 """
 
 import argparse
@@ -22,7 +22,7 @@ from urllib.request import url2pathname
 from rich.table import Table
 
 from ene.backend import LLMAgent
-from ene.backend.sessions import _session_choice_labels, _session_preview
+from ene.backend.sessions import _session_choice_labels
 from ene.config import CONFIG_PATH, conf
 from ene.hub import discover_hub
 from ene.hubclient import HubClient
@@ -47,6 +47,7 @@ class Args:
     reasoning_effort: ReasoningEffort | None = None  # defaults to model config, then high
 
     resume: str | None = None  # --resume [session_id]
+    name: str = ""
     web_port: int = 8765
 
 
@@ -185,18 +186,19 @@ def _pick_session(console: AgentConsole) -> str | None:
     for path in files:
         name = path.name
         try:
-            meta = SessionStore(sessions_dir, name).summary()
+            meta = SessionStore.load_summary(sessions_dir, name)
+            display_name = f"{meta['session_name']} ({name})" if meta.get("session_name") else name
             row = (
-                name,
+                display_name,
                 meta["message_count"],
                 meta["round_id"],
-                _session_preview(meta["messages"]),
+                meta["last_user_message"],
             )
         except Exception:
             row = (name, "?", "?", "unreadable")
         rows.append(row)
 
-    entries = [row[0] for row in rows]
+    entries = [path.name for path in files]
     choice_labels = _session_choice_labels(rows, max(1, console.width - 4))
     picked = console.select(
         message="Pick a session to resume",
@@ -217,7 +219,7 @@ def _pick_session(console: AgentConsole) -> str | None:
 # Commands
 # ---------------------------------------------------------------------------
 
-def cmd_list():
+def cmd_models():
     console = AgentConsole()
     openai_conf = conf.get("openai", {})
 
@@ -410,31 +412,174 @@ def cmd_hub(args: Args):
         console.system("Hub stopped.")
 
 
-def cmd_chat(args: Args):
-    agent, hub_client = get_agent(args)
-    if not agent:
-        return
+def _pick_live_record(
+    console: AgentConsole,
+    *,
+    exclude: str = "",
+    allow_cancel: bool = False,
+    current_record: dict | None = None,
+) -> dict | None:
+    from ene.live import list_records
 
-    if hub_client is not None:
-        hub_client.start()
-        agent.console.system(
-            f"Linked to ene hub at {hub_client.host}:{hub_client.port} "
-            f"(session {hub_client.session_id[:8]})"
+    records = [
+        record for record in list_records()
+        if record.get("runtime_id") != exclude
+        and record.get("status", "ready") == "ready"
+        and not record.get("attached")
+    ]
+    if not records:
+        console.system("No detached live sessions available.")
+        return None
+    choices = [
+        f"{record.get('name') or str(record['runtime_id'])[:8]}  │  "
+        f"{'working' if record.get('busy') else 'done' if record.get('needs_attention', not record.get('busy')) else 'waiting'}  │  "
+        f"{record.get('workspace', '')}"
+        for record in records
+    ]
+    if current_record:
+        current_name = (
+            current_record.get("name")
+            or str(current_record.get("runtime_id", ""))[:8]
         )
+        current_status = (
+            "working" if current_record.get("busy")
+            else "done" if current_record.get(
+                "needs_attention", not current_record.get("busy")
+            )
+            else "waiting"
+        )
+        cancel_choice = (
+            f"Cancel (stay in {current_name})  │  {current_status}  │  "
+            f"{current_record.get('workspace', '')}"
+        )
+    else:
+        cancel_choice = "Cancel"
+    if allow_cancel:
+        choices.append(cancel_choice)
+    picked = console.select_terminal("Attach to a session", choices)
+    if picked is None or (allow_cancel and picked == cancel_choice):
+        return None
+    return records[choices.index(picked)]
+
+
+def _attach_live(record: dict) -> None:
+    from ene.live import start_session
+    from ene.live_terminal import LiveTerminal
+
+    switched = False
+    while record is not None:
+        def start_new(name: str) -> dict:
+            options = dict(record.get("options", {}))
+            options["resume"] = None
+            return start_session(
+                name=name, workspace=record["workspace"], options=options
+            )
+
+        terminal = LiveTerminal(
+            record,
+            switch_picker=lambda: _pick_live_record(
+                AgentConsole(),
+                exclude=str(record.get("runtime_id", "")),
+                allow_cancel=True,
+                current_record=record,
+            ),
+            new_session=start_new,
+        )
+        terminal.force_startup_panel = switched
+        action, name = terminal.run()
+        if action == "switch":
+            record = terminal.switch_record
+            switched = True
+        elif action == "new":
+            record = terminal.new_record
+            switched = False
+        else:
+            return
+
+
+def cmd_chat(args: Args):
+    from ene.live import LiveError, start_session
+
+    console = AgentConsole()
+    session_id: str | None = args.resume
+    if session_id == "":
+        session_id = _pick_session(console)
+        if session_id is None:
+            return
+    options = {
+        "model": args.model,
+        "persona": args.persona,
+        "verbose": args.verbose,
+        "stream": args.stream,
+        "reasoning_effort": args.reasoning_effort,
+        "resume": session_id,
+    }
+    try:
+        record = start_session(name=args.name, workspace=os.getcwd(), options=options)
+        _attach_live(record)
+    except LiveError as exc:
+        console.error(str(exc))
+
+
+def cmd_live_list() -> None:
+    from ene.live import list_records
+
+    console = AgentConsole()
+    records = list_records()
+    if not records:
+        console.system("No live sessions.")
+        return
+    table = Table(title="Live ene sessions")
+    table.add_column("Name", style="cyan")
+    table.add_column("ID", style="dim")
+    table.add_column("State")
+    table.add_column("Model")
+    table.add_column("Conversation", style="dim")
+    table.add_column("Workspace")
+    for record in records:
+        if record.get("status", "ready") != "ready":
+            state = str(record.get("status", "starting"))
+        elif record.get("attached"):
+            state = (
+                "attached · working"
+                if record.get("busy")
+                else "attached · waiting for prompt"
+            )
+        elif record.get("busy"):
+            state = "working"
+        elif record.get("needs_attention", True):
+            state = "done"
+        else:
+            state = "waiting"
+        table.add_row(
+            record.get("name") or "-", str(record.get("runtime_id", ""))[:8], state,
+            record.get("model") or "-", record.get("conversation_id") or "-",
+            record.get("workspace") or "-",
+        )
+    console.table(table)
+
+
+def cmd_attach(identifier: str | None) -> None:
+    from ene.live import LiveError, resolve
 
     try:
-        # Handle --resume
-        session_id: str | None = args.resume
-        if session_id == "":  # bare --resume → pick interactively
-            session_id = _pick_session(agent.console)
+        record = resolve(identifier) if identifier else _pick_live_record(AgentConsole())
+        if record is not None:
+            _attach_live(record)
+    except LiveError as exc:
+        AgentConsole().error(str(exc))
 
-        if session_id:
-            agent.load_session(session_id)
 
-        agent.chat_loop(resumed_session_id=session_id)
-    finally:
-        if hub_client is not None:
-            hub_client.stop()
+def cmd_kill(identifier: str) -> None:
+    from ene.live import LiveError, kill_session, resolve
+
+    console = AgentConsole()
+    try:
+        record = resolve(identifier)
+        kill_session(record)
+        console.system(f"Killed session '{record.get('name') or identifier}'.")
+    except LiveError as exc:
+        console.error(str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +589,7 @@ def cmd_chat(args: Args):
 def _add_chat_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default="", help="model alias from ~/.ene.yaml")
     parser.add_argument("--persona", default="", help="persona to run as")
+    parser.add_argument("--name", default="", help="name the persistent live session")
     parser.add_argument("--verbose", action="store_true", help="show detailed output")
     stream = parser.add_mutually_exclusive_group()
     stream.add_argument("--stream", dest="stream", action="store_true", help="stream responses (default)")
@@ -464,7 +610,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat = commands.add_parser("chat", help="start an interactive chat")
     _add_chat_options(chat)
-    commands.add_parser("list", help="list configured models")
+    commands.add_parser("models", help="list configured models")
+    commands.add_parser("list", aliases=["ls", "l"], help="list live sessions")
+    attach = commands.add_parser(
+        "attach", aliases=["a"], help="attach to a live session"
+    )
+    attach.add_argument("session", nargs="?", metavar="NAME_OR_ID")
+    kill = commands.add_parser(
+        "kill", aliases=["k"], help="terminate a live session"
+    )
+    kill.add_argument("session", metavar="NAME_OR_ID")
     commands.add_parser("status", help="show project .ene storage usage")
     clean = commands.add_parser("clean", help="clean disposable project .ene storage")
     clean.add_argument("entries", nargs="*", metavar="ENTRY")
@@ -484,7 +639,10 @@ def _implicit_chat(raw_args: list[str]) -> list[str]:
     """Insert the default ``chat`` command for legacy flag-only invocation."""
     if not raw_args:
         return ["chat"]
-    if raw_args[0] in {"chat", "list", "status", "clean", "hub", "update", "lib"}:
+    if raw_args[0] in {
+        "chat", "models", "list", "ls", "l", "attach", "a", "kill", "k",
+        "status", "clean", "hub", "update", "lib",
+    }:
         return raw_args
     if raw_args[0] in {"-h", "--help"}:
         return raw_args
@@ -498,8 +656,14 @@ def main(argv: list[str] | None = None) -> int:
         return library_cli.main(raw_args[1:])
     args = build_parser().parse_args(_implicit_chat(raw_args))
 
-    if args.command == "list":
-        cmd_list()
+    if args.command == "models":
+        cmd_models()
+    elif args.command in {"list", "ls", "l"}:
+        cmd_live_list()
+    elif args.command in {"attach", "a"}:
+        cmd_attach(args.session)
+    elif args.command in {"kill", "k"}:
+        cmd_kill(args.session)
     elif args.command == "status":
         cmd_storage()
     elif args.command == "clean":
@@ -512,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_chat(Args(
             model=args.model,
             persona=args.persona,
+            name=args.name,
             verbose=args.verbose,
             stream=args.stream,
             reasoning_effort=args.reasoning_effort,

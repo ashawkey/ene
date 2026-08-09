@@ -52,7 +52,7 @@ export function SessionSidebar({
                   onClick={() => onSelect(session.id)}
                   title={session.cwd}
                 >
-                  <span className="session-name">{dir}</span>
+                  <span className="session-name">{session.name || dir}</span>
                 </button>
               </li>
             )

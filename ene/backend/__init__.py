@@ -180,6 +180,8 @@ class LLMAgent(
         prompt_broker: PromptBroker | None = None,
         cancellation: CancellationToken | None = None,
         max_output_tokens: int | None = None,
+        terminal_prompts: bool = True,
+        session_name: str = "",
     ):
 
         self.model = model
@@ -217,10 +219,12 @@ class LLMAgent(
             self.cancellation.prompts = self.prompt_broker
             self.prompt_broker.cancellation = self.cancellation
         self.console = console or AgentConsole(events=events)
+        self.session_name = session_name
+        self._session_changed = None
+        self._session_name_changed = None
 
-        if self.prompt_broker is not None:
-            self.console.prompt_broker = self.prompt_broker
-
+        self.console.prompt_broker = self.prompt_broker
+        if terminal_prompts and self.prompt_broker is not None:
             async def terminal_ask_async(prompt):
                 terminal_message = prompt.message.splitlines()[0]
                 if prompt.kind == "select":
@@ -276,6 +280,7 @@ class LLMAgent(
         self._last_error: str | None = None
         self._closed = False
         self._interrupt_reverts_prompt: bool = False
+        self._failure_reverts_prompt: bool = False
         self._rewind_draft: str | None = None  # prompt restored after /rewind or cancellation
 
         self.token_totals = {
@@ -395,6 +400,25 @@ class LLMAgent(
 
     def _session_timestamp(self) -> str:
         return time.strftime("%Y%m%d_%H%M%S")
+
+    def _reserve_session_id(self) -> str:
+        """Atomically reserve a unique timestamp-based session ID."""
+        base_id = self._session_timestamp()
+        session_id = base_id
+        suffix = 2
+        sessions_dir = self._sessions_dir()
+        while True:
+            if session_id == self._session_id:
+                session_id = f"{base_id}_{suffix}"
+                suffix += 1
+                continue
+            try:
+                (sessions_dir / session_id).mkdir()
+            except FileExistsError:
+                session_id = f"{base_id}_{suffix}"
+                suffix += 1
+            else:
+                return session_id
 
     def call_api(self):
         """Call the API using current context, with automatic retry on transient errors.
@@ -1001,6 +1025,7 @@ class LLMAgent(
             query,
             source=submission.source,
             submission_id=submission.id,
+            steer=True,
         )
         self.context.add({"role": "user", "content": query})
         return True
@@ -1018,21 +1043,26 @@ class LLMAgent(
         self._last_turn_outcome = TurnOutcome.COMPLETED
         self._last_error = None
         self._interrupt_reverts_prompt = False
+        self._failure_reverts_prompt = False
         turn_has_response = False
         auto_continues = 0
 
         while True:
             iteration += 1
+            events = getattr(self, "events", None)
+            if events is not None:
+                events.publish(
+                    "iteration_start", iteration=iteration, round_id=self.round_id
+                )
             t_iter = time.monotonic()
             if self.verbose and iteration > 1:
                 self.console.debug(f"--- Agentic loop iteration {iteration} ---")
 
-            # No rollback on failure: call_api appends the assistant message only
-            # on success, so a failed attempt leaves no partial turn behind. What
-            # it *does* leave is eviction and compaction, and those must survive —
-            # undoing them would discard a summarization round-trip already paid
-            # for, and on the overflow-retry path would throw away the exact
-            # remediation the next attempt needs.
+            # call_api appends the assistant message only on success, so a failed
+            # attempt leaves no partial assistant turn behind. Context maintenance
+            # performed before the request remains in place for non-interactive
+            # callers; the interactive round wrapper restores its pre-submit
+            # snapshot when returning the failed prompt to the editor.
             try:
                 # A test double or alternate caller that replaces call_api is
                 # a normal completed response unless it explicitly overrides
@@ -1050,6 +1080,7 @@ class LLMAgent(
                 self._pending_images.clear()
                 self._last_turn_outcome = TurnOutcome.FAILED
                 self._last_error = str(e)
+                self._failure_reverts_prompt = not turn_has_response
                 self.console.error(f"API call failed: {e}")
                 return None
 
@@ -1161,7 +1192,7 @@ class LLMAgent(
             self.console.warn(f"Could not remove temporary tool output: {cleanup_error}")
 
     def _restart_session(self):
-        """Save the current session and start a fresh one (used by /clear and /persona)."""
+        """Save the current session and start a fresh one for a persona change."""
         if self._session_id and self.context.messages:
             try:
                 self.save_session(self._session_id)
@@ -1169,14 +1200,10 @@ class LLMAgent(
             except Exception as e:
                 self.console.warn(f"Could not save session before clear: {e}")
 
-        # Start a brand-new session without reusing an ID from the same second.
-        base_id = self._session_timestamp()
-        session_id = base_id
-        suffix = 2
-        sessions_dir = self._sessions_dir()
-        while session_id == self._session_id or (sessions_dir / session_id).exists():
-            session_id = f"{base_id}_{suffix}"
-            suffix += 1
+        # Reserve the directory so concurrent agents cannot choose the same ID.
+        session_id = self._reserve_session_id()
+        if self._session_changed is not None:
+            self._session_changed(session_id, self.session_name)
         self._session_id = session_id
         self._session_store = self._session_store_for(session_id)
         self._session_revision_id = None
@@ -1229,6 +1256,7 @@ class LLMAgent(
             cancel=cancel,
             pending_text=pending_text,
             edit_pending=edit_pending,
+            can_submit_while_pending=self.is_instant_command,
         )
         if self.cancellation is not None:
             self.cancellation.watch_keyboard = False
@@ -1376,12 +1404,20 @@ class LLMAgent(
                         if not text:
                             await prompts.restart()
                             continue
-                        try:
-                            self.input_broker.submit(text, source="terminal")
-                        except ValueError as exc:
-                            await prompts.restart(text)
-                            self.console.warn(str(exc))
-                            continue
+                        if (
+                            self.input_broker.pending
+                            and text.startswith("/")
+                            and self.is_instant_command(text)
+                        ):
+                            self.console.user_input(text, source="terminal")
+                            self._run_command(text)
+                        else:
+                            try:
+                                self.input_broker.submit(text, source="terminal")
+                            except ValueError as exc:
+                                await prompts.restart(text)
+                                self.console.warn(str(exc))
+                                continue
                         await prompts.restart()
                         terminal.app.invalidate()
                         if active is None and self.input_broker.ready:
@@ -1510,6 +1546,13 @@ class LLMAgent(
         )
         if query.lower() in ("exit", "quit"):
             return True
+        if query.startswith("/"):
+            cmd_word = query.split()[0][1:].lower()
+            if submission.source == "web" and cmd_word in {"resume", "rewind"}:
+                self.console.warn(
+                    f"/{cmd_word} is only available from an attached terminal."
+                )
+                return False
         if query.startswith("!"):
             bash_cmd = query[1:].strip()
             if bash_cmd:
@@ -1524,7 +1567,6 @@ class LLMAgent(
         compaction_floor_before_round = self._compaction_floor_tokens
         skill_state_before_round = None
         if query.startswith("/"):
-            cmd_word = query.split()[0][1:].lower()
             if cmd_word in self.COMMANDS:
                 return self._run_command(query)
             if cmd_word not in self.skills:
@@ -1547,27 +1589,35 @@ class LLMAgent(
             with self._operation("agent response"):
                 self.get_response()
 
-        if self._last_interrupted:
-            if self._interrupt_reverts_prompt:
-                # No assistant message was completed, so withdraw the untouched
-                # prompt and restore the exact pre-submit state. External side
-                # effects cannot exist yet because no tool call was received.
-                self.context.replace_messages(messages_before_round)
-                self.context.compaction_state = compaction_state_before_round
-                self._session_revision_id = revision_before_round
-                self._compaction_floor_tokens = compaction_floor_before_round
-                if skill_state_before_round is not None:
-                    self.tool_executor.restore_skill_state(skill_state_before_round)
-                self.round_id = round_before_round
-                self.console.reset_timeline()
-                self._replay_context()
-                self._set_rewind_draft(submission.text)
-                self.console.system(
-                    "Turn cancelled. Message restored to the editor."
-                )
-            # Otherwise at least one assistant/tool step is already useful
-            # history. get_response has reported the interrupted iteration, so
-            # keep the turn as-is without replaying or restoring the prompt.
+        restore_prompt = (
+            self._last_interrupted and self._interrupt_reverts_prompt
+        ) or (
+            getattr(self, "_last_turn_outcome", None) == TurnOutcome.FAILED
+            and getattr(self, "_failure_reverts_prompt", False)
+        )
+        if restore_prompt:
+            # No assistant message was completed, so withdraw the untouched
+            # prompt and restore the exact pre-submit state. External side
+            # effects cannot exist yet because no tool call was received.
+            self.context.replace_messages(messages_before_round)
+            self.context.compaction_state = compaction_state_before_round
+            self._session_revision_id = revision_before_round
+            self._compaction_floor_tokens = compaction_floor_before_round
+            if skill_state_before_round is not None:
+                self.tool_executor.restore_skill_state(skill_state_before_round)
+            self.round_id = round_before_round
+            self.console.reset_timeline()
+            self._replay_context()
+            self._set_rewind_draft(submission.text)
+            if not self._last_interrupted and self._last_error:
+                # The timeline reset removed the first rendering of this error.
+                self.console.error(f"API call failed: {self._last_error}")
+            action = "cancelled" if self._last_interrupted else "failed"
+            self.console.system(
+                f"Turn {action}. Message restored to the editor."
+            )
+        # If interruption happened after at least one assistant/tool step,
+        # keep that useful history as-is; get_response already reported it.
 
         try:
             self.save_session(self._session_id, reason="round")
@@ -1575,23 +1625,9 @@ class LLMAgent(
             self.console.warn(f"Could not save session round: {e}")
         return False
 
-    def chat_loop(self, resumed_session_id: str | None = None):
-
-        reasoning = self.profile.reasoning or "none"
-        if reasoning != "none":
-            reasoning += f" · {self.reasoning_effort} effort"
-        self.console.startup_panel(
-            model=f"{self.provider_name}/{self.model}",
-            context=f"{self.context_length:,} tokens",
-            reasoning=reasoning,
-            persona=self.persona.name,
-            skills=self._skills_summary(),
-            workspace=self.work_dir,
-        )
-
-        # Auto-save session id: reuse resumed session or generate a new one.
-        self._session_id = resumed_session_id or self._session_timestamp()
-
+    def _initialize_chat_session(self, resumed_session_id: str | None = None) -> None:
+        """Initialize persistence, change tracking, and artifact retention."""
+        self._session_id = resumed_session_id or self._reserve_session_id()
         if self._session_store is None or self._session_store.session_id != self._session_id:
             self._session_store = self._session_store_for(self._session_id)
             self._session_revision_id = self._session_store.head_id
@@ -1610,6 +1646,69 @@ class LLMAgent(
                 self.console.debug(
                     f"Pruned tool-result captures from {pruned} old session(s)"
                 )
+
+    def run_headless_loop(self, stop_event: threading.Event) -> None:
+        """Consume broker input while a detached worker owns the agent."""
+        assert self.input_broker is not None
+        wake = threading.Event()
+        wait_indicator = None
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ene-agent")
+        active: Future | None = None
+        self.input_broker.add_listener(wake.set)
+        try:
+            while not stop_event.is_set():
+                if active is not None and active.done():
+                    if active.result():
+                        stop_event.set()
+                        break
+                    active = None
+                item = self.input_broker.submission
+                should_wait = (
+                    active is None
+                    and item is not None
+                    and item.ready_at is not None
+                    and not item.ready
+                )
+                if should_wait and wait_indicator is None:
+                    wait_indicator = self.console.thinking(
+                        label="Waiting",
+                        countdown=max(0, item.ready_at - time.monotonic()),
+                    )
+                    wait_indicator.__enter__()
+                elif not should_wait and wait_indicator is not None:
+                    wait_indicator.__exit__(None, None, None)
+                    wait_indicator = None
+                if self.input_broker.pending:
+                    if active is None and self.input_broker.ready:
+                        active = executor.submit(self._run_round)
+                    elif active is not None:
+                        self._run_instant_command()
+                wake.wait(0.1 if active is not None else 0.5)
+                wake.clear()
+        finally:
+            if wait_indicator is not None:
+                wait_indicator.__exit__(None, None, None)
+            self.input_broker.remove_listener(wake.set)
+            executor.shutdown(wait=True)
+
+    def _startup_details(self) -> dict[str, str]:
+        reasoning = self.profile.reasoning or "none"
+        if reasoning != "none":
+            reasoning += f" · {self.reasoning_effort} effort"
+        return {
+            "model": f"{self.provider_name}/{self.model}",
+            "context": f"{self.context_length:,} tokens",
+            "reasoning": reasoning,
+            "persona": self.persona.name,
+            "skills": self._skills_summary(),
+            "workspace": self.work_dir,
+        }
+
+    def chat_loop(self, resumed_session_id: str | None = None):
+
+        self.console.startup_panel(**self._startup_details())
+
+        self._initialize_chat_session(resumed_session_id)
 
         _wd = self.tool_executor._work_dir or os.getcwd()
         self._refresh_slash_commands()

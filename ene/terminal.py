@@ -388,13 +388,19 @@ class AtFileCompleter(Completer):
 
 
 class MessageValidator(Validator):
-    def __init__(self, has_pending: Callable[[], bool]):
+    def __init__(
+        self,
+        has_pending: Callable[[], bool],
+        can_submit_while_pending: Callable[[str], bool],
+    ):
         self._has_pending = has_pending
+        self._can_submit_while_pending = can_submit_while_pending
 
     def validate(self, document):
-        if not document.text.strip():
+        text = document.text.strip()
+        if not text:
             raise ValidationError(message="Please enter a message.")
-        if self._has_pending():
+        if self._has_pending() and not self._can_submit_while_pending(text):
             raise ValidationError(message="Another message is already pending.")
 
 
@@ -428,6 +434,18 @@ class SharedFileHistory(FileHistory):
             yield item
 
 
+class SessionDetach(EOFError):
+    """The terminal detached while its persistent worker remains alive."""
+
+
+class SessionKill(EOFError):
+    """The terminal requested that its persistent worker stop."""
+
+
+class SessionSwitch(EOFError):
+    """The terminal requested a different persistent session."""
+
+
 class TerminalInput:
     def __init__(
         self,
@@ -436,9 +454,11 @@ class TerminalInput:
         work_dir: str | Path | None = None,
         commands: dict[str, str] | None = None,
         system_message: Callable[[str], None] = print,
+        persistent: bool = False,
     ):
         self._prompt_label = prompt_label
         self._system_message = system_message
+        self._persistent = persistent
         self._last_ctrl_c = 0.0  # timestamp of last Ctrl+C on an empty buffer
         self._busy = False
         self._status: list[tuple[str, str]] = []
@@ -447,6 +467,7 @@ class TerminalInput:
         self._cancel: Callable[[], None] | None = None
         self._pending_text: Callable[[], str | None] | None = None
         self._edit_pending: Callable[[], str | None] | None = None
+        self._can_submit_while_pending: Callable[[str], bool] | None = None
         self.style = Style.from_dict({
             "prompt": "bold ansiyellow",
             "prompt.busy": "bold ansicyan",
@@ -475,7 +496,9 @@ class TerminalInput:
             # Synchronize near the visible lines instead of reparsing the whole
             # multiline buffer on every keystroke.
             lexer=PygmentsLexer(MarkdownLexer, sync_from_start=False),
-            validator=MessageValidator(self._has_pending),
+            validator=MessageValidator(
+                self._has_pending, self._allows_submission_while_pending
+            ),
             validate_while_typing=False,
             completer=merge_completers(
                 ([SlashCommandCompleter(commands)] if commands else [])
@@ -603,7 +626,8 @@ class TerminalInput:
             # Empty prompt: arm on first press, quit on a second within 1s.
             now = time.monotonic()
             if self._last_ctrl_c and now - self._last_ctrl_c < 1.0:
-                event.app.exit(exception=EOFError)  # quit the CLI
+                exception = SessionKill if getattr(self, "_persistent", False) else EOFError
+                event.app.exit(exception=exception)
             else:
                 self._last_ctrl_c = now
                 run_in_terminal(
@@ -614,6 +638,15 @@ class TerminalInput:
         def _(event):
             if self._busy and self._cancel is not None:
                 self._cancel()
+
+        if getattr(self, "_persistent", False):
+            @kb.add("c-d", filter=~is_searching)
+            def _(event):
+                event.app.exit(exception=SessionDetach)
+
+            @kb.add("c-s", filter=~is_searching)
+            def _(event):
+                event.app.exit(exception=SessionSwitch)
 
         @kb.add("up", filter=~is_searching)
         def _(event):
@@ -659,6 +692,12 @@ class TerminalInput:
     def _has_pending(self) -> bool:
         return bool(
             self._pending_text is not None and self._pending_text() is not None
+        )
+
+    def _allows_submission_while_pending(self, text: str) -> bool:
+        return bool(
+            self._can_submit_while_pending is not None
+            and self._can_submit_while_pending(text)
         )
 
     def _message(self):
@@ -708,10 +747,12 @@ class TerminalInput:
         cancel: Callable[[], None],
         pending_text: Callable[[], str | None],
         edit_pending: Callable[[], str | None],
+        can_submit_while_pending: Callable[[str], bool] | None = None,
     ) -> None:
         self._cancel = cancel
         self._pending_text = pending_text
         self._edit_pending = edit_pending
+        self._can_submit_while_pending = can_submit_while_pending
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -733,14 +774,21 @@ class TerminalInput:
         if app.is_running:
             app.invalidate()
 
-    def prompt(self) -> str:
+    def prompt(
+        self,
+        default: str = "",
+        *,
+        pre_run: Callable[[], None] | None = None,
+    ) -> str:
         """Read a line of input from the terminal.
 
         Raises:
             KeyboardInterrupt: When the user presses Ctrl+C.
             EOFError: When the user presses Ctrl+D (end of input).
         """
-        return self._session.prompt(self._message)
+        return self._session.prompt(
+            self._message, default=default, pre_run=pre_run
+        )
 
     async def prompt_async(self, default: str = "") -> str:
         """Read input without moving prompt_toolkit off the main thread."""

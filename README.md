@@ -46,7 +46,10 @@ It also supports codex subscription login, please check the documentation for de
 ene # start the terminal UI to chat
 ene --resume # resume a previous session
 
-ene list # list available modelss
+ene models # list available models
+ene list # list live sessions (aliases: ls, l)
+ene attach # attach to a live session (alias: a)
+ene kill NAME_OR_ID # terminate a live session (alias: k)
 ene status # check the status of the .ene folder
 ene clean # remove disposable data such as tool results and scratch files
 ene clean --history # also remove saved conversation sessions
