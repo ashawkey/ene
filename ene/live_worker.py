@@ -463,6 +463,14 @@ class Worker:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+                # On Windows, shutdown() alone does not unblock a recv()
+                # pending in another thread; close() is required to force the
+                # attachment to notice the disconnect. On POSIX the earlier
+                # shutdown() already released it, so close() is only cleanup.
+                try:
+                    sock.close()
+                except OSError:
+                    pass
 
         # Subscribe before taking the bounded history snapshot. Events racing
         # replay are queued and de-duplicated by sequence, so attach has no gap.

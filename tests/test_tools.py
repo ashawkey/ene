@@ -31,6 +31,7 @@ from ene.tools import (
     result_text_failed,
 )
 from ene.utils.io import CancellationToken, EventHub
+from ene.utils.process import windows_hidden_process_kwargs
 
 
 class _SilentConsole:
@@ -56,6 +57,20 @@ def _executor_with_monitor(tmp_path):
 def test_process_status_format():
     assert format_process_status(2, 2) == "2/4 running processes"
     assert format_process_status(0, 4) == ""
+
+
+def test_windows_hidden_process_kwargs():
+    kwargs = windows_hidden_process_kwargs(
+        subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    )
+    if sys.platform != "win32":
+        assert kwargs == {}
+        return
+    assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW
+    startupinfo = kwargs["startupinfo"]
+    assert startupinfo.dwFlags & subprocess.STARTF_USESHOWWINDOW
+    assert startupinfo.wShowWindow == subprocess.SW_HIDE
 
 
 def test_start_process_label_is_returned_and_used_for_descriptions(tmp_path):

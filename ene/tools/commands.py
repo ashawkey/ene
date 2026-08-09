@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ene.utils.interrupt import CancelWatcher
+from ene.utils.process import windows_hidden_process_kwargs
 
 from .constants import (
     EXEC_DISPLAY_FLUSH_LINES,
@@ -47,7 +48,9 @@ class CommandToolsMixin:
                 proc = subprocess.Popen(
                     shell_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=cwd or None,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    **windows_hidden_process_kwargs(
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                    ),
                 )
             except Exception:
                 artifact_file.close()

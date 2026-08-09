@@ -13,6 +13,8 @@ from typing import Any
 
 import pathspec
 
+from ene.utils.process import windows_hidden_process_kwargs
+
 from .constants import (
     GLOB_TIMEOUT_SECONDS,
     GREP_TIMEOUT_SECONDS,
@@ -149,14 +151,18 @@ class SearchToolsMixin:
             cmd.extend(["--glob", f"!**/{directory}/**"])
         match_spec = self._glob_spec(pattern)
 
+        process_kwargs = (
+            windows_hidden_process_kwargs(subprocess.CREATE_NEW_PROCESS_GROUP)
+            if os.name == "nt"
+            else {"start_new_session": True}
+        )
         try:
             proc = subprocess.Popen(
                 cmd,
                 cwd=base,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                start_new_session=os.name != "nt",
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                **process_kwargs,
             )
         except FileNotFoundError:
             return {
@@ -301,13 +307,17 @@ class SearchToolsMixin:
         # hundreds of megabytes of JSON, of which only MAX_GREP_MATCHES entries
         # are ever kept. Reading line by line and killing rg at the cap bounds
         # memory by the result size instead of by the repository size.
+        process_kwargs = (
+            windows_hidden_process_kwargs(subprocess.CREATE_NEW_PROCESS_GROUP)
+            if os.name == "nt"
+            else {"start_new_session": True}
+        )
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                start_new_session=os.name != "nt",
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                **process_kwargs,
             )
         except FileNotFoundError:
             return {

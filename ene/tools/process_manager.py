@@ -20,6 +20,7 @@ from .constants import (
     MAX_TOOL_OUTPUT_CHARS,
 )
 from ene.utils.interrupt import CancelWatcher
+from ene.utils.process import windows_hidden_process_kwargs
 
 from .process_util import (
     _close_windows_job,
@@ -176,7 +177,7 @@ class ProcessManagerMixin:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
-                    creationflags=(
+                    **windows_hidden_process_kwargs(
                         subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004
                     ),
                 )

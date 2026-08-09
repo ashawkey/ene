@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ene.utils.frontmatter import split_frontmatter
+from ene.utils.process import windows_hidden_process_kwargs
 from ene.skills import BUNDLED_SKILLS_DIR, build_skills_prompt_section
 from ene.tools.registry import BUILTIN_TOOL_NAMES
 
@@ -318,6 +319,7 @@ def _get_git_context(cwd: str) -> str:
             text=True,
             cwd=cwd,
             timeout=5,
+            **windows_hidden_process_kwargs(),
         )
         if result.returncode != 0:
             return ""
@@ -333,7 +335,10 @@ def _get_git_context(cwd: str) -> str:
 
 def _git_cmd(args: list[str], cwd: str) -> str | None:
     try:
-        result = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=5)
+        result = subprocess.run(
+            args, capture_output=True, text=True, cwd=cwd, timeout=5,
+            **windows_hidden_process_kwargs(),
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() if result.returncode == 0 else None

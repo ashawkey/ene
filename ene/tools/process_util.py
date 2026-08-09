@@ -11,6 +11,8 @@ import signal
 import subprocess
 import sys
 
+from ene.utils.process import windows_hidden_process_kwargs
+
 
 def _create_windows_job(proc: subprocess.Popen) -> int:
     """Place a process in a kill-on-close Windows Job Object."""
@@ -197,6 +199,7 @@ def _terminate_process(proc: subprocess.Popen, *, force: bool = False) -> None:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                **windows_hidden_process_kwargs(),
             )
         else:
             # start_new_session=True makes the child PID its process-group ID;
