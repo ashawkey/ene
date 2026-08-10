@@ -1,9 +1,19 @@
 """Tests for CLI model configuration."""
 
+from rich import box
+
 from ene.config import conf
 from ene import cli
 from ene.backend.sessions import _session_choice_labels
 from ene.cli import Args, get_agent
+
+
+def test_output_tables_use_a_borderless_header_rule():
+    table = cli._output_table("Live sessions")
+
+    assert table.box == box.SIMPLE_HEAD
+    assert table.pad_edge is False
+    assert table.title_justify == "left"
 
 
 def test_session_choices_align_counts_and_truncate_preview_to_width():
@@ -15,8 +25,8 @@ def test_session_choices_align_counts_and_truncate_preview_to_width():
         55,
     )
 
-    assert labels[0] == "20260101_120000  │  msgs:  9  rounds: 2  │  short"
-    assert labels[1] == "20260102_120000  │  msgs:123  rounds:45  │  a long pre…"
+    assert labels[0] == "20260101_120000  msgs:  9  rounds: 2  short"
+    assert labels[1] == "20260102_120000  msgs:123  rounds:45  a long preview t…"
     assert all(len(label) <= 55 for label in labels)
 
 
@@ -249,10 +259,57 @@ def test_live_picker_has_cancel_option(monkeypatch):
     )
 
     assert selected is None
-    assert choices_seen[0] == "other  │  done  │  /tmp/project"
-    assert choices_seen[-1] == (
-        "Cancel (stay in current)  │  working  │  /tmp/current-project"
+    assert choices_seen[0] == "other   ✓ done · needs review  /tmp/project"
+    assert choices_seen[-1] == "Cancel  stay in current"
+
+
+def test_live_picker_prioritizes_recent_done_sessions(monkeypatch):
+    records = [
+        {
+            "runtime_id": "worknew",
+            "workspace": "/tmp/working-new",
+            "busy": True,
+            "state_changed_at": 50,
+        },
+        {
+            "runtime_id": "done-old",
+            "workspace": "/tmp/done-old",
+            "busy": False,
+            "needs_attention": True,
+            "state_changed_at": 20,
+        },
+        {
+            "runtime_id": "done-new",
+            "workspace": "/tmp/done-new",
+            "busy": False,
+            "needs_attention": True,
+            "state_changed_at": 40,
+        },
+        {
+            "runtime_id": "waiting",
+            "workspace": "/tmp/waiting",
+            "busy": False,
+            "needs_attention": False,
+            "state_changed_at": 60,
+        },
+    ]
+    choices_seen = []
+    monkeypatch.setattr("ene.live.list_records", lambda: records)
+    monkeypatch.setattr(
+        cli.AgentConsole,
+        "select_terminal",
+        lambda self, message, choices: choices_seen.extend(choices) or choices[0],
     )
+
+    selected = cli._pick_live_record(cli.AgentConsole())
+
+    assert selected["runtime_id"] == "done-new"
+    assert [choice.split()[0] for choice in choices_seen] == [
+        "done-new", "done-old", "waiting", "worknew",
+    ]
+    assert "✓ done · needs review" in choices_seen[0]
+    assert "○ waiting" in choices_seen[2]
+    assert "● working" in choices_seen[3]
 
 
 def test_attach_loop_starts_named_new_session(monkeypatch):
@@ -365,7 +422,7 @@ def test_live_list_shows_starting_state(monkeypatch):
 
     cli.cmd_live_list()
 
-    assert str(tables[0].columns[2]._cells[0]) == "starting"
+    assert str(tables[0].columns[2]._cells[0]) == "… starting"
 
 
 def test_live_list_only_lists(monkeypatch):
@@ -390,7 +447,7 @@ def test_live_list_only_lists(monkeypatch):
     cli.cmd_live_list()
 
     assert len(tables) == 1
-    assert str(tables[0].columns[2]._cells[0]) == "done"
+    assert str(tables[0].columns[2]._cells[0]) == "✓ done · needs review"
 
 
 def test_lib_dispatches_remaining_arguments(monkeypatch):

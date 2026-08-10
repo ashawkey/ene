@@ -54,10 +54,10 @@ def _session_choice_labels(rows: list[tuple[str, object, object, str]], width: i
     labels = []
     for name, message_count, round_id, preview in rows:
         label = (
-            f"{name}{' ' * (name_width - cell_len(name))}  │  "
+            f"{name}{' ' * (name_width - cell_len(name))}  "
             f"msgs:{str(message_count):>{message_width}}  rounds:{str(round_id):>{round_width}}"
         )
-        separator = "  │  "
+        separator = "  "
         preview_width = width - cell_len(label) - cell_len(separator)
         if preview and preview_width > 0:
             label += separator + _shorten(preview, preview_width)

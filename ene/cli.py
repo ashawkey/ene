@@ -19,6 +19,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from rich import box
+from rich.cells import cell_len
 from rich.table import Table
 
 from ene.backend import LLMAgent
@@ -219,6 +221,18 @@ def _pick_session(console: AgentConsole) -> str | None:
 # Commands
 # ---------------------------------------------------------------------------
 
+def _output_table(title: str) -> Table:
+    """Create the shared borderless CLI table style."""
+    return Table(
+        title=title,
+        title_style="bold",
+        title_justify="left",
+        box=box.SIMPLE_HEAD,
+        header_style="bold",
+        pad_edge=False,
+    )
+
+
 def cmd_models():
     console = AgentConsole()
     openai_conf = conf.get("openai", {})
@@ -240,13 +254,13 @@ def cmd_models():
             console.print("Please add model configurations under the 'openai' key.")
         return
 
-    table = Table(title="Available Models", show_header=True, header_style="bold magenta")
+    table = _output_table("Available models")
     table.add_column("Name", style="cyan", no_wrap=True)
-    table.add_column("Model", style="green")
-    table.add_column("Provider", style="magenta")
-    table.add_column("Base URL", style="yellow")
-    table.add_column("Context", style="blue", justify="right")
-    table.add_column("Thinking", style="magenta")
+    table.add_column("Model")
+    table.add_column("Provider", style="dim")
+    table.add_column("Base URL", style="dim")
+    table.add_column("Context", style="green", justify="right")
+    table.add_column("Thinking")
 
     for name, model_conf in openai_conf.items():
         model_id = model_conf.get("model", name)
@@ -281,7 +295,7 @@ def cmd_storage():
         console.system(f"No storage found in {root}")
         return
 
-    table = Table(title=f"ene storage: {root}")
+    table = _output_table(f"Project storage: {root}")
     table.add_column("Entry", style="cyan")
     table.add_column("Type", style="dim")
     table.add_column("Size", justify="right", style="green")
@@ -412,6 +426,42 @@ def cmd_hub(args: Args):
         console.system("Hub stopped.")
 
 
+def _live_state(record: dict) -> str:
+    if record.get("busy"):
+        return "working"
+    if record.get("needs_attention", not record.get("busy")):
+        return "done"
+    return "waiting"
+
+
+def _live_status_label(record: dict) -> str:
+    return {
+        "working": "● working",
+        "done": "✓ done · needs review",
+        "waiting": "○ waiting",
+    }[_live_state(record)]
+
+
+def _live_picker_sort_key(record: dict) -> tuple[int, float]:
+    """Put completed work first, newest status transitions first."""
+    return (
+        0 if _live_state(record) == "done" else 1,
+        -float(record.get("state_changed_at", record.get("created_at", 0))),
+    )
+
+
+def _live_choice_labels(rows: list[tuple[str, str, str]]) -> list[str]:
+    """Format live-session choices as aligned, borderless rows."""
+    name_width = max(cell_len(name) for name, _, _ in rows)
+    state_width = max(cell_len(state) for _, state, _ in rows)
+    return [
+        f"{name}{' ' * (name_width - cell_len(name))}  "
+        f"{state}"
+        f"{' ' * (state_width - cell_len(state)) + '  ' + workspace if workspace else ''}"
+        for name, state, workspace in rows
+    ]
+
+
 def _pick_live_record(
     console: AgentConsole,
     *,
@@ -421,42 +471,39 @@ def _pick_live_record(
 ) -> dict | None:
     from ene.live import list_records
 
-    records = [
-        record for record in list_records()
-        if record.get("runtime_id") != exclude
-        and record.get("status", "ready") == "ready"
-        and not record.get("attached")
-    ]
+    records = sorted(
+        (
+            record for record in list_records()
+            if record.get("runtime_id") != exclude
+            and record.get("status", "ready") == "ready"
+            and not record.get("attached")
+        ),
+        key=_live_picker_sort_key,
+    )
     if not records:
         console.system("No detached live sessions available.")
         return None
-    choices = [
-        f"{record.get('name') or str(record['runtime_id'])[:8]}  │  "
-        f"{'working' if record.get('busy') else 'done' if record.get('needs_attention', not record.get('busy')) else 'waiting'}  │  "
-        f"{record.get('workspace', '')}"
+    rows = [
+        (
+            record.get("name") or str(record["runtime_id"])[:8],
+            _live_status_label(record),
+            record.get("workspace", ""),
+        )
         for record in records
     ]
-    if current_record:
-        current_name = (
-            current_record.get("name")
-            or str(current_record.get("runtime_id", ""))[:8]
-        )
-        current_status = (
-            "working" if current_record.get("busy")
-            else "done" if current_record.get(
-                "needs_attention", not current_record.get("busy")
-            )
-            else "waiting"
-        )
-        cancel_choice = (
-            f"Cancel (stay in {current_name})  │  {current_status}  │  "
-            f"{current_record.get('workspace', '')}"
-        )
-    else:
-        cancel_choice = "Cancel"
     if allow_cancel:
-        choices.append(cancel_choice)
-    picked = console.select_terminal("Attach to a session", choices)
+        if current_record:
+            current_name = (
+                current_record.get("name")
+                or str(current_record.get("runtime_id", ""))[:8]
+            )
+            rows.append(("Cancel", f"stay in {current_name}", ""))
+        else:
+            rows.append(("Cancel", "", ""))
+    choices = _live_choice_labels(rows)
+    cancel_choice = choices[-1] if allow_cancel else ""
+    message = "Switch to a session" if current_record else "Attach to a session"
+    picked = console.select_terminal(message, choices)
     if picked is None or (allow_cancel and picked == cancel_choice):
         return None
     return records[choices.index(picked)]
@@ -529,28 +576,20 @@ def cmd_live_list() -> None:
     if not records:
         console.system("No live sessions.")
         return
-    table = Table(title="Live ene sessions")
+    table = _output_table("Live sessions")
     table.add_column("Name", style="cyan")
     table.add_column("ID", style="dim")
     table.add_column("State")
     table.add_column("Model")
     table.add_column("Conversation", style="dim")
-    table.add_column("Workspace")
+    table.add_column("Workspace", style="dim")
     for record in records:
         if record.get("status", "ready") != "ready":
-            state = str(record.get("status", "starting"))
+            state = f"… {record.get('status', 'starting')}"
         elif record.get("attached"):
-            state = (
-                "attached · working"
-                if record.get("busy")
-                else "attached · waiting for prompt"
-            )
-        elif record.get("busy"):
-            state = "working"
-        elif record.get("needs_attention", True):
-            state = "done"
+            state = "● working · attached" if record.get("busy") else "○ waiting · attached"
         else:
-            state = "waiting"
+            state = _live_status_label(record)
         table.add_row(
             record.get("name") or "-", str(record.get("runtime_id", ""))[:8], state,
             record.get("model") or "-", record.get("conversation_id") or "-",

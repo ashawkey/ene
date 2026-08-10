@@ -34,7 +34,7 @@ Chat options are:
 | `ene chat [OPTIONS]` | Start an interactive chat. |
 | `ene models` | List configured model aliases and resolved defaults. |
 | `ene list` (`ls`, `l`) | List live sessions and whether each is working or done. |
-| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; omit the identifier to choose interactively. |
+| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; omit the identifier to choose interactively. The picker marks sessions as `● working`, `✓ done · needs review`, or `○ waiting`, with completed sessions first by newest status change. Only one terminal may attach to a session at a time. |
 | `ene kill NAME_OR_ID` (`k`) | Terminate a live session and its managed processes. |
 | `ene status` | Show disk usage for entries under the current project's `.ene/`. |
 | `ene clean [--history] [ENTRY ...]` | Remove disposable project state or selected entries; `--history` also removes sessions. |

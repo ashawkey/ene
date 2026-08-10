@@ -296,6 +296,37 @@ def test_live_worker_status_includes_prompt_opened_before_attach():
     prompt_thread.join(timeout=1)
 
 
+def test_live_worker_status_tracks_state_transition_time(monkeypatch):
+    timestamps = iter([10.0, 20.0, 30.0, 40.0])
+    monkeypatch.setattr("ene.utils.io.time.time", lambda: next(timestamps))
+    worker = Worker({
+        "runtime_id": "runtime",
+        "token": "token",
+        "workspace": "/tmp",
+        "created_at": 5.0,
+    })
+
+    assert worker._status()["state_changed_at"] == 5.0
+
+    operation_id = worker.cancellation.begin("working")
+    working = worker._status()
+    assert working["busy"] is True
+    assert working["state_changed_at"] == 10.0
+
+    worker.inputs.submit("follow up")
+    assert worker._status()["state_changed_at"] == 10.0
+
+    worker.cancellation.finish(operation_id)
+    waiting = worker._status()
+    assert waiting["needs_attention"] is False
+    assert waiting["state_changed_at"] == 30.0
+
+    worker.inputs.withdraw()
+    done = worker._status()
+    assert done["needs_attention"] is True
+    assert done["state_changed_at"] == 40.0
+
+
 def test_live_worker_status_includes_pending_submission_and_operation_id():
     worker = Worker.__new__(Worker)
     worker.runtime_id = "runtime"

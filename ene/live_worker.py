@@ -126,6 +126,15 @@ class Worker:
         self.inputs = InputBroker(self.events)
         self.prompts = PromptBroker(self.events)
         self.cancellation = CancellationToken(self.events, self.prompts)
+        self._state_lock = threading.Lock()
+        self._state = "done"
+        created_at = record.get("created_at")
+        self._state_changed_at = float(
+            created_at if created_at is not None else time.time()
+        )
+        self._state_busy = False
+        self._state_pending = False
+        self.events.add_listener(self._track_state)
         self.agent: LLMAgent | None = None
         self.hub_client: HubClient | None = None
         self.server: socket.socket | None = None
@@ -190,10 +199,50 @@ class Worker:
         time.sleep(15)
         os._exit(1)
 
+    def _track_state(self, event: AgentEvent) -> None:
+        """Record exact working/waiting/done transition times for discovery."""
+        with self._state_lock:
+            if event.type == "operation_start":
+                self._state_busy = True
+            elif event.type == "operation_end":
+                self._state_busy = False
+            elif event.type == "pending_set":
+                self._state_pending = True
+            elif event.type == "pending_cleared":
+                self._state_pending = False
+            else:
+                return
+            state = (
+                "working" if self._state_busy
+                else "waiting" if self._state_pending
+                else "done"
+            )
+            if state != self._state:
+                self._state = state
+                self._state_changed_at = event.timestamp
+
+    def _state_timestamp(self, state: str) -> float:
+        """Return the tracked transition time, with a fallback for test workers."""
+        lock = getattr(self, "_state_lock", None)
+        if lock is None:
+            return float(self.record.get("created_at", 0))
+        with lock:
+            if state != self._state:
+                # This is only a defensive fallback for state changed outside the
+                # brokers' normal event path.
+                self._state = state
+                self._state_changed_at = time.time()
+            return self._state_changed_at
+
     def _status(self) -> dict[str, Any]:
         agent = self.agent
         operation_id = self.cancellation.operation_id
         submission = self.inputs.submission
+        state = (
+            "working" if operation_id is not None
+            else "waiting" if submission is not None
+            else "done"
+        )
         status = {
             "runtime_id": self.runtime_id,
             "name": self.record.get("name", ""),
@@ -203,7 +252,8 @@ class Worker:
             "attached": self.terminal_attached,
             "busy": operation_id is not None,
             "operation_id": operation_id,
-            "needs_attention": operation_id is None and submission is None,
+            "needs_attention": state == "done",
+            "state_changed_at": self._state_timestamp(state),
             "created_at": self.record.get("created_at", 0),
         }
         if submission is not None:
