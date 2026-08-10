@@ -50,6 +50,25 @@ def test_compact_replay_keeps_unfinished_latest_prompt():
     ]
 
 
+def test_compact_replay_preserves_last_reply_when_history_starts_mid_turn():
+    items = [
+        ("tool", "old output"),
+        ("assistant", "intermediate"),
+        ("tool", "recent output"),
+        ("assistant", "final answer"),
+    ]
+
+    replay = compact_replay(
+        items,
+        is_user=lambda item: item[0] == "user",
+        is_assistant=lambda item: item[0] == "assistant",
+        has_text=lambda item: bool(item[1]),
+        starts_mid_turn=True,
+    )
+
+    assert replay == [HiddenMessages(3), ("assistant", "final answer")]
+
+
 def test_compact_replay_can_require_a_turn_start_marker():
     items = [
         ("user", "/usage"),

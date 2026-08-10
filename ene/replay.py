@@ -33,6 +33,7 @@ def compact_replay(
     is_turn_start: Callable[[T], bool] | None = None,
     user_starts_turn: Callable[[T], bool] | None = None,
     is_continuation_user: Callable[[T], bool] | None = None,
+    starts_mid_turn: bool = False,
 ) -> list[T | HiddenMessages]:
     """Return all user prompts and final replies, marking omitted messages in place.
 
@@ -43,16 +44,18 @@ def compact_replay(
     current turn rather than starting a new one. This lets event replay omit
     displayed slash commands while preserving input injected between tool
     iterations. Items for which ``is_visible`` is false are omitted without
-    being counted.
+    being counted. ``starts_mid_turn`` preserves the final assistant item from
+    a bounded history whose prompt has already been evicted.
     """
-    turns: list[tuple[int, int | None, list[int]]] = []
+    turns: list[tuple[int | None, int | None, list[int]]] = []
     user_index: int | None = None
     assistant_index: int | None = None
     continuation_indices: list[int] = []
-    started = is_turn_start is None
+    started = starts_mid_turn or is_turn_start is None
+    partial_turn = starts_mid_turn
 
     def finish() -> None:
-        if user_index is not None and started:
+        if started and (user_index is not None or partial_turn):
             turns.append((user_index, assistant_index, continuation_indices))
 
     for index, item in enumerate(items):
@@ -68,10 +71,11 @@ def compact_replay(
             user_index = index
             assistant_index = None
             continuation_indices = []
+            partial_turn = False
             started = is_turn_start is None or bool(
                 user_starts_turn is not None and user_starts_turn(item)
             )
-        elif user_index is not None:
+        elif user_index is not None or partial_turn:
             if is_turn_start is not None and is_turn_start(item):
                 started = True
             elif is_assistant(item) and has_text(item):

@@ -38,6 +38,7 @@ ATTACH_EVENT_QUEUE_SIZE = 1000
 
 def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Select compact authoritative history and mark omissions in place."""
+    starts_mid_turn = bool(events and int(events[0].get("seq", 0)) > 1)
     reset_index = next(
         (
             index
@@ -67,6 +68,7 @@ def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         is_continuation_user=lambda event: bool(
             (event.get("data") or {}).get("steer")
         ),
+        starts_mid_turn=starts_mid_turn and reset_index < 0,
     )
 
     # A snapshot taken during streaming has no consolidated assistant message

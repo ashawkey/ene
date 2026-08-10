@@ -926,6 +926,19 @@ def test_live_worker_replays_full_history_compactly_in_original_order():
     assert _replay_events([]) == []
 
 
+def test_live_worker_replay_preserves_final_reply_when_bounded_history_lost_prompt():
+    events = [
+        {"seq": 101, "type": "tool_result", "data": {"text": "old result"}},
+        {"seq": 102, "type": "assistant_message", "data": {"text": "tool call"}},
+        {"seq": 103, "type": "tool_result", "data": {"text": "recent result"}},
+        {"seq": 104, "type": "assistant_message", "data": {"text": "final answer"}},
+    ]
+
+    assert [event["data"]["text"] for event in _replay_events(events)] == [
+        "3 messages hidden", "final answer"
+    ]
+
+
 def test_live_worker_replay_omits_slash_commands_without_agent_turns():
     events = [
         {"type": "user_message", "data": {"text": "/usage"}},
