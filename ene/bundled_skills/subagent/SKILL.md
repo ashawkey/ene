@@ -7,8 +7,9 @@ description: Delegate substantial independent work to fresh Ene agents, includin
 
 Run a fresh ene agent through `scripts/run_subagent.py`. The child has its own
 conversation and token usage, but shares the selected working directory and
-writes directly to it. It does not inherit this conversation, loaded skills, or
-session/rewind history.
+writes directly to it. Its assistant responses, tool activity, command output,
+and status messages stream through the runner. It does not inherit this
+conversation, loaded skills, or session/rewind history.
 
 Use a subagent when a task is substantial and can be specified independently.
 Handle small steps directly, and use the `batch` skill instead when one identical
@@ -43,10 +44,10 @@ python <skill-dir>/scripts/run_subagent.py --task 'Inspect the parser and report
 ```
 
 Set `cwd` on `exec_command` to the intended project directory and choose an
-explicit timeout appropriate to the task. Let `exec_command` own waiting,
-timeout, and interruption; do not add an internal timeout or launch the command
-in the shell background. Its timeout or user interruption terminates the child
-process tree.
+explicit timeout appropriate to the task. The command output shows the child’s
+live log while it runs. Let `exec_command` own waiting, timeout, and
+interruption; do not add an internal timeout or launch the command in the shell
+background. Its timeout or user interruption terminates the child process tree.
 
 Useful runner options:
 
@@ -66,17 +67,19 @@ Shell-quote every argument. For a multiline or quote-heavy foreground prompt,
 write a unique temporary task file under `.ene/scratch/`, pass `--task-file`, and
 remove it after the run. Never place credentials in a delegated prompt.
 
-The runner prints exactly one JSON object with:
+After the live log, the runner prints one final machine-readable line beginning
+with `ENE_SUBAGENT_RESULT=`. Parse the JSON after that prefix; it contains:
 
 - `success`, `outcome`, `response`, and `error`;
 - `token_usage` for the independent run.
 
 Exit code `0` means completed, `1` means failed or could not start, and `130`
-means interrupted. Read the JSON even after a nonzero exit because it contains
-the child error when one was available. A forced `exec_command` timeout or
-interruption may terminate the runner before it emits JSON; in that case use the
-tool's `timed_out` or `interrupted` status. If command output is compacted,
-recover the full capture using the artifact guidance returned by `exec_command`.
+means interrupted. Read the marked result even after a nonzero exit because it
+contains the child error when one was available. A forced `exec_command` timeout
+or interruption may terminate the runner before it emits the result; in that
+case use the tool's `timed_out` or `interrupted` status. If command output is
+compacted, recover the full capture using the artifact guidance returned by
+`exec_command`.
 
 ## Run independent subagents in parallel
 
@@ -89,11 +92,16 @@ For read-only investigations, disjoint files, or separate worktrees:
    run, even when its prompt is short.
 3. Give each `start_process` call a concise, distinct `label` describing the
    delegated task. Start the runner in the intended project `cwd`, retaining its
-   process ID, log path, and task-file path. If `start_process` itself fails, do
-   not add that child to the active set.
+   process ID, log path, and task-file path. The managed process log receives the
+   child’s output as it runs, so `inspect_processes` and `/ps <process-id>` can
+   show current progress. If `start_process` itself fails, do not add that child
+   to the active set.
 4. Call `wait_processes` once with all active process IDs and no timeout. When it
-   reports exits, inspect those processes with a bounded log tail and read each
-   JSON result. Read the log file directly only if needed.
+   reports exits, inspect those processes with a bounded log tail and parse each
+   process's final `ENE_SUBAGENT_RESULT=` line. Read the log file directly only
+   if needed. An
+   immediate inspection requested by the user is fine; do not poll logs for
+   routine progress.
 5. Remove an exited child's task file after its result has been read. Call
    `wait_processes` again with the remaining active IDs until none remain.
 6. If abandoning the group because of a deadline, failure, or user request,

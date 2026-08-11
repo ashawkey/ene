@@ -21,13 +21,23 @@ def _load_runner():
     return runpy.run_path(str(_RUNNER), run_name="subagent_runner")
 
 
-def test_subagent_runner_emits_completed_result(monkeypatch, capsys, tmp_path):
+def _result_payload(output: str) -> dict:
+    line = next(
+        line for line in reversed(output.splitlines())
+        if line.startswith("ENE_SUBAGENT_RESULT=")
+    )
+    return json.loads(line.removeprefix("ENE_SUBAGENT_RESULT="))
+
+
+def test_subagent_runner_streams_output_and_emits_completed_result(
+    monkeypatch, capsys, tmp_path
+):
     runner = _load_runner()
     calls = []
 
     def fake_run_agent(task, **kwargs):
         calls.append((task, kwargs))
-        print("hidden agent output")
+        print("live agent output")
         return SimpleNamespace(
             success=True,
             outcome=TurnOutcome.COMPLETED,
@@ -43,8 +53,11 @@ def test_subagent_runner_emits_completed_result(monkeypatch, capsys, tmp_path):
         "--reasoning-effort", "low",
     ])
 
-    payload = json.loads(capsys.readouterr().out)
+    output = capsys.readouterr().out
+    payload = _result_payload(output)
     assert code == 0
+    assert "live agent output" in output
+    assert output.splitlines()[-1].startswith("ENE_SUBAGENT_RESULT=")
     assert payload == {
         "success": True,
         "outcome": "completed",
@@ -57,6 +70,8 @@ def test_subagent_runner_emits_completed_result(monkeypatch, capsys, tmp_path):
         "persona": None,
         "work_dir": Path(tmp_path),
         "reasoning_effort": "low",
+        "stream": True,
+        "quiet": False,
     })]
 
 
@@ -79,7 +94,7 @@ def test_subagent_runner_reads_task_file_and_reports_failure(monkeypatch, capsys
 
     code = runner["main"](["--task-file", str(task_file)])
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _result_payload(capsys.readouterr().out)
     assert code == 1
     assert payload["outcome"] == "failed"
     assert payload["error"] == "request failed"
@@ -95,7 +110,7 @@ def test_subagent_runner_reports_startup_error(monkeypatch, capsys):
 
     code = runner["main"](["--task", "inspect"])
 
-    payload = json.loads(capsys.readouterr().out)
+    payload = _result_payload(capsys.readouterr().out)
     assert code == 1
     assert payload["outcome"] == "failed"
     assert payload["error"] == "ValueError: bad model"

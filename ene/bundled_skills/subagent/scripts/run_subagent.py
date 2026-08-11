@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Run one independent ene agent and emit its result as JSON."""
+"""Run one independent ene agent, stream its log, and emit a JSON result."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
 from pathlib import Path
 
 from ene import run_agent
@@ -26,8 +24,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+RESULT_PREFIX = "ENE_SUBAGENT_RESULT="
+
+
 def _emit(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False))
+    """Emit the final machine-readable record after all live agent output."""
+    print(f"{RESULT_PREFIX}{json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,16 +39,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.task_file is not None:
             task = args.task_file.read_text(encoding="utf-8")
 
-        # Keep stdout machine-readable even if construction reports discovery
-        # warnings before run_agent's normal quiet-output context begins.
-        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-            result = run_agent(
-                task,
-                model_alias=args.model_alias,
-                persona=args.persona,
-                work_dir=args.work_dir,
-                reasoning_effort=args.reasoning_effort,
-            )
+        result = run_agent(
+            task,
+            model_alias=args.model_alias,
+            persona=args.persona,
+            work_dir=args.work_dir,
+            reasoning_effort=args.reasoning_effort,
+            stream=True,
+            quiet=False,
+        )
         _emit({
             "success": result.success,
             "outcome": result.outcome.value,
