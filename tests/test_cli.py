@@ -184,24 +184,65 @@ def test_clean_history_combines_with_selected_entries(monkeypatch, tmp_path):
     assert scratch.exists()
 
 
-def test_implicit_chat_preserves_optional_resume(monkeypatch):
+def test_bare_invocation_starts_unnamed_new_session(monkeypatch):
     chats = []
     monkeypatch.setattr(cli, "cmd_chat", chats.append)
 
-    assert cli.main(["--model", "test", "--no-stream", "--resume"]) == 0
+    assert cli.main([]) == 0
 
+    assert chats[0].name == ""
+    assert chats[0].resume is None
+
+
+def test_bare_name_and_options_start_named_new_session(monkeypatch):
+    chats = []
+    monkeypatch.setattr(cli, "cmd_chat", chats.append)
+
+    assert cli.main(["fresh", "--model", "test", "--no-stream"]) == 0
+
+    assert chats[0].name == "fresh"
     assert chats[0].model == "test"
     assert chats[0].stream is False
-    assert chats[0].resume == ""
 
 
-def test_explicit_chat_resume_value(monkeypatch):
+def test_explicit_new_accepts_optional_name(monkeypatch):
     chats = []
     monkeypatch.setattr(cli, "cmd_chat", chats.append)
 
-    assert cli.main(["chat", "--resume", "abc123"]) == 0
+    assert cli.main(["new", "fresh", "--persona", "reviewer"]) == 0
+
+    assert chats[0].name == "fresh"
+    assert chats[0].persona == "reviewer"
+
+
+def test_resume_accepts_optional_session(monkeypatch):
+    chats = []
+    monkeypatch.setattr(cli, "cmd_chat", chats.append)
+
+    assert cli.main(["resume", "abc123", "--model", "test"]) == 0
+    assert cli.main(["resume"]) == 0
 
     assert chats[0].resume == "abc123"
+    assert chats[0].model == "test"
+    assert chats[1].resume == ""
+
+
+def test_attach_uses_fuzzy_name_resolution(monkeypatch):
+    record = {"runtime_id": "runtime", "name": "test"}
+    resolved = []
+    attached = []
+
+    def resolve(identifier, *, fuzzy_name=False):
+        resolved.append((identifier, fuzzy_name))
+        return record
+
+    monkeypatch.setattr("ene.live.resolve", resolve)
+    monkeypatch.setattr(cli, "_attach_live", attached.append)
+
+    cli.cmd_attach("te")
+
+    assert resolved == [("te", True)]
+    assert attached == [record]
 
 
 def test_attach_switches_to_record_selected_before_detach(monkeypatch):
@@ -365,12 +406,48 @@ def test_attach_short_alias(monkeypatch):
     assert attached == ["agent"]
 
 
-def test_kill_short_alias(monkeypatch):
+def test_kill_short_alias_and_optional_identifier(monkeypatch):
     killed = []
     monkeypatch.setattr(cli, "cmd_kill", killed.append)
 
     assert cli.main(["k", "agent"]) == 0
-    assert killed == ["agent"]
+    assert cli.main(["kill"]) == 0
+    assert killed == ["agent", None]
+
+
+def test_interactive_kill_selects_multiple_ready_sessions(monkeypatch):
+    records = [
+        {"runtime_id": "one-id", "name": "one", "status": "ready", "workspace": "/one"},
+        {"runtime_id": "two-id", "name": "two", "status": "ready", "workspace": "/two"},
+        {"runtime_id": "starting", "name": "wait", "status": "starting"},
+    ]
+    killed = []
+    messages = []
+    monkeypatch.setattr("ene.live.list_records", lambda: records)
+    monkeypatch.setattr("ene.live.kill_session", killed.append)
+    monkeypatch.setattr(
+        cli.AgentConsole,
+        "checkbox_terminal",
+        lambda self, message, choices: choices,
+    )
+    monkeypatch.setattr(cli.AgentConsole, "system", lambda self, text: messages.append(text))
+
+    cli.cmd_kill(None)
+
+    assert killed == records[:2]
+    assert messages == ["Killed session 'one'.", "Killed session 'two'."]
+
+
+def test_interactive_kill_empty_selection_is_noop(monkeypatch):
+    record = {"runtime_id": "one-id", "name": "one", "status": "ready"}
+    monkeypatch.setattr("ene.live.list_records", lambda: [record])
+    monkeypatch.setattr(cli.AgentConsole, "checkbox_terminal", lambda *args: [])
+    monkeypatch.setattr(
+        "ene.live.kill_session",
+        lambda record: (_ for _ in ()).throw(AssertionError("must not kill")),
+    )
+
+    cli.cmd_kill(None)
 
 
 def test_live_list_aliases(monkeypatch):

@@ -1392,6 +1392,21 @@ class AgentConsole:
         except KeyboardInterrupt:
             return None
 
+    def checkbox_terminal(
+        self,
+        message: str,
+        choices: list[str],
+    ) -> list[str] | None:
+        """Render a multi-select prompt only on the local terminal."""
+        try:
+            return questionary.checkbox(
+                message,
+                choices=choices,
+                style=_QS_STYLE,
+            ).unsafe_ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
     async def select_terminal_async(
         self,
         message: str,

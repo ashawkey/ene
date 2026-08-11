@@ -5,6 +5,34 @@ from rich.console import Console
 from ene.ui import AgentConsole, ContextStatus, ResponseStream, ThinkingIndicator
 
 
+def test_checkbox_terminal_returns_selected_choices(monkeypatch):
+    class Question:
+        def unsafe_ask(self):
+            return ["one", "two"]
+
+    seen = []
+    monkeypatch.setattr(
+        "ene.ui.questionary.checkbox",
+        lambda message, **kwargs: seen.append((message, kwargs)) or Question(),
+    )
+
+    assert AgentConsole().checkbox_terminal("Kill sessions", ["one", "two"]) == [
+        "one", "two",
+    ]
+    assert seen[0][0] == "Kill sessions"
+    assert seen[0][1]["choices"] == ["one", "two"]
+
+
+def test_checkbox_terminal_normalizes_cancellation(monkeypatch):
+    class Question:
+        def unsafe_ask(self):
+            raise EOFError
+
+    monkeypatch.setattr("ene.ui.questionary.checkbox", lambda *args, **kwargs: Question())
+
+    assert AgentConsole().checkbox_terminal("Kill sessions", ["one"]) is None
+
+
 def test_thinking_indicator_can_render_a_countdown():
     output = io.StringIO()
     console = Console(file=output, width=80, no_color=True)

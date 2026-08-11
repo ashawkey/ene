@@ -2,20 +2,16 @@
 
 ## Start a chat
 
-Running `ene` without a subcommand starts an interactive chat with the first model configured in `~/.ene.yaml`:
+`ene` is shorthand for `ene new`. Both accept an optional session name and use the first model configured in `~/.ene.yaml` by default:
 
 ```bash
 ene
-ene --model gpt
+ene api-refactor --model gpt
+ene new
+ene new api-refactor --model gpt
 ```
 
-The explicit form is equivalent:
-
-```bash
-ene chat --model gpt
-```
-
-Chat options are:
+Session options are:
 
 | Option | Meaning |
 |---|---|
@@ -24,18 +20,17 @@ Chat options are:
 | `--verbose` | Show detailed output. |
 | `--stream` / `--no-stream` | Enable or disable response-token streaming; streaming is the default. |
 | `--reasoning-effort LEVEL` | Override effort with `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `--resume [SESSION_ID]` | Resume a specific conversation, or omit the ID to choose interactively. |
-| `--name NAME` | Give the new persistent live session a friendly name. |
 
 ## Top-level commands
 
 | Command | Purpose |
 |---|---|
-| `ene chat [OPTIONS]` | Start an interactive chat. |
+| `ene [NAME] [OPTIONS]` / `ene new [NAME] [OPTIONS]` | Start a new, optionally named session. |
+| `ene resume [SESSION_ID] [OPTIONS]` | Resume a specific conversation, or omit the ID to choose interactively. |
 | `ene models` | List configured model aliases and resolved defaults. |
 | `ene list` (`ls`, `l`) | List live sessions and whether each is working or done. |
-| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; omit the identifier to choose interactively. The picker marks sessions as `● working`, `✓ done · needs review`, or `○ waiting`, with completed sessions first by newest status change. Only one terminal may attach to a session at a time. |
-| `ene kill NAME_OR_ID` (`k`) | Terminate a live session and its managed processes. |
+| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; a unique name or ID prefix is accepted, and omitting the identifier opens an interactive picker. The picker marks sessions as `● working`, `✓ done · needs review`, or `○ waiting`, with completed sessions first by newest status change. Only one terminal may attach to a session at a time. |
+| `ene kill [NAME_OR_ID]` (`k`) | Terminate one live session, or omit the identifier to select multiple sessions interactively. |
 | `ene status` | Show disk usage for entries under the current project's `.ene/`. |
 | `ene clean [--history] [ENTRY ...]` | Remove disposable project state or selected entries; `--history` also removes sessions. |
 | `ene hub --web-port PORT` | Run the shared Web UI hub; the default port is `8765`. |

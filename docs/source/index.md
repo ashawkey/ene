@@ -107,7 +107,7 @@ See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
 
 ## Persistent live sessions
 
-Interactive sessions run in detached workers and survive closing the terminal or shell. Name one with `ene --name api-refactor`, detach without interruption using `/detach` or Ctrl+D, rename it later with `/name api-refactor`, list workers with `ene ls`, reattach with `ene attach api-refactor` (or choose with bare `ene attach`), switch sessions using `/switch` or Ctrl+S, and terminate one with `ene kill api-refactor`. `/resume` shows saved names and activates the selected stopped conversation in the current live worker. Resume, attach, and switch consistently replay the latest 10 user turns as prompts and final assistant responses, omitting historical tool activity and warnings. Cancelling the switch picker leaves the current attachment and its work untouched. Double Ctrl+C at an idle prompt and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
+Interactive sessions run in detached workers and survive closing the terminal or shell. Name one with `ene api-refactor` (equivalent to `ene new api-refactor`), detach without interruption using `/detach` or Ctrl+D, rename it later with `/name api-refactor`, list workers with `ene ls`, reattach with `ene attach api-refactor` (or choose with bare `ene attach`), switch sessions using `/switch` or Ctrl+S, and terminate sessions with `ene kill` (`ene k`) using the interactive multi-select picker. `/resume` shows saved names and activates the selected stopped conversation in the current live worker. Resume, attach, and switch consistently replay the latest 10 user turns as prompts and final assistant responses, omitting historical tool activity and warnings. Cancelling the switch picker leaves the current attachment and its work untouched. Double Ctrl+C at an idle prompt and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
 
 ## Resume a session
 
@@ -116,13 +116,13 @@ Sessions and other project-local Ene state are stored under `./.ene/`. Ene maint
 Choose a previous session interactively:
 
 ```bash
-ene --resume
+ene resume
 ```
 
 Or resume a known session directly:
 
 ```bash
-ene --resume SESSION_ID
+ene resume SESSION_ID
 ```
 
 Within a running session, `/rewind` previews an earlier prompt boundary and lets you restore the conversation, tracked file changes, or both. The selected prompt returns to the editor so you can revise it before branching.

@@ -207,7 +207,7 @@ def list_records(*, clean: bool = True) -> list[dict[str, Any]]:
     return sorted(records, key=lambda item: float(item.get("created_at", 0)))
 
 
-def resolve(identifier: str) -> dict[str, Any]:
+def resolve(identifier: str, *, fuzzy_name: bool = False) -> dict[str, Any]:
     identifier = identifier.strip()
     records = list_records()
     exact = [r for r in records if r.get("name") == identifier or r.get("runtime_id") == identifier]
@@ -216,7 +216,11 @@ def resolve(identifier: str) -> dict[str, Any]:
         if record.get("status", "ready") != "ready":
             raise LiveError(f"Live session is still {record.get('status', 'starting')}: {identifier}")
         return record
-    prefixes = [r for r in records if str(r.get("runtime_id", "")).startswith(identifier)]
+    prefixes = [
+        r for r in records
+        if str(r.get("runtime_id", "")).startswith(identifier)
+        or (fuzzy_name and str(r.get("name", "")).startswith(identifier))
+    ]
     if len(prefixes) == 1:
         record = prefixes[0]
         if record.get("status", "ready") != "ready":

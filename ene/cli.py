@@ -1,8 +1,8 @@
 """CLI entry point for ene: terminal-based AI agent.
 
 Usage:
-    ene [chat] [--model MODEL] [--verbose] [--resume [SESSION_ID]]
-    ene {models,list,ls,l,attach,a,kill,k,status,clean,hub,update,lib} ...
+    ene [NAME] [OPTIONS]
+    ene {new,resume,models,list,ls,l,attach,a,kill,k,status,clean,hub,update,lib} ...
 """
 
 import argparse
@@ -48,7 +48,7 @@ class Args:
     stream: bool = True  # stream the response token-by-token as it is generated
     reasoning_effort: ReasoningEffort | None = None  # defaults to model config, then high
 
-    resume: str | None = None  # --resume [session_id]
+    resume: str | None = None  # saved session ID to resume
     name: str = ""
     web_port: int = 8765
 
@@ -602,43 +602,75 @@ def cmd_attach(identifier: str | None) -> None:
     from ene.live import LiveError, resolve
 
     try:
-        record = resolve(identifier) if identifier else _pick_live_record(AgentConsole())
+        record = (
+            resolve(identifier, fuzzy_name=True)
+            if identifier else _pick_live_record(AgentConsole())
+        )
         if record is not None:
             _attach_live(record)
     except LiveError as exc:
         AgentConsole().error(str(exc))
 
 
-def cmd_kill(identifier: str) -> None:
+def _pick_live_records_to_kill(console: AgentConsole) -> list[dict]:
+    from ene.live import list_records
+
+    records = sorted(
+        (r for r in list_records() if r.get("status", "ready") == "ready"),
+        key=_live_picker_sort_key,
+    )
+    if not records:
+        console.system("No live sessions available.")
+        return []
+    choices = _live_choice_labels([
+        (
+            record.get("name") or str(record["runtime_id"])[:8],
+            _live_status_label(record),
+            record.get("workspace", ""),
+        )
+        for record in records
+    ])
+    picked = console.checkbox_terminal("Kill sessions", choices)
+    if not picked:
+        return []
+    return [records[choices.index(choice)] for choice in picked]
+
+
+def cmd_kill(identifier: str | None) -> None:
     from ene.live import LiveError, kill_session, resolve
 
     console = AgentConsole()
-    try:
-        record = resolve(identifier)
-        kill_session(record)
-        console.system(f"Killed session '{record.get('name') or identifier}'.")
-    except LiveError as exc:
-        console.error(str(exc))
+    if identifier:
+        try:
+            records = [resolve(identifier)]
+        except LiveError as exc:
+            console.error(str(exc))
+            return
+    else:
+        records = _pick_live_records_to_kill(console)
+
+    for record in records:
+        label = record.get("name") or str(record.get("runtime_id", ""))[:8]
+        try:
+            kill_session(record)
+            console.system(f"Killed session '{label}'.")
+        except LiveError as exc:
+            console.error(f"Could not kill session '{label}': {exc}")
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _add_chat_options(parser: argparse.ArgumentParser) -> None:
+def _add_session_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default="", help="model alias from ~/.ene.yaml")
     parser.add_argument("--persona", default="", help="persona to run as")
-    parser.add_argument("--name", default="", help="name the persistent live session")
     parser.add_argument("--verbose", action="store_true", help="show detailed output")
     stream = parser.add_mutually_exclusive_group()
     stream.add_argument("--stream", dest="stream", action="store_true", help="stream responses (default)")
     stream.add_argument("--no-stream", dest="stream", action="store_false", help="do not stream responses")
     parser.set_defaults(stream=True)
     parser.add_argument("--reasoning-effort", choices=REASONING_EFFORTS)
-    parser.add_argument(
-        "--resume", nargs="?", const="", default=None, metavar="SESSION_ID",
-        help="resume a session; omit SESSION_ID to choose interactively",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -647,8 +679,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command")
 
-    chat = commands.add_parser("chat", help="start an interactive chat")
-    _add_chat_options(chat)
+    new = commands.add_parser("new", help="start a new session")
+    new.add_argument("name", nargs="?", default="", metavar="NAME")
+    _add_session_options(new)
+    resume = commands.add_parser("resume", help="resume a saved session")
+    resume.add_argument("session", nargs="?", metavar="SESSION_ID")
+    _add_session_options(resume)
     commands.add_parser("models", help="list configured models")
     commands.add_parser("list", aliases=["ls", "l"], help="list live sessions")
     attach = commands.add_parser(
@@ -658,7 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     kill = commands.add_parser(
         "kill", aliases=["k"], help="terminate a live session"
     )
-    kill.add_argument("session", metavar="NAME_OR_ID")
+    kill.add_argument("session", nargs="?", metavar="NAME_OR_ID")
     commands.add_parser("status", help="show project .ene storage usage")
     clean = commands.add_parser("clean", help="clean disposable project .ene storage")
     clean.add_argument("entries", nargs="*", metavar="ENTRY")
@@ -674,18 +710,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _implicit_chat(raw_args: list[str]) -> list[str]:
-    """Insert the default ``chat`` command for legacy flag-only invocation."""
+def _normalize_invocation(raw_args: list[str]) -> list[str]:
+    """Make a bare invocation an alias of ``ene new``."""
     if not raw_args:
-        return ["chat"]
+        return ["new"]
     if raw_args[0] in {
-        "chat", "models", "list", "ls", "l", "attach", "a", "kill", "k",
+        "new", "resume", "models", "list", "ls", "l", "attach", "a", "kill", "k",
         "status", "clean", "hub", "update", "lib",
-    }:
+    } or raw_args[0] in {"-h", "--help"}:
         return raw_args
-    if raw_args[0] in {"-h", "--help"}:
-        return raw_args
-    return ["chat", *raw_args]
+    return ["new", *raw_args]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -693,7 +727,9 @@ def main(argv: list[str] | None = None) -> int:
     if raw_args and raw_args[0] == "lib":
         from ene import library_cli
         return library_cli.main(raw_args[1:])
-    args = build_parser().parse_args(_implicit_chat(raw_args))
+    if raw_args and raw_args[0] == "chat":
+        build_parser().error("'chat' was removed; use 'ene [NAME]' or 'ene new [NAME]'")
+    args = build_parser().parse_args(_normalize_invocation(raw_args))
 
     if args.command == "models":
         cmd_models()
@@ -711,15 +747,21 @@ def main(argv: list[str] | None = None) -> int:
         cmd_hub(Args(web_port=args.web_port))
     elif args.command == "update":
         return cmd_update()
-    elif args.command == "chat":
+    elif args.command in {"new", "resume"}:
+        session_id = None
+        name = ""
+        if args.command == "resume":
+            session_id = args.session or ""
+        else:
+            name = args.name
         cmd_chat(Args(
             model=args.model,
             persona=args.persona,
-            name=args.name,
+            name=name,
             verbose=args.verbose,
             stream=args.stream,
             reasoning_effort=args.reasoning_effort,
-            resume=args.resume,
+            resume=session_id,
         ))
     return 0
 

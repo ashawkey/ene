@@ -203,6 +203,37 @@ def test_event_hub_listener_failure_does_not_break_publication():
     assert events.snapshot() == [event]
 
 
+def test_resolve_fuzzy_name_accepts_unique_prefix(monkeypatch):
+    record = {"runtime_id": "runtime-id", "name": "test", "status": "ready"}
+    monkeypatch.setattr(live, "list_records", lambda: [record])
+
+    assert live.resolve("t", fuzzy_name=True) is record
+    assert live.resolve("te", fuzzy_name=True) is record
+    assert live.resolve("tes", fuzzy_name=True) is record
+
+
+def test_resolve_fuzzy_name_rejects_ambiguous_prefix(monkeypatch):
+    records = [
+        {"runtime_id": "first-id", "name": "test", "status": "ready"},
+        {"runtime_id": "second-id", "name": "team", "status": "ready"},
+    ]
+    monkeypatch.setattr(live, "list_records", lambda: records)
+
+    with pytest.raises(live.LiveError, match="Ambiguous live session: te"):
+        live.resolve("te", fuzzy_name=True)
+
+
+def test_resolve_exact_name_wins_over_other_name_prefix(monkeypatch):
+    exact = {"runtime_id": "first-id", "name": "test", "status": "ready"}
+    records = [
+        exact,
+        {"runtime_id": "second-id", "name": "testing", "status": "ready"},
+    ]
+    monkeypatch.setattr(live, "list_records", lambda: records)
+
+    assert live.resolve("test", fuzzy_name=True) is exact
+
+
 def test_resolve_rejects_worker_that_is_still_starting(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
     monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
