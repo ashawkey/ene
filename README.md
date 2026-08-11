@@ -43,13 +43,13 @@ openai: # openai-compatible
 It also supports codex subscription login, please check the documentation for details.
 
 ```bash
-ene # start the terminal UI to chat
-ene --resume # resume a previous session
+ene [NAME] # start a new, optionally named session
+ene resume # resume a previous session
 
 ene models # list available models
 ene list # list live sessions (aliases: ls, l)
-ene attach # attach to a live session (alias: a)
-ene kill NAME_OR_ID # terminate a live session (alias: k)
+ene attach [NAME_OR_ID] # attach to a live session (alias: a)
+ene kill [NAME_OR_ID] # terminate one or interactively select sessions (alias: k)
 ene status # check the status of the .ene folder
 ene clean # remove disposable data such as tool results and scratch files
 ene clean --history # also remove saved conversation sessions
