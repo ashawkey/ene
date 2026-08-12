@@ -1,3 +1,5 @@
+
+
 <p align="center">
     <picture>
     <img alt="logo" src="docs/public/favicon.svg" width="10%">
@@ -16,7 +18,7 @@ It's as powerful as other modern agents, but also pythonic and educational for y
 ## Features
 
 - **Nothing is Unknown**: Explicit context and system prompt, no unexpected memory: You know the agent.
-- **Skill-first Design**: Hierarhical skill loading makes the core small, but capacity large. Memory is also skill.
+- **Skill-first Design**: Hierarchical skill loading makes the core small, but capacity large. Memory is also skill.
 - **Optimized Bundled Skills**: Plan, review, clean up, create skills, background processes, pdf-reading, ... 
 - **Personal Skill Library**: Use a github repository to easily synchronize your skills.
 - **Terminal-Native & Web UI**: Native terminal experience, while also attached to a modern web UI.
