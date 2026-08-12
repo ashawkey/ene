@@ -440,7 +440,11 @@ class LiveTerminal:
         elif kind == "debug":
             self.console.debug(text)
         elif kind == "output":
-            self.console.print(text, markup=False)
+            ansi = data.get("ansi")
+            if isinstance(ansi, str):
+                self.console.stream_output(ansi, dim=False)
+            else:
+                self.console.print(text, markup=False)
         elif kind == "tool_start":
             self.console.tool(
                 text, name=data.get("name"), primary=str(data.get("primary", "")),

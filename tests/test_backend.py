@@ -542,6 +542,34 @@ def test_context_detail_shows_untruncated_message_content():
     assert not warnings
 
 
+def test_context_list_highlights_conversation_and_dims_tools():
+    output = []
+
+    class Console:
+        def print(self, message, **kwargs):
+            output.append(str(message))
+
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = Console()
+    agent.context = NS(messages=[
+        {"role": "user", "content": "please [inspect] this"},
+        {"role": "assistant", "content": "I will check"},
+        {"role": "tool", "tool_call_id": "call-1", "content": "noisy [output]"},
+    ])
+    agent.token_estimator = NS(chars_to_tokens=lambda chars: chars // 4)
+    agent.context_length = 1000
+
+    agent._cmd_context()
+
+    rendered = output[0]
+    assert "[bold yellow]     user[/bold yellow]" in rendered
+    assert "[yellow]please \\[inspect] this[/yellow]" in rendered
+    assert "[bold white]assistant[/bold white]" in rendered
+    assert "[white]I will check[/white]" in rendered
+    assert "[bright_black]     tool[/bright_black]" in rendered
+    assert "[bright_black](?)  noisy \\[output][/bright_black]" in rendered
+
+
 def test_context_detail_validates_message_id():
     warnings = []
     agent = type("Agent", (AgentCommandsMixin,), {})()

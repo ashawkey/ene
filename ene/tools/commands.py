@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from ene.utils.interrupt import CancelWatcher
-from ene.utils.process import windows_hidden_process_kwargs
+from ene.utils.process import (
+    windows_hidden_process_kwargs,
+    windows_utf8_powershell_command,
+    windows_utf8_process_env,
+)
 
 from .constants import (
     EXEC_DISPLAY_FLUSH_LINES,
@@ -24,6 +28,11 @@ from .constants import (
     MAX_STREAMING_BUFFER_CHARS,
 )
 from .process_util import _process_tree_alive, _terminate_process
+
+
+def _command_output_encoding() -> str:
+    """Return the encoding configured for command subprocess output."""
+    return "utf-8" if sys.platform == "win32" else locale.getpreferredencoding()
 
 
 class CommandToolsMixin:
@@ -43,11 +52,15 @@ class CommandToolsMixin:
         if sys.platform == "win32":
             # Use PowerShell (with user profile) as the modern default on Windows.
             # -NoLogo suppresses the copyright banner; profile is loaded by default.
-            shell_cmd = ["powershell", "-NoLogo", "-Command", command]
+            shell_cmd = [
+                "powershell", "-NoLogo", "-Command",
+                windows_utf8_powershell_command(command),
+            ]
             try:
                 proc = subprocess.Popen(
                     shell_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=cwd or None,
+                    env=windows_utf8_process_env(),
                     **windows_hidden_process_kwargs(
                         subprocess.CREATE_NEW_PROCESS_GROUP
                     ),
@@ -78,7 +91,11 @@ class CommandToolsMixin:
         capture_stopped = threading.Event()
 
         def _drain(stream, lines_buf, size_ref):
-            decoder = codecs.getincrementaldecoder(locale.getpreferredencoding())(errors="replace")
+            # PowerShell is explicitly configured to emit UTF-8 on Windows;
+            # elsewhere preserve the command's locale-based encoding.
+            decoder = codecs.getincrementaldecoder(_command_output_encoding())(
+                errors="replace"
+            )
             # Rendering through rich's per-line layout costs ~70us/line, which
             # would throttle a command with lots of output via pipe backpressure
             # (rich manages ~14k lines/s; the stream must not wait on that).

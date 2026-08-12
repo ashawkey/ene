@@ -48,10 +48,47 @@ export function MarkdownMessage({ children }: { children: string }) {
   )
 }
 
+type AnsiStyle = { color?: string; fontWeight?: number; opacity?: number }
+
+const ANSI_COLORS: Record<number, string> = {
+  30: '#303030', 31: '#d75f5f', 32: '#5faf5f', 33: '#d7af5f',
+  34: '#5f87d7', 35: '#af87d7', 36: '#5fafd7', 37: '#d0d0d0',
+  90: '#808080', 91: '#ff5f5f', 92: '#87d787', 93: '#ffd75f',
+  94: '#87afff', 95: '#d7afff', 96: '#87d7ff', 97: '#ffffff',
+}
+
 export function AnsiOutput({ children }: { children: string }) {
-  // ANSI colour rendering was unreliable, so control sequences are stripped and
-  // the output is shown as clean monospace text.
-  return <span className="ansi-output">{stripAnsi(children)}</span>
+  const parts: ReactNode[] = []
+  const style: AnsiStyle = {}
+  let cursor = 0
+  let key = 0
+  const sgr = /\u001b\[([0-9;]*)m/g
+  for (const match of children.matchAll(sgr)) {
+    if (match.index > cursor) {
+      const text = children.slice(cursor, match.index)
+      parts.push(Object.keys(style).length
+        ? <span style={{ ...style }} key={key++}>{text}</span>
+        : text)
+    }
+    const codes = (match[1] || '0').split(';').map(Number)
+    for (const code of codes) {
+      if (code === 0) {
+        delete style.color; delete style.fontWeight; delete style.opacity
+      } else if (code === 1) style.fontWeight = 700
+      else if (code === 2) style.opacity = 0.65
+      else if (code === 22) { delete style.fontWeight; delete style.opacity }
+      else if (code === 39) delete style.color
+      else if (ANSI_COLORS[code]) style.color = ANSI_COLORS[code]
+    }
+    cursor = match.index + match[0].length
+  }
+  if (cursor < children.length) {
+    const text = stripAnsi(children.slice(cursor))
+    parts.push(Object.keys(style).length
+      ? <span style={{ ...style }} key={key++}>{text}</span>
+      : text)
+  }
+  return <span className="ansi-output">{parts}</span>
 }
 
 function countLines(value: string) {
@@ -176,8 +213,10 @@ function EventBody({ type, text, data, failed }: {
           <Collapsible text={clean}><span className="activity-text">{clean}</span></Collapsible>
         </>
       )
-    case 'output':
-      return <Collapsible text={clean}><AnsiOutput>{text}</AnsiOutput></Collapsible>
+    case 'output': {
+      const ansi = typeof data.ansi === 'string' ? data.ansi : text
+      return <Collapsible text={clean}><AnsiOutput>{ansi}</AnsiOutput></Collapsible>
+    }
     case 'debug':
       return <Collapsible text={clean}><span className="debug-text">{clean}</span></Collapsible>
     default:

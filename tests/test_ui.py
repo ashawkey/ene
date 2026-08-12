@@ -337,6 +337,20 @@ def test_console_stream_output_writes_raw_block_and_emits_event():
     assert evs[-1].data["text"] == "a\n[/bad] [dim] tag\n\x1b[31mred\x1b[0m"
 
 
+def test_console_print_event_includes_plain_and_ansi_renderings():
+    from ene.utils.io import EventHub
+
+    events = EventHub()
+    console = AgentConsole(events=events, render_terminal=False)
+    console.print("[bold yellow]user[/bold yellow] [color(244)]tool[/color(244)]")
+
+    event = events.snapshot()[-1]
+    assert event.type == "output"
+    assert event.data["text"] == "user tool"
+    assert "\x1b[" in event.data["ansi"]
+    assert "user" in event.data["ansi"] and "tool" in event.data["ansi"]
+
+
 def test_headless_console_suppression_hides_events_and_nested_indicators():
     from ene.utils.io import EventHub
 

@@ -20,7 +20,11 @@ from .constants import (
     MAX_TOOL_OUTPUT_CHARS,
 )
 from ene.utils.interrupt import CancelWatcher
-from ene.utils.process import windows_hidden_process_kwargs
+from ene.utils.process import (
+    windows_hidden_process_kwargs,
+    windows_utf8_powershell_command,
+    windows_utf8_process_env,
+)
 
 from .process_util import (
     _close_windows_job,
@@ -170,13 +174,17 @@ class ProcessManagerMixin:
         try:
             log_path.chmod(0o600)
             if sys.platform == "win32":
-                shell_cmd = ["powershell", "-NoLogo", "-Command", command]
+                shell_cmd = [
+                    "powershell", "-NoLogo", "-Command",
+                    windows_utf8_powershell_command(command),
+                ]
                 proc = subprocess.Popen(
                     shell_cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
+                    env=windows_utf8_process_env(),
                     **windows_hidden_process_kwargs(
                         subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004
                     ),

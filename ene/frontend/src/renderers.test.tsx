@@ -17,12 +17,15 @@ describe('content renderers', () => {
     expect(container.querySelector('table')).toBeInTheDocument()
   })
 
-  it('strips ANSI control sequences to clean text', () => {
+  it('renders ANSI colors and emphasis as styled clean text', () => {
     const { container } = render(
       <AnsiOutput>{'plain [31mred[0m [1;32mbold[0m'}</AnsiOutput>,
     )
     expect(container.textContent).toBe('plain red bold')
-    expect(container.querySelector('span[style]')).toBeNull()
+    const styled = container.querySelectorAll('span[style]')
+    expect(styled).toHaveLength(2)
+    expect(styled[0]).toHaveStyle({ color: '#d75f5f' })
+    expect(styled[1]).toHaveStyle({ color: '#5faf5f', fontWeight: '700' })
   })
 
   it('renders structured additions and removals', () => {
@@ -79,6 +82,15 @@ describe('content renderers', () => {
     expect(details).toHaveAttribute('open')
     expect(details?.querySelector('summary')).toHaveTextContent('thinking')
     expect(container.querySelector('.thinking-text')).toHaveTextContent('Let me reason about this.')
+  })
+
+  it('renders the styled output payload when available', () => {
+    const event = makeEvent('output', 'user tool', {
+      ansi: '\u001b[1;33muser\u001b[0m \u001b[90mtool\u001b[0m',
+    })
+    const { container } = render(<EventCard event={event} />)
+    expect(container.textContent).toBe('user tool')
+    expect(container.querySelectorAll('span[style]')).toHaveLength(2)
   })
 
   it('collapses long output behind a details toggle', () => {

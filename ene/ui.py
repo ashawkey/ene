@@ -828,6 +828,16 @@ class AgentConsole:
             capture_console.print(*objects, markup=markup)
         return capture.get().rstrip("\n")
 
+    def _render_ansi(self, *objects, markup: bool = True) -> str:
+        """Render rich objects/markup with ANSI styles for attached terminals."""
+        capture_console = Console(
+            width=120, theme=AGENT_THEME, force_terminal=True,
+            color_system="standard",
+        )
+        with capture_console.capture() as capture:
+            capture_console.print(*objects, markup=markup)
+        return capture.get().rstrip("\n")
+
     @contextmanager
     def round_timer(self) -> Iterator[None]:
         """Track one autonomous round for frozen status-bar totals."""
@@ -916,9 +926,11 @@ class AgentConsole:
         if self.render_terminal:
             self._console.print(*args, **kwargs)
         if args and self.events is not None:
+            markup = kwargs.get("markup", True)
             self._emit(
                 "output",
-                text=self._render_plain(*args, markup=kwargs.get("markup", True)),
+                text=self._render_plain(*args, markup=markup),
+                ansi=self._render_ansi(*args, markup=markup),
             )
 
     def local(self, *args, **kwargs):

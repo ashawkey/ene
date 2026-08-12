@@ -406,6 +406,24 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
     assert inputs.submission == queued
 
 
+def test_live_terminal_renders_structured_output_with_ansi_styles():
+    client = LiveTerminal({})
+    printed = []
+    client.console = SimpleNamespace(
+        print=lambda text, **kwargs: printed.append(("print", text, kwargs)),
+        stream_output=lambda text, **kwargs: printed.append(("stream", text, kwargs)),
+    )
+
+    client._render_unlocked("output", {
+        "text": "user tool",
+        "ansi": "\x1b[1;33muser\x1b[0m \x1b[90mtool\x1b[0m",
+    })
+
+    assert printed == [(
+        "stream", "\x1b[1;33muser\x1b[0m \x1b[90mtool\x1b[0m", {"dim": False},
+    )]
+
+
 def test_live_terminal_classifies_instant_commands_from_worker_metadata():
     client = LiveTerminal({})
     client.commands = {

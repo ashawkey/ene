@@ -597,24 +597,48 @@ class AgentCommandsMixin:
             if len(preview) > 80:
                 preview = preview[:77] + "..."
 
-            role_tag = f"[cyan]{role:>9}[/cyan]"
+            role_style = {
+                "user": "bold yellow",
+                "assistant": "bold white",
+                "tool": "bright_black",
+            }.get(role, "dim")
+            role_tag = f"[{role_style}]{escape(role):>9}[/{role_style}]"
             size_tag = f"[dim]{chars:>6} ch[/dim]"
 
             tcs = get_tool_calls(m) if role == "assistant" else []
             if tcs:
                 n_tc = len(tcs)
                 tc_names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs)
-                extra = f"[yellow]{n_tc} call{'s' if n_tc > 1 else ''}[/yellow] ({tc_names})"
+                extra = (
+                    f"[yellow]{n_tc} call{'s' if n_tc > 1 else ''}[/yellow] "
+                    f"({escape(tc_names)})"
+                )
                 if preview:
-                    lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {extra}  {preview}")
+                    lines.append(
+                        f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {extra}  "
+                        f"[white]{escape(preview)}[/white]"
+                    )
                 else:
                     lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {extra}")
             elif role == "tool":
                 tid = get_tool_call_id(m)
                 tool_name = tc_id_to_name.get(tid, "?") if tid else "?"
-                lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  [magenta]({tool_name})[/magenta]  {preview}")
+                lines.append(
+                    f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  "
+                    f"[bright_black]({escape(tool_name)})  {escape(preview)}[/bright_black]"
+                )
             else:
-                lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {preview}")
+                preview_style = (
+                    "yellow" if role == "user" else
+                    "white" if role == "assistant" else ""
+                )
+                if preview_style:
+                    lines.append(
+                        f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  "
+                        f"[{preview_style}]{escape(preview)}[/{preview_style}]"
+                    )
+                else:
+                    lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {escape(preview)}")
 
         est_tokens = self.token_estimator.chars_to_tokens(total_chars)
         ctx_pct = est_tokens / self.context_length * 100 if self.context_length else 0

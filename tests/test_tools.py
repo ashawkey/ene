@@ -31,7 +31,11 @@ from ene.tools import (
     result_text_failed,
 )
 from ene.utils.io import CancellationToken, EventHub
-from ene.utils.process import windows_hidden_process_kwargs
+from ene.utils.process import (
+    windows_hidden_process_kwargs,
+    windows_utf8_powershell_command,
+    windows_utf8_process_env,
+)
 
 
 class _SilentConsole:
@@ -57,6 +61,17 @@ def _executor_with_monitor(tmp_path):
 def test_process_status_format():
     assert format_process_status(2, 2) == "2/4 running processes"
     assert format_process_status(0, 4) == ""
+
+
+def test_windows_utf8_subprocess_settings(monkeypatch):
+    monkeypatch.setenv("PYTHONIOENCODING", "legacy")
+    command = windows_utf8_powershell_command("Write-Output 'héllo 世界'")
+    assert "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)" in command
+    assert "$OutputEncoding = [Console]::OutputEncoding" in command
+    assert command.endswith("Write-Output 'héllo 世界'")
+    env = windows_utf8_process_env()
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
 
 
 def test_windows_hidden_process_kwargs():
@@ -439,6 +454,22 @@ def test_exec_command_merges_output_and_is_noninteractive(tmp_path):
     # Windows shells emit \r\n; normalize so the merged stream is comparable.
     assert res["stdout"].replace("\r\n", "\n") == "out\nerr\nstdin=\n"
     assert "stderr" not in res
+
+
+def test_exec_command_decodes_utf8_when_windows_locale_is_legacy(tmp_path, monkeypatch):
+    host_platform = sys.platform
+    monkeypatch.setattr(command_tools.sys, "platform", "win32")
+    monkeypatch.setattr(command_tools.locale, "getpreferredencoding", lambda: "cp1252")
+    assert command_tools._command_output_encoding() == "utf-8"
+    # Exercise the reader locally without entering the Windows launch branch.
+    monkeypatch.setattr(command_tools.sys, "platform", host_platform)
+    monkeypatch.setattr(command_tools, "_command_output_encoding", lambda: "utf-8")
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    res = te._exec_command(
+        f'"{sys.executable}" -c "import sys; sys.stdout.buffer.write(\'héllo 世界\\n\'.encode(\'utf-8\'))"'
+    )
+    Path(res["_artifact_path"]).unlink(missing_ok=True)
+    assert res["stdout"].replace("\r\n", "\n") == "héllo 世界\n"
 
 
 def test_exec_command_timeout_and_null_override(tmp_path):
