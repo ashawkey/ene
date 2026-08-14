@@ -25,6 +25,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.validation import Validator, ValidationError
 from pygments.lexers.markup import MarkdownLexer
 
+from ene.ui import ContextStatus
 from ene.utils.io import sanitize_unicode
 
 
@@ -462,6 +463,7 @@ class TerminalInput:
         self._last_ctrl_c = 0.0  # timestamp of last Ctrl+C on an empty buffer
         self._busy = False
         self._status: list[tuple[str, str]] = []
+        self._context_status: ContextStatus | None = None
         self._process_status = ""
         self._status_lock = threading.Lock()
         self._cancel: Callable[[], None] | None = None
@@ -704,7 +706,15 @@ class TerminalInput:
         pending = self._pending_text() if self._pending_text is not None else None
         with self._status_lock:
             status = list(self._status)
+            context_status = getattr(self, "_context_status", None)
             process_status = self._process_status
+        has_context = any(style.startswith("class:status.context.") for style, _ in status)
+        if context_status is not None and not has_context:
+            context_fragments = context_status.prompt_fragments()
+            if status:
+                status.extend([("", " · "), *context_fragments])
+            else:
+                status = context_fragments
         if self._busy and not status:
             status = [
                 ("class:status.spinner", "⠋ "),
@@ -726,11 +736,12 @@ class TerminalInput:
             else:
                 status = [("class:status.pending", label)]
         width = max(1, self._session.app.output.get_size().columns - 1)
+        separator = (
+            "class:separator.busy" if self._busy else "class:separator",
+            "─" * width,
+        )
         prompt = [
-            (
-                "class:separator.busy" if self._busy else "class:separator",
-                "─" * width,
-            ),
+            separator,
             ("", "\n"),
             (
                 "class:prompt.busy" if self._busy else "class:prompt",
@@ -738,7 +749,7 @@ class TerminalInput:
             ),
         ]
         if status:
-            return [*status, ("", "\n"), *prompt]
+            return [separator, ("", "\n"), *status, ("", "\n"), *prompt]
         return prompt
 
     def set_runtime_state(
@@ -763,6 +774,13 @@ class TerminalInput:
     def set_status(self, status: list[tuple[str, str]] | None) -> None:
         with self._status_lock:
             self._status = status or []
+        app = self._session.app
+        if app.is_running:
+            app.invalidate()
+
+    def set_context_status(self, status: ContextStatus) -> None:
+        with self._status_lock:
+            self._context_status = status
         app = self._session.app
         if app.is_running:
             app.invalidate()

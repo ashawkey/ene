@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { ActivityStatus, Composer, ConnectionBanner, Login, PromptDialog, ScrollTopButton, SessionSidebar, ThemeToggle } from './components'
-import type { ThinkingProps } from './components'
+import type { ContextStatusProps, ThinkingProps } from './components'
 import { useConnectionSocket } from './connection'
 import { EventCard } from './renderers'
 import { applyTheme, hasStoredTheme, resolveInitialTheme, storeTheme } from './theme'
@@ -9,6 +9,17 @@ import type { Theme } from './theme'
 import type { AgentEvent, ClientAction, DisplayEvent, PendingMessage, Prompt, SessionSummary, StateMessage } from './types'
 import { displayTypes, isPrompt } from './types'
 import { appendDelta, finalizeStream } from './streaming'
+
+function parseContextStatus(data: Record<string, unknown>): ContextStatusProps | null {
+  if (typeof data.context_tokens !== 'number') return null
+  return {
+    contextTokens: data.context_tokens,
+    contextLimit: typeof data.context_limit === 'number' ? data.context_limit : 0,
+    inputTokens: typeof data.input_tokens === 'number' ? data.input_tokens : 0,
+    outputTokens: typeof data.output_tokens === 'number' ? data.output_tokens : 0,
+    cachedTokens: typeof data.cached_tokens === 'number' ? data.cached_tokens : 0,
+  }
+}
 
 function appendEvent(events: DisplayEvent[], event: DisplayEvent) {
   const previous = events.at(-1)
@@ -52,6 +63,7 @@ function SessionPane({
   const submitActionRef = useRef<string | null>(null)
   const withdrawActionRef = useRef<string | null>(null)
   const [thinkingStatus, setThinkingStatus] = useState<ThinkingProps | null>(null)
+  const [contextStatus, setContextStatus] = useState<ContextStatusProps | null>(null)
   const [processStatus, setProcessStatus] = useState('')
   const lastSeq = useRef(0)
   const streamKey = useRef('')
@@ -87,6 +99,7 @@ function SessionPane({
       streamKey.current = key
       setOperationId(state.operation_id)
       setProcessStatus(state.process_status)
+      setContextStatus(state.context_status ? parseContextStatus(state.context_status) : null)
       // State frames are authoritative after reconnect. A fresh stream cannot
       // inherit an old indicator; an idle operation cannot keep one visible.
       if (streamChanged || state.operation_id === null) setThinkingStatus(null)
@@ -188,9 +201,11 @@ function SessionPane({
         setOperationId(null)
         setThinkingStatus(null)
         break
-      case 'thinking_start':
+      case 'thinking_start': {
+        const context = parseContextStatus(data)
+        if (context) setContextStatus(context)
         setThinkingStatus({
-          suffix: typeof data.suffix === 'string' ? data.suffix : '',
+          suffix: context === null && typeof data.suffix === 'string' ? data.suffix : '',
           contextTokens: typeof data.context_tokens === 'number' ? data.context_tokens : 0,
           contextLimit: typeof data.context_limit === 'number' ? data.context_limit : 0,
           inputTokens: typeof data.input_tokens === 'number' ? data.input_tokens : 0,
@@ -203,12 +218,18 @@ function SessionPane({
           roundElapsed: typeof data.round_elapsed === 'number' ? data.round_elapsed : undefined,
         })
         break
+      }
       case 'thinking_stop':
         setThinkingStatus(null)
         break
       case 'process_status':
         setProcessStatus(typeof data.text === 'string' ? data.text : '')
         break
+      case 'context_status': {
+        const context = parseContextStatus(data)
+        if (context) setContextStatus(context)
+        break
+      }
       case 'timeline_reset':
         setThinkingStatus(null)
         setEvents([])
@@ -296,6 +317,7 @@ function SessionPane({
             busy={operationId !== null}
             status={thinkingStatus}
             processStatus={processStatus}
+            contextStatus={contextStatus}
           />
         ) : null}
       </section>

@@ -128,6 +128,32 @@ class ContextStatus:
             return f"~{_compact_tokens(self.tokens)} · {details}"
         return f"{self.fraction:.0%} · {details}"
 
+    def event_data(self) -> dict[str, int]:
+        return {
+            "context_tokens": self.tokens,
+            "context_limit": self.limit,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_tokens": self.cached_tokens,
+        }
+
+    def prompt_fragments(self, width: int = 14) -> list[tuple[str, str]]:
+        if self.limit <= 0:
+            return [("class:status.detail", self.plain())]
+        complete = round(width * self.fraction)
+        color = (
+            "high"
+            if self.fraction >= 0.9
+            else "medium"
+            if self.fraction >= 0.75
+            else "low"
+        )
+        return [
+            (f"class:status.context.{color}", "━" * complete),
+            ("class:status.track", "━" * (width - complete)),
+            ("class:status.detail", f" · {self.plain()}"),
+        ]
+
     def render(self) -> Table | Text:
         if self.limit <= 0:
             return Text(self.plain(), style="dim")
@@ -348,29 +374,10 @@ class ThinkingIndicator:
                 ("class:status.track", "━" * (width - start - pulse)),
             ])
         elif isinstance(self._status_suffix, ContextStatus):
-            complete = round(width * self._status_suffix.fraction)
-            color = (
-                "high"
-                if self._status_suffix.fraction >= 0.9
-                else "medium"
-                if self._status_suffix.fraction >= 0.75
-                else "low"
-            )
-            fragments.extend([
-                ("", " "),
-                (f"class:status.context.{color}", "━" * complete),
-                ("class:status.track", "━" * (width - complete)),
-            ])
-        if self._status_suffix:
-            suffix = (
-                f"{self._status_suffix.fraction:.0%} · "
-                f"↑{_compact_tokens(self._status_suffix.input_tokens)} · "
-                f"↓{_compact_tokens(self._status_suffix.output_tokens)} · "
-                f"{self._status_suffix.cache_hit_ratio:.0%} hit"
-                if isinstance(self._status_suffix, ContextStatus)
-                else str(self._status_suffix)
-            )
-            fragments.append(("class:status.detail", f" · {suffix}"))
+            fragments.append(("", " "))
+            fragments.extend(self._status_suffix.prompt_fragments(width))
+        if self._status_suffix and not isinstance(self._status_suffix, ContextStatus):
+            fragments.append(("class:status.detail", f" · {self._status_suffix}"))
         if self._round_elapsed is not None:
             fragments.append((
                 "class:status.detail",
@@ -774,6 +781,7 @@ class AgentConsole:
         self.status_sink: (
             Callable[[list[tuple[str, str]] | None], None] | None
         ) = None
+        self.context_status_sink: Callable[[ContextStatus], None] | None = None
         self.timeline_reset_sink: Callable[[], None] | None = None
         self._indicator_stack: list[ThinkingIndicator] = []
         self._indicator_lock = threading.RLock()
@@ -905,6 +913,8 @@ class AgentConsole:
                 initial_elapsed=initial_elapsed,
                 render_terminal=False,
             )
+        if isinstance(status_suffix, ContextStatus) and self.context_status_sink is not None:
+            self.context_status_sink(status_suffix)
         return ThinkingIndicator(
             self._console,
             self.events,

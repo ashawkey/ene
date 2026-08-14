@@ -46,6 +46,7 @@ export type StateMessage = {
   replay_truncated: boolean
   operation_id: string | null
   process_status: string
+  context_status: Record<string, unknown> | null
   prompt: Prompt | null
   pending: PendingMessage | null
 }

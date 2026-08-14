@@ -284,6 +284,9 @@ class Worker:
                 *agent.tool_executor.process_counts(),
                 agent.tool_executor.process_activity(),
             )
+            get_context_status = getattr(agent, "_status_suffix", None)
+            if get_context_status is not None:
+                status["context_status"] = get_context_status().event_data()
         return status
 
     def _make_agent(self) -> LLMAgent:

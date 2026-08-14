@@ -176,7 +176,45 @@ describe('interaction components', () => {
     expect(status?.textContent).toBe(processStatus)
   })
 
-  it('hides the status when the operation and indicator are both idle', () => {
+  it('keeps context usage visible while idle', () => {
+    render(
+      <ActivityStatus
+        busy={false}
+        status={null}
+        contextStatus={{
+          contextTokens: 96_000,
+          contextLimit: 128_000,
+          inputTokens: 200_000,
+          outputTokens: 4_000,
+          cachedTokens: 150_000,
+        }}
+      />,
+    )
+    expect(screen.queryByText(/Working/)).not.toBeInTheDocument()
+    expect(screen.getByText('75%')).toBeInTheDocument()
+    expect(screen.getByText('↑200K · ↓4K · 75% hit')).toBeInTheDocument()
+  })
+
+  it('keeps context usage visible during other activity', () => {
+    render(
+      <ActivityStatus
+        busy
+        status={{ label: 'Executing', suffix: 'read_file' }}
+        contextStatus={{
+          contextTokens: 64_000,
+          contextLimit: 128_000,
+          inputTokens: 20_000,
+          outputTokens: 2_000,
+          cachedTokens: 10_000,
+        }}
+      />,
+    )
+    expect(screen.getByText('Executing... (0s)')).toBeInTheDocument()
+    expect(screen.getByText('50%')).toBeInTheDocument()
+    expect(screen.getByText('↑20K · ↓2K · 50% hit')).toBeInTheDocument()
+  })
+
+  it('hides the status before context usage is available', () => {
     const { container } = render(<ActivityStatus busy={false} status={null} />)
     expect(container).toBeEmptyDOMElement()
   })

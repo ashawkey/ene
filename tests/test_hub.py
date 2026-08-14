@@ -140,6 +140,28 @@ def test_websocket_requires_same_origin():
 
 # -- RemoteSession derived-state unit --------------------------------------
 
+def test_remote_session_tracks_context_status_for_authoritative_state():
+    session = RemoteSession("s1", {})
+    session.ingest({
+        "type": "context_status",
+        "data": {
+            "context_tokens": 96_000,
+            "context_limit": 128_000,
+            "input_tokens": 200_000,
+            "output_tokens": 4_000,
+            "cached_tokens": 150_000,
+        },
+    })
+
+    assert session.context_status == {
+        "context_tokens": 96_000,
+        "context_limit": 128_000,
+        "input_tokens": 200_000,
+        "output_tokens": 4_000,
+        "cached_tokens": 150_000,
+    }
+
+
 def test_remote_session_tracks_process_status_for_authoritative_state():
     session = RemoteSession("s1", {})
     session.ingest({

@@ -2,6 +2,7 @@ import io
 
 from rich.console import Console
 
+from ene.terminal import TerminalInput
 from ene.ui import AgentConsole, ContextStatus, ResponseStream, ThinkingIndicator
 
 
@@ -31,6 +32,32 @@ def test_checkbox_terminal_normalizes_cancellation(monkeypatch):
     monkeypatch.setattr("ene.ui.questionary.checkbox", lambda *args, **kwargs: Question())
 
     assert AgentConsole().checkbox_terminal("Kill sessions", ["one"]) is None
+
+
+def test_terminal_keeps_context_status_when_activity_stops(monkeypatch):
+    from prompt_toolkit.output import DummyOutput
+    import prompt_toolkit.output.defaults as pt_defaults
+
+    monkeypatch.setattr(pt_defaults, "create_output", lambda *a, **k: DummyOutput())
+    terminal = TerminalInput()
+    context = ContextStatus(96_000, 128_000, 200_000, 4_000, 150_000)
+    terminal.set_context_status(context)
+    terminal.set_status([
+        ("class:status.spinner", "⠋ "),
+        ("class:status.text", "Executing..."),
+    ])
+
+    active = "".join(text for _, text in terminal._message())
+    assert "Executing..." in active
+    assert "75% · ↑200K · ↓4K · 75% hit" in active
+
+    terminal.set_status(None)
+    idle = "".join(text for _, text in terminal._message())
+    assert "Executing..." not in idle
+    assert "75% · ↑200K · ↓4K · 75% hit" in idle
+    lines = idle.splitlines()
+    assert lines[0] and set(lines[0]) == {"─"}
+    assert lines[2] and set(lines[2]) == {"─"}
 
 
 def test_thinking_indicator_can_render_a_countdown():

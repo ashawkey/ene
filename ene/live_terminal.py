@@ -133,6 +133,17 @@ class LiveTerminal:
         )
         self.console.interactive_input = True
         self.console.status_sink = self.terminal.set_status
+        set_context_status = getattr(self.terminal, "set_context_status", None)
+        self.console.context_status_sink = set_context_status
+        context_status = session.get("context_status")
+        if isinstance(context_status, dict) and set_context_status is not None:
+            set_context_status(ContextStatus(
+                int(context_status.get("context_tokens", 0)),
+                int(context_status.get("context_limit", 0)),
+                int(context_status.get("input_tokens", 0)),
+                int(context_status.get("output_tokens", 0)),
+                int(context_status.get("cached_tokens", 0)),
+            ))
         self.terminal.set_process_status(str(session.get("process_status", "")))
         self.terminal.set_busy(self.operation_id is not None)
         active_indicator = session.get("active_indicator")
@@ -222,6 +233,7 @@ class LiveTerminal:
                     self.response_stream = None
             self.console.interactive_input = False
             self.console.status_sink = None
+            self.console.context_status_sink = None
             try:
                 self.sock.close()
             except OSError:

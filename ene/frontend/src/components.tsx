@@ -164,6 +164,14 @@ function formatRoundDuration(value: number) {
   return `${seconds}s`
 }
 
+export type ContextStatusProps = {
+  contextTokens: number
+  contextLimit: number
+  inputTokens: number
+  outputTokens: number
+  cachedTokens: number
+}
+
 export type ThinkingProps = {
   suffix?: string
   contextTokens?: number
@@ -177,6 +185,35 @@ export type ThinkingProps = {
   startedAt?: number
   roundElapsed?: number
   processStatus?: string
+}
+
+function ContextUsage({
+  contextTokens,
+  contextLimit,
+  inputTokens,
+  outputTokens,
+  cachedTokens,
+}: ContextStatusProps) {
+  const fraction = contextLimit > 0
+    ? Math.min(Math.max(contextTokens / contextLimit, 0), 1)
+    : 0
+  const contextLevel = fraction >= 0.9 ? 'danger' : fraction >= 0.75 ? 'warning' : 'info'
+  const cacheHitRatio = inputTokens > 0
+    ? Math.min(Math.max(cachedTokens / inputTokens, 0), 1)
+    : 0
+  const details = `↑${compactTokens(inputTokens)} · ↓${compactTokens(outputTokens)} · ${Math.round(cacheHitRatio * 100)}% hit`
+  if (contextLimit <= 0) {
+    return <small>~{compactTokens(contextTokens)} · {details}</small>
+  }
+  return (
+    <>
+      <i className={`context-progress ${contextLevel}`} aria-hidden="true">
+        <i style={{ width: `${fraction * 100}%` }} />
+      </i>
+      <strong className={contextLevel}>{Math.round(fraction * 100)}%</strong>
+      <small>{details}</small>
+    </>
+  )
 }
 
 export function Thinking({
@@ -197,13 +234,6 @@ export function Thinking({
   const start = startedAt ?? mountedAt.current
   const elapsed = () => Math.max(0, Math.floor((Date.now() - start) / 1000))
   const [seconds, setSeconds] = useState(elapsed)
-  const fraction = contextLimit > 0
-    ? Math.min(Math.max(contextTokens / contextLimit, 0), 1)
-    : 0
-  const contextLevel = fraction >= 0.9 ? 'danger' : fraction >= 0.75 ? 'warning' : 'info'
-  const cacheHitRatio = inputTokens > 0
-    ? Math.min(Math.max(cachedTokens / inputTokens, 0), 1)
-    : 0
   useEffect(() => {
     setSeconds(elapsed())
     const id = window.setInterval(() => setSeconds(elapsed()), 1000)
@@ -215,17 +245,16 @@ export function Thinking({
       <em>{label}... ({countdown == null ? `${seconds}s` : formatDuration(countdown - seconds)})</em>
       {progress ? <i className="indeterminate-progress" aria-hidden="true"><i /></i> : null}
       {processStatus ? <small className="process-status">{processStatus}</small> : null}
-      {contextLimit > 0 ? (
-        <>
-          <i className={`context-progress ${contextLevel}`} aria-hidden="true">
-            <i style={{ width: `${fraction * 100}%` }} />
-          </i>
-          <strong className={contextLevel}>{Math.round(fraction * 100)}%</strong>
-          <small>
-            ↑{compactTokens(inputTokens)} · ↓{compactTokens(outputTokens)} · {Math.round(cacheHitRatio * 100)}% hit
-          </small>
-        </>
-      ) : suffix ? <small>{suffix}</small> : null}
+      {suffix ? <small>{suffix}</small> : null}
+      {contextLimit > 0 || contextTokens > 0 ? (
+        <ContextUsage
+          contextTokens={contextTokens}
+          contextLimit={contextLimit}
+          inputTokens={inputTokens}
+          outputTokens={outputTokens}
+          cachedTokens={cachedTokens}
+        />
+      ) : null}
       {roundElapsed == null ? null : <small>· {formatRoundDuration(roundElapsed)}</small>}
     </div>
   )
@@ -235,17 +264,23 @@ export function ActivityStatus({
   busy,
   status,
   processStatus = '',
+  contextStatus = null,
 }: {
   busy: boolean
   status: ThinkingProps | null
   processStatus?: string
+  contextStatus?: ContextStatusProps | null
 }) {
   if (!busy && status === null) {
-    return processStatus ? (
-      <div className="working" aria-label="background processes"><small className="process-status">{processStatus}</small></div>
-    ) : null
+    if (!processStatus && contextStatus === null) return null
+    return (
+      <div className="working" aria-label={contextStatus ? 'status' : 'background processes'}>
+        {processStatus ? <small className="process-status">{processStatus}</small> : null}
+        {contextStatus ? <ContextUsage {...contextStatus} /> : null}
+      </div>
+    )
   }
-  return <Thinking {...(status ?? {})} processStatus={processStatus} />
+  return <Thinking {...(status ?? {})} {...(contextStatus ?? {})} processStatus={processStatus} />
 }
 
 export function Login({ onSuccess }: { onSuccess: () => void }) {

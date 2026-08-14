@@ -370,7 +370,7 @@ class LLMAgent(
             )
 
     def _status_suffix(self) -> ContextStatus:
-        """Context-window progress shown in the 'Working...' status bar."""
+        """Context-window progress shown in the status bar."""
         return ContextStatus(
             tokens=self._context_tokens(),
             limit=self.context_length,
@@ -378,6 +378,13 @@ class LLMAgent(
             output_tokens=self.token_totals["completion"],
             cached_tokens=self.token_totals["cached_prompt"],
         )
+
+    def _publish_context_status(self) -> None:
+        status = self._status_suffix()
+        if self.console.context_status_sink is not None:
+            self.console.context_status_sink(status)
+        if self.events is not None:
+            self.events.publish("context_status", **status.event_data())
 
     def _interruptible_sleep(self, seconds: float):
         stop = threading.Event()
@@ -1261,6 +1268,10 @@ class LLMAgent(
             self.cancellation.watch_keyboard = False
         self.console.interactive_input = True
         self.console.status_sink = terminal.set_status
+        self.console.context_status_sink = getattr(terminal, "set_context_status", None)
+        publish_context_status = getattr(self, "_publish_context_status", None)
+        if publish_context_status is not None:
+            publish_context_status()
 
         set_process_status = getattr(terminal, "set_process_status", None)
         self._process_status_sink = set_process_status
@@ -1445,6 +1456,7 @@ class LLMAgent(
                 set_process_status("")
             self.console.interactive_input = False
             self.console.status_sink = None
+            self.console.context_status_sink = None
             self.console.timeline_reset_sink = None
 
     def _run_round(self) -> bool:
@@ -1460,6 +1472,10 @@ class LLMAgent(
         except Exception as e:
             self.console.warn(f"Round failed: {e}", exc_info=self.verbose)
             return False
+        finally:
+            publish_context_status = getattr(self, "_publish_context_status", None)
+            if publish_context_status is not None:
+                publish_context_status()
 
     def _process_next_submission(self) -> bool:
         assert self.input_broker is not None
