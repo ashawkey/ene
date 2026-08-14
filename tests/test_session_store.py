@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ene.messages import Message
 from ene.session_store import SessionStore
 from ene.utils.rewind import ChangeTracker
 
@@ -15,7 +16,7 @@ class _Console:
 def _state(round_id: int, text: str) -> dict:
     return {
         "round_id": round_id,
-        "messages": [{"role": "user", "content": text}],
+        "messages": [Message.user(text)],
     }
 
 
@@ -35,19 +36,19 @@ def test_session_revisions_branch_without_losing_descendants(tmp_path: Path):
 
     assert store.revisions[old_tip]["parentId"] == root
     assert store.revisions[new_tip]["parentId"] == root
-    assert store.materialize(old_tip)["messages"][0]["content"] == "old tip"
-    assert store.materialize(new_tip)["messages"][0]["content"] == "new tip"
+    assert store.materialize(old_tip)["messages"][0].text == "old tip"
+    assert store.materialize(new_tip)["messages"][0].text == "new tip"
     assert not (store.path / "snapshot.json").exists()
 
 
 def test_revisions_are_delta_encoded_but_materialize_in_full(tmp_path: Path):
     """Appending a round must not rewrite the whole message list and state."""
     store = SessionStore(tmp_path, "session")
-    system = {"role": "system", "content": "UNIQUE_PROMPT_MARKER " + "x" * 2000}
+    system = Message.system("UNIQUE_PROMPT_MARKER " + "x" * 2000).to_wire()
     messages = []
     parent = None
     for round_id in range(1, 21):
-        messages = messages + [{"role": "user", "content": f"m{round_id}"}]
+        messages = messages + [Message.user(f"m{round_id}")]
         parent, _, _ = store.commit(
             {"messages": list(messages), "round_id": round_id, "system_prompt": system},
             parent_id=parent, code_parent_id=None, changes=[], reason="round",
@@ -76,9 +77,9 @@ def test_commit_writes_picker_metadata_and_loads_it_without_history_parse(
     revision, _, _ = store.commit(
         {
             "messages": [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "done"},
-                {"role": "user", "content": "latest\nrequest"},
+                Message.user("first"),
+                Message.assistant("done"),
+                Message.user("latest\nrequest"),
             ],
             "round_id": 2,
         },
@@ -148,12 +149,12 @@ def test_revision_state_is_snapshotted_not_aliased(tmp_path: Path):
     """A revision records the state it was written with, not a live reference.
 
     Callers pass their own mutable session state (token totals, the system
-    prompt dict), which keeps changing after the commit returns.
+    prompt), which keeps changing after the commit returns.
     """
     store = SessionStore(tmp_path, "session")
     totals = {"total": 0}
-    system = {"role": "system", "content": "persona A"}
-    messages = [{"role": "user", "content": "m1"}]
+    system = Message.system("persona A").to_wire()
+    messages = [Message.user("m1")]
 
     first, _, _ = store.commit(
         {"messages": list(messages), "round_id": 1, "token_totals": totals,
@@ -162,7 +163,7 @@ def test_revision_state_is_snapshotted_not_aliased(tmp_path: Path):
     )
     totals["total"] = 12345
     system["content"] = "persona B"
-    messages.append({"role": "assistant", "content": "m2"})
+    messages.append(Message.assistant("m2"))
     second, _, _ = store.commit(
         {"messages": list(messages), "round_id": 2, "token_totals": totals,
          "system_prompt": system},
@@ -194,32 +195,32 @@ def test_commit_picks_up_history_written_by_another_process(tmp_path: Path):
     assert theirs in first_agent.revisions
 
     reloaded = SessionStore(tmp_path, "session")
-    assert reloaded.materialize(theirs)["messages"][0]["content"] == "theirs"
-    assert reloaded.materialize(mine)["messages"][0]["content"] == "mine"
+    assert reloaded.materialize(theirs)["messages"][0].text == "theirs"
+    assert reloaded.materialize(mine)["messages"][0].text == "mine"
     assert reloaded.head_id == mine
 
 
 def test_delta_revisions_survive_branching_and_replacement(tmp_path: Path):
     """Rewind branches and compaction replace messages rather than appending."""
     store = SessionStore(tmp_path, "session")
-    base = [{"role": "user", "content": "a"}]
+    base = [Message.user("a")]
     root, _, _ = store.commit(
         {"messages": list(base), "round_id": 1, "goal": "g"},
         parent_id=None, code_parent_id=None, changes=[], reason="round",
     )
-    appended = base + [{"role": "assistant", "content": "b"}]
+    appended = base + [Message.assistant("b")]
     tip, _, _ = store.commit(
         {"messages": list(appended), "round_id": 2, "goal": "g"},
         parent_id=root, code_parent_id=None, changes=[], reason="round",
     )
     # Divergent branch from the root.
-    branched = base + [{"role": "assistant", "content": "other"}]
+    branched = base + [Message.assistant("other")]
     branch, _, _ = store.commit(
         {"messages": list(branched), "round_id": 2, "goal": "g2"},
         parent_id=root, code_parent_id=None, changes=[], reason="round",
     )
     # Compaction: messages replaced wholesale and a state key disappears.
-    compacted = [{"role": "user", "content": "[summary]"}]
+    compacted = [Message.user("[summary]")]
     summary, _, _ = store.commit(
         {"messages": list(compacted), "round_id": 3},
         parent_id=tip, code_parent_id=None, changes=[], reason="round",
@@ -261,7 +262,7 @@ def test_legacy_full_form_revisions_still_load(tmp_path: Path):
     (store.path / "history.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     fresh = SessionStore(tmp_path, "session")
-    assert fresh.materialize(tip)["messages"][0]["content"] == "tip"
+    assert fresh.materialize(tip)["messages"][0].text == "tip"
     assert fresh.revisions == store.revisions
     # A new delta-encoded revision can still extend a legacy history.
     extended, _, _ = fresh.commit(
@@ -435,9 +436,9 @@ def test_candidates_skip_same_round_snapshots(tmp_path: Path):
     )
     first = _round(store, tracker, initial, 1, "one")
     messages = [
-        {"role": "user", "content": "one"},
-        {"role": "assistant", "content": "done"},
-        {"role": "user", "content": "two"},
+        Message.user("one"),
+        Message.assistant("done"),
+        Message.user("two"),
     ]
     _write(tracker, work, 2, "value.txt", "two\n")
     snapshot, code_revision, _ = store.commit(
@@ -449,7 +450,7 @@ def test_candidates_skip_same_round_snapshots(tmp_path: Path):
     )
     tracker.mark_committed(code_revision)
     store.commit(
-        {"round_id": 2, "messages": messages + [{"role": "assistant", "content": "done"}]},
+        {"round_id": 2, "messages": messages + [Message.assistant("done")]},
         parent_id=snapshot,
         code_parent_id=code_revision,
         changes=[],

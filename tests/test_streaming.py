@@ -47,8 +47,8 @@ def test_consume_stream_accumulates_content_and_calls_back():
         _chunk(delta=None, usage=_usage(total_tokens=3, prompt_tokens=1, completion_tokens=2)),
     ]
     message, usage, finish_reason = consume_stream(stream, on_content=parts.append)
-    assert message["content"] == "Hello"
-    assert "tool_calls" not in message
+    assert message.text == "Hello"
+    assert message.tool_calls is None
     assert parts == ["Hel", "lo"]
     assert usage.total_tokens == 3
     assert finish_reason is None
@@ -61,13 +61,13 @@ def test_consume_stream_reassembles_tool_call_fragments():
         _chunk(delta=None, usage=_usage(total_tokens=5, prompt_tokens=3, completion_tokens=2)),
     ]
     message, _, _ = consume_stream(stream)
-    assert message["content"] is None
-    assert len(message["tool_calls"]) == 1
-    tc = message["tool_calls"][0]
-    assert tc["id"] == "call_1"
-    assert tc["type"] == "function"
-    assert tc["function"]["name"] == "read_file"
-    assert tc["function"]["arguments"] == '{"file": "a.py"}'
+    assert message.content is None
+    assert len(message.tool_calls) == 1
+    tc = message.tool_calls[0]
+    assert tc.id == "call_1"
+    assert tc.name == "read_file"
+    assert tc.arguments == '{"file": "a.py"}'
+    assert tc.to_wire()["type"] == "function"
 
 
 def test_consume_stream_stops_early_on_should_stop():

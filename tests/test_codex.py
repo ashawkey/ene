@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
+from ene.messages import Message, ToolCall
 from ene.providers import (
     AuthInteraction,
     CompletionRequest,
@@ -174,18 +175,13 @@ def test_codex_request_converts_chat_messages_and_tools():
     request = CompletionRequest(
         model="gpt-5.6-sol",
         messages=[
-            {"role": "system", "content": "system prompt"},
-            {"role": "user", "content": "inspect"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "read_file", "arguments": '{"file":"a.py"}'},
-                }],
-            },
-            {"role": "tool", "tool_call_id": "call-1", "content": "contents"},
+            Message.system("system prompt"),
+            Message.user("inspect"),
+            Message.assistant(
+                content=None,
+                tool_calls=[ToolCall("call-1", "read_file", '{"file":"a.py"}')],
+            ),
+            Message.tool("call-1", "contents"),
         ],
         tools=[{
             "type": "function",
@@ -218,7 +214,7 @@ def test_codex_request_converts_chat_messages_and_tools():
 def test_codex_request_maps_max_effort_to_xhigh():
     body = _build_body(CompletionRequest(
         model="gpt-5.6-sol",
-        messages=[{"role": "user", "content": "inspect"}],
+        messages=[Message.user("inspect")],
         reasoning_effort="max",
     ))
 
@@ -287,7 +283,7 @@ def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path):
     thinking = []
     stream = provider.open_stream(CompletionRequest(
         model="gpt-5.6-sol",
-        messages=[{"role": "system", "content": "system"}, {"role": "user", "content": "go"}],
+        messages=[Message.system("system"), Message.user("go")],
         stream=True,
         reasoning_effort="high",
         session_id="session-one",
@@ -305,16 +301,16 @@ def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path):
     assert seen_request["body"]["model"] == "gpt-5.6-sol"
     assert text == ["done"]
     assert thinking == ["considering"]
-    assert result.message["content"] == "done"
-    assert result.message["tool_calls"][0]["id"] == "call-1"
-    assert result.message["provider_state"]["openai-codex"]["output"] == terminal_output
+    assert result.message.text == "done"
+    assert result.message.tool_calls[0].id == "call-1"
+    assert result.message.provider_state["openai-codex"]["output"] == terminal_output
     assert result.usage.cached_prompt_tokens == 5
     assert result.usage.reasoning_tokens == 3
     assert result.finish_reason == "tool_calls"
 
     replay = _build_body(CompletionRequest(
         model="gpt-5.6-sol",
-        messages=[result.message, {"role": "tool", "tool_call_id": "call-1", "content": "ok"}],
+        messages=[result.message, Message.tool("call-1", "ok")],
     ))
     assert replay["input"][:3] == terminal_output
     assert replay["input"][3]["type"] == "function_call_output"
@@ -352,7 +348,7 @@ def test_codex_incomplete_response_returns_replayable_partial_text(monkeypatch, 
     )
     stream = provider.open_stream(CompletionRequest(
         model="gpt-5.6-sol",
-        messages=[{"role": "user", "content": "go"}],
+        messages=[Message.user("go")],
         stream=True,
     ))
     try:
@@ -360,8 +356,8 @@ def test_codex_incomplete_response_returns_replayable_partial_text(monkeypatch, 
     finally:
         stream.close()
 
-    assert result.message["content"] == "partial"
-    assert "provider_state" not in result.message
+    assert result.message.text == "partial"
+    assert result.message.provider_state is None
     assert result.finish_reason == "length"
 
 
@@ -397,7 +393,7 @@ def test_codex_incomplete_response_does_not_dispatch_partial_tool_call(monkeypat
     )
     stream = provider.open_stream(CompletionRequest(
         model="gpt-5.6-sol",
-        messages=[{"role": "user", "content": "go"}],
+        messages=[Message.user("go")],
         stream=True,
     ))
     try:
@@ -405,8 +401,8 @@ def test_codex_incomplete_response_does_not_dispatch_partial_tool_call(monkeypat
     finally:
         stream.close()
 
-    assert result.message["tool_calls"][0]["function"]["name"] == "remove_file"
-    assert "provider_state" not in result.message
+    assert result.message.tool_calls[0].name == "remove_file"
+    assert result.message.provider_state is None
     assert result.finish_reason == "length"
 
 
@@ -433,7 +429,7 @@ def test_codex_stream_without_terminal_event_returns_partial_response(monkeypatc
     )
     stream = provider.open_stream(CompletionRequest(
         model="gpt-5.6-sol",
-        messages=[{"role": "user", "content": "go"}],
+        messages=[Message.user("go")],
         stream=True,
     ))
     try:
@@ -441,7 +437,7 @@ def test_codex_stream_without_terminal_event_returns_partial_response(monkeypatc
     finally:
         stream.close()
 
-    assert result.message["content"] == "partial"
+    assert result.message.text == "partial"
     assert result.finish_reason is None
 
 

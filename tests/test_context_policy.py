@@ -14,11 +14,10 @@ from ene.context import (
     compaction_target_tokens,
     compaction_trigger_tokens,
     eviction_trigger_tokens,
-    get_text,
-    msg_chars,
     needs_compaction,
     prune_context,
 )
+from ene.messages import Message, ToolCall
 
 
 @pytest.mark.parametrize(
@@ -125,7 +124,7 @@ def test_compaction_trigger_reserves_output_headroom():
 
 
 def test_unknown_context_length_never_forces_compaction():
-    assert not needs_compaction([{"role": "user", "content": "x" * 10_000}], 0)
+    assert not needs_compaction([Message.user("x" * 10_000)], 0)
 
 
 @pytest.mark.parametrize(
@@ -169,12 +168,12 @@ def test_compaction_target_never_lands_on_its_own_trigger(context_length, max_ou
 
 def test_a_split_too_small_to_pay_for_itself_spends_no_round_trip():
     """Real pressure is not enough; the split still has to free more than it writes."""
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(3):  # old and cheap — all that sits outside the keep window
         messages += _turn(f"s{i}", "read_file", {"file": f"s{i}.py"}, "x" * 1_000)
     for i in range(12):  # recent and bulky — protected from summarization
         messages += _turn(f"b{i}", "read_file", {"file": f"b{i}.py"}, "x" * 5_000)
-    messages.append({"role": "assistant", "content": "done"})
+    messages.append(Message.assistant("done"))
     calls = []
 
     result, _ = compact_context(
@@ -201,15 +200,11 @@ CHARS_PER_TOKEN = 4.0
 
 def _turn(call_id, name, arguments, output):
     return [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "id": call_id,
-                "function": {"name": name, "arguments": json.dumps(arguments)},
-            }],
-        },
-        {"role": "tool", "tool_call_id": call_id, "content": output},
+        Message.assistant(
+            content="",
+            tool_calls=[ToolCall(call_id, name, json.dumps(arguments))],
+        ),
+        Message.tool(call_id, output),
     ]
 
 
@@ -235,7 +230,7 @@ def _prune(messages, used_tokens):
 
 
 def test_eviction_leaves_context_alone_below_the_trigger():
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(5):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 30_000)
     messages += _tail_turns()
@@ -244,7 +239,7 @@ def test_eviction_leaves_context_alone_below_the_trigger():
 
 
 def test_eviction_trims_oldest_results_and_spares_the_protected_tail():
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(5):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 30_000)
     messages += _tail_turns()
@@ -254,16 +249,16 @@ def test_eviction_trims_oldest_results_and_spares_the_protected_tail():
     assert result is not messages
     # Oldest four cover the shortfall; the fifth is left intact.
     for index in (2, 4, 6, 8):
-        assert "[Trimmed: kept beginning" in get_text(result[index])
-    assert get_text(result[10]) == "x" * 30_000
+        assert "[Trimmed: kept beginning" in result[index].text
+    assert result[10].text == "x" * 30_000
     # The newest turns are never touched, whatever the pressure.
     for index in (12, 14, 16):
-        assert get_text(result[index]) == "y" * 40_000
+        assert result[index].text == "y" * 40_000
 
 
 def test_eviction_skips_a_pass_that_cannot_pay_for_the_cache_break():
     """Small results are left alone rather than nibbled every round."""
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(5):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 5_000)
     messages += _tail_turns()
@@ -273,7 +268,7 @@ def test_eviction_skips_a_pass_that_cannot_pay_for_the_cache_break():
 
 def test_superseded_read_is_cleared_and_keeps_its_recovery_pointer():
     path = ".ene/tool-results/s1/r1-c0-read_file.txt"
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     messages += _turn("c0", "read_file", {"file": "a.py"},
                       _with_artifact("x" * 40_000, path))
     messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 2_000)
@@ -284,18 +279,18 @@ def test_superseded_read_is_cleared_and_keeps_its_recovery_pointer():
 
     result = _prune(messages, used_tokens=60_000)
 
-    cleared = get_text(result[2])
+    cleared = result[2].text
     assert cleared.startswith("[cleared: read_file(a.py)")
     assert "superseded by a later identical call" in cleared
     assert path in cleared
     # Results that are still current are not collateral damage.
-    assert get_text(result[4]) == "x" * 2_000
-    assert get_text(result[6]) == "x" * 2_000
+    assert result[4].text == "x" * 2_000
+    assert result[6].text == "x" * 2_000
 
 
 def test_supersession_is_scoped_to_the_same_target():
     """A snapshot of one process must not stale-mark another's."""
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     messages += _turn("c0", "inspect_processes", {"process_id": "p-1"}, "x" * 40_000)
     messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 30_000)
     messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 30_000)
@@ -304,11 +299,11 @@ def test_supersession_is_scoped_to_the_same_target():
 
     result = _prune(messages, used_tokens=60_000)
 
-    assert "[cleared:" not in get_text(result[2])
+    assert "[cleared:" not in result[2].text
 
 
 def test_write_invalidates_an_earlier_read_of_the_same_file():
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     messages += _turn("c0", "read_file", {"file": "a.py"}, "x" * 40_000)
     messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 5_000)
     messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 5_000)
@@ -317,12 +312,12 @@ def test_write_invalidates_an_earlier_read_of_the_same_file():
 
     result = _prune(messages, used_tokens=60_000)
 
-    assert "file modified after this read" in get_text(result[2])
+    assert "file modified after this read" in result[2].text
 
 
 def test_eviction_clears_only_what_is_recoverable_from_disk():
     """Trimming comes first; clearing escalates only when it falls short."""
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(3):
         path = f".ene/tool-results/s1/r{i}-c{i}-read_file.txt"
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"},
@@ -330,10 +325,10 @@ def test_eviction_clears_only_what_is_recoverable_from_disk():
     messages += _tail_turns()
 
     modest = _prune(messages, used_tokens=57_000)
-    assert "[Trimmed: kept beginning" in get_text(modest[2])
+    assert "[Trimmed: kept beginning" in modest[2].text
 
     severe = _prune(messages, used_tokens=82_500)
-    cleared = get_text(severe[2])
+    cleared = severe[2].text
     assert cleared.startswith("[cleared: read_file(f0.py)")
     assert "evicted to free context" in cleared
     assert ".ene/tool-results/s1/r0-c0-read_file.txt" in cleared
@@ -341,20 +336,20 @@ def test_eviction_clears_only_what_is_recoverable_from_disk():
 
 def test_trimming_keeps_the_recovery_pointer_so_a_later_pass_can_clear():
     """A prefix policy drops the ingress footer; the pointer must be re-attached."""
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(5):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"},
                           _with_artifact("x" * 30_000, f".ene/tool-results/s1/r{i}.txt"))
     messages += _tail_turns()
 
     trimmed = _prune(messages, used_tokens=67_500)
-    assert "[Trimmed: kept beginning" in get_text(trimmed[2])
-    assert ".ene/tool-results/s1/r0.txt" in get_text(trimmed[2])
+    assert "[Trimmed: kept beginning" in trimmed[2].text
+    assert ".ene/tool-results/s1/r0.txt" in trimmed[2].text
 
     # Without the pointer the message would be stuck at its trimmed size forever.
     cleared = _prune(trimmed, used_tokens=95_000)
-    assert get_text(cleared[2]).startswith("[cleared: read_file(f0.py)")
-    assert ".ene/tool-results/s1/r0.txt" in get_text(cleared[2])
+    assert cleared[2].text.startswith("[cleared: read_file(f0.py)")
+    assert ".ene/tool-results/s1/r0.txt" in cleared[2].text
 
 
 # ---------------------------------------------------------------------------
@@ -374,23 +369,23 @@ def _capture(reply="## Goal\nship it"):
 
 def test_original_request_is_carried_verbatim_across_compactions():
     request = "Refactor ene/context.py to fix the eviction thresholds"
-    messages = [{"role": "user", "content": request}]
+    messages = [Message.user(request)]
     for i in range(6):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 200)
-    messages.append({"role": "assistant", "content": "done"})
+    messages.append(Message.assistant("done"))
 
     seen, summarize = _capture()
     first, state = compact_context(messages, summarize)
-    assert f"## Original request\n{request}" in get_text(first[0])
+    assert f"## Original request\n{request}" in first[0].text
 
     # Compacting the result again must not paraphrase or drop the request.
     second_input = first + [
-        {"role": "user", "content": "keep going"},
-        {"role": "assistant", "content": "ok"},
+        Message.user("keep going"),
+        Message.assistant("ok"),
     ]
     seen, summarize = _capture()
     second, _ = compact_context(second_input, summarize, state=state)
-    assert f"## Original request\n{request}" in get_text(second[0])
+    assert f"## Original request\n{request}" in second[0].text
 
 
 def test_recompaction_updates_the_previous_summary_instead_of_reducing_it():
@@ -399,10 +394,10 @@ def test_recompaction_updates_the_previous_summary_instead_of_reducing_it():
         "## Goal\nship the feature"
     )
     messages = [
-        {"role": "user", "content": prior},
-        {"role": "assistant", "content": "worked on it"},
-        {"role": "user", "content": "continue"},
-        {"role": "assistant", "content": "more work"},
+        Message.user(prior),
+        Message.assistant("worked on it"),
+        Message.user("continue"),
+        Message.assistant("more work"),
     ]
 
     seen, summarize = _capture()
@@ -418,11 +413,11 @@ def test_recompaction_updates_the_previous_summary_instead_of_reducing_it():
 
 def _filler(count):
     """Trailing messages so the 40% split reaches the turns under test."""
-    return [{"role": "assistant", "content": f"step {i}"} for i in range(count)]
+    return [Message.assistant(f"step {i}") for i in range(count)]
 
 
 def test_summary_input_drops_the_middle_not_the_tail():
-    messages = [{"role": "user", "content": "FIRST-REQUEST"}]
+    messages = [Message.user("FIRST-REQUEST")]
     for i in range(400):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, f"MID{i} " + "x" * 900)
 
@@ -441,7 +436,7 @@ def test_summary_input_drops_the_middle_not_the_tail():
 
 
 def test_summary_carries_file_and_skill_state_without_contents():
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     messages += _turn("c0", "read_file", {"file": "a.py"}, "CONTENTS OF A")
     messages += _turn("c1", "edit_file", {"file": "b.py"}, "ok")
     messages += _turn("c2", "load_skill", {"name": "monitor"}, "skill text")
@@ -450,7 +445,7 @@ def test_summary_carries_file_and_skill_state_without_contents():
     seen, summarize = _capture()
     result, _ = compact_context(messages, summarize)
 
-    content = get_text(result[0])
+    content = result[0].text
     assert "- Modified: b.py" in content
     assert "- Read: a.py" in content
     assert "CONTENTS OF A" not in content  # a list, never the contents
@@ -458,30 +453,30 @@ def test_summary_carries_file_and_skill_state_without_contents():
 
 
 def test_file_lists_merge_across_compactions_and_track_writes():
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     messages += _turn("c0", "read_file", {"file": "a.py"}, "x")
     messages += _turn("c1", "read_file", {"file": "b.py"}, "x")
     messages += _filler(10)
 
     seen, summarize = _capture()
     first, state = compact_context(messages, summarize)
-    assert "- Read: a.py, b.py" in get_text(first[0])
+    assert "- Read: a.py, b.py" in first[0].text
 
     second_input = first[:1] + list(_turn("c2", "edit_file", {"file": "a.py"}, "ok"))
     second_input += _filler(10)
     seen, summarize = _capture()
     second, _ = compact_context(second_input, summarize, state=state)
 
-    content = get_text(second[0])
+    content = second[0].text
     assert "- Modified: a.py" in content
     assert "- Read: b.py" in content  # a.py moved out of the read list
 
 
 def test_compaction_never_splits_into_the_protected_recent_window():
-    messages = [{"role": "user", "content": "start"}]
+    messages = [Message.user("start")]
     for i in range(20):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 20_000)
-    messages.append({"role": "assistant", "content": "done"})
+    messages.append(Message.assistant("done"))
 
     seen, summarize = _capture()
     result, _ = compact_context(
@@ -493,18 +488,18 @@ def test_compaction_never_splits_into_the_protected_recent_window():
 
     # keep-recent is min(15% of 100k, 20k) = 15k tokens = 60k chars, so the
     # newest turns survive even under heavy pressure.
-    kept = sum(msg_chars(m) for m in result[1:])
+    kept = sum(m.chars for m in result[1:])
     assert kept >= 60_000
-    assert get_text(result[-1]) == "done"
+    assert result[-1].text == "done"
 
 
 def test_manual_compaction_of_a_short_session_spends_nothing():
     """/compact skips the trigger, but must not rewrite one message for a round-trip."""
-    messages = [{"role": "user", "content": "add a retry to the uploader"}]
+    messages = [Message.user("add a retry to the uploader")]
     for i in range(12):
         messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 1_500)
-    messages.append({"role": "assistant", "content": "done"})
-    used = sum(msg_chars(m) for m in messages) // 4
+    messages.append(Message.assistant("done"))
+    used = sum(m.chars for m in messages) // 4
     calls = []
 
     result, _ = compact_context(
@@ -521,17 +516,13 @@ def test_manual_compaction_of_a_short_session_spends_nothing():
 def test_compaction_is_a_no_op_when_the_split_walks_off_the_front():
     """An all-tool-call history must not be 'summarized' into a longer one."""
     messages = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "id": "c0",
-                "function": {"name": "read_file", "arguments": '{"file": "a.py"}'},
-            }],
-        },
-        {"role": "tool", "tool_call_id": "c0", "content": "x" * 500},
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
+        Message.assistant(
+            content="",
+            tool_calls=[ToolCall("c0", "read_file", '{"file": "a.py"}')],
+        ),
+        Message.tool("c0", "x" * 500),
+        Message.user("hello"),
+        Message.assistant("hi"),
     ]
     calls = []
 
@@ -545,10 +536,10 @@ def test_prior_summary_is_not_clipped_when_compacting_again():
     """Repeated compaction must not lose the early session a summary stands for."""
     prior = f"{SUMMARY_MARKER}\n" + "PRIOR-" * 1000
     messages = [
-        {"role": "user", "content": prior},
-        {"role": "assistant", "content": "ok"},
-        {"role": "user", "content": "next"},
-        {"role": "assistant", "content": "done"},
+        Message.user(prior),
+        Message.assistant("ok"),
+        Message.user("next"),
+        Message.assistant("done"),
     ]
     seen = {}
 
@@ -559,4 +550,4 @@ def test_prior_summary_is_not_clipped_when_compacting_again():
     result, _ = compact_context(messages, summarize)
 
     assert seen["prompt"].count("PRIOR-") == 1000
-    assert get_text(result[0]).startswith(SUMMARY_MARKER)
+    assert result[0].text.startswith(SUMMARY_MARKER)

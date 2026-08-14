@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ene.messages import Message
 from ene.models import ReasoningEffort
 
 
@@ -38,10 +39,14 @@ class AuthInteraction:
 
 @dataclass(frozen=True)
 class CompletionRequest:
-    """One model request expressed in ene's canonical message format."""
+    """One model request in ene's canonical typed message format.
+
+    Messages are :class:`~ene.messages.Message` objects; each provider
+    serializes them to its wire format right before sending.
+    """
 
     model: str
-    messages: list[dict[str, Any]]
+    messages: list[Message]
     tools: list[dict[str, Any]] = field(default_factory=list)
     stream: bool = True
     max_output_tokens: int | None = None
@@ -63,9 +68,9 @@ class ProviderUsage:
 
 @dataclass(frozen=True)
 class CompletionResult:
-    """A completed assistant turn in ene's canonical message format."""
+    """A completed assistant turn in ene's canonical typed message format."""
 
-    message: dict[str, Any]
+    message: Message
     usage: ProviderUsage | None
     finish_reason: str | None
 

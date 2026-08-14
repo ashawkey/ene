@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable
 
-
+from ene.messages import Message, ToolCall
 from ene.ui import AgentConsole
 from ene.utils.interrupt import RequestInterrupted
 
@@ -27,16 +27,13 @@ from ene.utils.interrupt import RequestInterrupted
 class ContextManager:
     """Flat conversation history with context-management hooks.
 
-    Messages use plain dictionaries in the OpenAI wire format. SDK response
-    objects are normalized at ingress by :mod:`ene.utils.streaming`.
+    Messages are :class:`~ene.messages.Message` objects; the OpenAI wire
+    format only exists at the provider and persistence boundaries.
     """
 
     def __init__(self, system_prompt: str):
-        self.system_prompt: dict[str, str] = {
-            "role": "system",
-            "content": system_prompt,
-        }
-        self.messages: list[dict[str, Any]] = []
+        self.system_prompt = Message.system(system_prompt)
+        self.messages: list[Message] = []
         # Facts compaction has already summarized the evidence away for; see
         # CompactionState. Empty until the first pass.
         self.compaction_state = CompactionState()
@@ -60,14 +57,14 @@ class ContextManager:
         :meth:`get` actually sends. The system prompt is mutated in place on
         persona and skill changes, hence the live ``len`` rather than a cache.
         """
-        return len(self.system_prompt["content"]) + self.estimated_chars
+        return len(self.system_prompt.text) + self.estimated_chars
 
-    def add(self, message: dict[str, Any]) -> None:
+    def add(self, message: Message) -> None:
         self.messages.append(message)
         if self._char_cache is not None:
-            self._char_cache += msg_chars(message)
+            self._char_cache += message.chars
 
-    def drop_last(self, message: dict[str, Any]) -> bool:
+    def drop_last(self, message: Message) -> bool:
         """Withdraw *message* if it is still the newest one. Returns whether it was.
 
         Identity-checked so a caller can only undo its own append: a turn that
@@ -77,17 +74,17 @@ class ContextManager:
             return False
         self.messages.pop()
         if self._char_cache is not None:
-            self._char_cache -= msg_chars(message)
+            self._char_cache -= message.chars
         return True
 
-    def get(self, include_system: bool = True) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = []
+    def get(self, include_system: bool = True) -> list[Message]:
+        messages: list[Message] = []
         if include_system:
             messages.append(self.system_prompt)
         messages.extend(self.messages)
         return messages
 
-    def replace_messages(self, new_messages: list[dict[str, Any]]) -> None:
+    def replace_messages(self, new_messages: list[Message]) -> None:
         # A same-object call is a no-op (content unchanged) so the cache stays
         # valid; only a genuine replacement invalidates it.
         if new_messages is not self.messages:
@@ -281,68 +278,13 @@ class TokenEstimator:
 
 
 # ---------------------------------------------------------------------------
-# Message helpers (context messages are plain dicts in the OpenAI wire
-# format; SDK response objects are normalized at ingress, see streaming.py)
+# Message-level helpers (messages are typed; the wire format lives in
+# ene.messages.Message.to_wire / from_wire)
 # ---------------------------------------------------------------------------
 
 
-def get_role(msg: dict) -> str:
-    return msg.get("role", "")
-
-
-def get_text(msg: dict) -> str:
-    """Extract concatenated text content from a message."""
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            item.get("text", "")
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "text"
-        )
-    return ""
-
-
-def get_display_text(msg: dict) -> str:
-    """Return user-facing text when a message carries a separate display form."""
-    display = msg.get("display_content")
-    return display if isinstance(display, str) else get_text(msg)
-
-
-def set_text(msg: dict, text: str) -> dict:
-    """Return a shallow copy of *msg* with text content replaced."""
-    content = msg.get("content")
-    if isinstance(content, list):
-        return {**msg, "content": [{"type": "text", "text": text}]}
-    return {**msg, "content": text}
-
-
-def get_tool_calls(msg: dict) -> list:
-    return msg.get("tool_calls") or []
-
-
-def get_tool_call_id(msg: dict) -> str | None:
-    return msg.get("tool_call_id")
-
-
-def msg_chars(msg: dict) -> int:
-    """Rough character cost of a single message."""
-    chars = len(get_text(msg))
-    if get_role(msg) == "assistant":
-        for tc in get_tool_calls(msg):
-            chars += len(tc.get("function", {}).get("arguments") or "")
-        provider_state = msg.get("provider_state")
-        if provider_state:
-            # Responses providers replay opaque output items instead of the
-            # canonical text/tool projection, so count the larger form once.
-            state_chars = len(json.dumps(provider_state, ensure_ascii=False))
-            chars = max(chars, state_chars)
-    return chars
-
-
-def estimate_context_chars(messages: list) -> int:
-    return sum(msg_chars(m) for m in messages)
+def estimate_context_chars(messages: list[Message]) -> int:
+    return sum(message.chars for message in messages)
 
 
 # ---------------------------------------------------------------------------
@@ -643,27 +585,28 @@ def compact_tool_result_envelope(
 # ---------------------------------------------------------------------------
 
 
-def build_tool_call_index(messages: list) -> dict[str, tuple[str, dict[str, Any]]]:
+def _parse_call_arguments(tool_call: ToolCall) -> dict[str, Any]:
+    try:
+        arguments = json.loads(tool_call.arguments or "{}")
+    except (json.JSONDecodeError, TypeError):
+        arguments = {}
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def build_tool_call_index(messages: list[Message]) -> dict[str, tuple[str, dict[str, Any]]]:
     """Build a tool_call_id → (tool_name, arguments) lookup in one O(n) pass."""
     index: dict[str, tuple[str, dict[str, Any]]] = {}
-    for msg in messages:
-        if get_role(msg) != "assistant":
+    for message in messages:
+        if not message.is_assistant:
             continue
-        for tc in get_tool_calls(msg):
-            tc_id = tc.get("id")
-            function = tc.get("function", {})
-            name = function.get("name")
-            if not tc_id or not name:
+        for tool_call in message.tool_calls or []:
+            if not tool_call.id or not tool_call.name:
                 continue
-            try:
-                arguments = json.loads(function.get("arguments") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                arguments = {}
-            index[tc_id] = (name, arguments if isinstance(arguments, dict) else {})
+            index[tool_call.id] = (tool_call.name, _parse_call_arguments(tool_call))
     return index
 
 
-def build_tool_name_index(messages: list) -> dict[str, str]:
+def build_tool_name_index(messages: list[Message]) -> dict[str, str]:
     """Build a tool_call_id → tool_name lookup from all assistant messages."""
     return {tc_id: name for tc_id, (name, _) in build_tool_call_index(messages).items()}
 
@@ -750,7 +693,7 @@ def _soft_trim(text: str, tool_name: str, artifact_path: str | None = None) -> s
 
 
 def _prunable_range(
-    messages: list, context_length: int, chars_per_token: float
+    messages: list[Message], context_length: int, chars_per_token: float
 ) -> tuple[int, int]:
     """Return (start, end) indices of the zone eligible for eviction.
 
@@ -761,14 +704,14 @@ def _prunable_range(
     """
     start = 0
     for i, m in enumerate(messages):
-        if get_role(m) == "user":
+        if m.is_user:
             start = i
             break
 
     remaining = KEEP_LAST_ASSISTANTS
     assistant_end = 0
     for i in range(len(messages) - 1, -1, -1):
-        if get_role(messages[i]) == "assistant":
+        if messages[i].is_assistant:
             remaining -= 1
             if remaining == 0:
                 assistant_end = i
@@ -782,7 +725,7 @@ def _prunable_range(
     used = 0
     size_end = 0
     for i in range(len(messages) - 1, -1, -1):
-        used += msg_chars(messages[i])
+        used += messages[i].chars
         if used >= protected_chars:
             size_end = i
             break
@@ -801,7 +744,7 @@ class _Evictable:
 
 
 def _evictable_results(
-    messages: list, start: int, end: int, call_index: dict[str, tuple[str, dict]]
+    messages: list[Message], start: int, end: int, call_index: dict[str, tuple[str, dict]]
 ) -> list[_Evictable]:
     """Collect prunable results in [start, end), flagging superseded ones.
 
@@ -814,10 +757,9 @@ def _evictable_results(
     zone: list[tuple[int, str, dict[str, Any]]] = []
 
     for i, msg in enumerate(messages):
-        if get_role(msg) != "tool":
+        if not msg.is_tool:
             continue
-        tc_id = get_tool_call_id(msg)
-        call = call_index.get(tc_id) if tc_id else None
+        call = call_index.get(msg.tool_call_id) if msg.tool_call_id else None
         if call is None:
             continue
         name, arguments = call
@@ -853,7 +795,7 @@ def _cleared_text(item: _Evictable, artifact_path: str | None, reason: str) -> s
 
 
 def _plan_evictions(
-    messages: list, evictable: list[_Evictable], target_chars: float
+    messages: list[Message], evictable: list[_Evictable], target_chars: float
 ) -> tuple[dict[int, str], int]:
     """Choose replacement text per message, stopping once *target_chars* is met.
 
@@ -869,7 +811,7 @@ def _plan_evictions(
 
     def apply(index: int, new_text: str) -> None:
         nonlocal freed
-        previous = planned.get(index, get_text(messages[index]))
+        previous = planned.get(index, messages[index].text)
         saving = len(previous) - len(new_text)
         if saving <= 0:
             return
@@ -881,13 +823,13 @@ def _plan_evictions(
         if item.stale_reason is None:
             fresh.append(item)
             continue
-        text = get_text(messages[item.index])
+        text = messages[item.index].text
         apply(item.index, _cleared_text(item, _artifact_path_in(text), item.stale_reason))
 
     for item in fresh:
         if freed >= target_chars:
             return planned, freed
-        text = get_text(messages[item.index])
+        text = messages[item.index].text
         trimmed = _soft_trim(text, item.tool_name, _artifact_path_in(text))
         if trimmed is not None:
             apply(item.index, trimmed)
@@ -895,7 +837,7 @@ def _plan_evictions(
     for item in fresh:
         if freed >= target_chars:
             break
-        text = get_text(messages[item.index])
+        text = messages[item.index].text
         artifact_path = _artifact_path_in(text)
         if artifact_path:
             apply(item.index, _cleared_text(item, artifact_path, "evicted to free context"))
@@ -920,12 +862,12 @@ def eviction_trigger_tokens(context_length: int, max_output_tokens: int = 0) -> 
 
 
 def prune_context(
-    messages: list,
+    messages: list[Message],
     context_length: int,
     chars_per_token: float = DEFAULT_CHARS_PER_TOKEN,
     used_tokens: int | None = None,
     max_output_tokens: int = 0,
-) -> list:
+) -> list[Message]:
     """Evict old tool results once the context window is over half full.
 
     Eviction rewrites messages the provider has already cached, which costs a
@@ -967,7 +909,7 @@ def prune_context(
 
     result = list(messages)
     for index, text in planned.items():
-        result[index] = set_text(result[index], text)
+        result[index] = result[index].with_text(text)
     return result
 
 
@@ -1100,7 +1042,7 @@ def compaction_target_tokens(context_length: int, max_output_tokens: int = 0) ->
 
 
 def needs_compaction(
-    messages: list,
+    messages: list[Message],
     context_length: int,
     chars_per_token: float = DEFAULT_CHARS_PER_TOKEN,
     used_tokens: int | None = None,
@@ -1113,18 +1055,18 @@ def needs_compaction(
     return used_tokens > compaction_trigger_tokens(context_length, max_output_tokens)
 
 
-def _safe_split_index(messages: list, idx: int) -> int:
+def _safe_split_index(messages: list[Message], idx: int) -> int:
     """Walk backward so the split never lands inside a tool-call / result pair."""
-    while idx > 0 and get_role(messages[idx]) == "tool":
+    while idx > 0 and messages[idx].is_tool:
         idx -= 1
     return idx
 
 
-def _is_summary(msg: dict) -> bool:
-    return get_role(msg) == "user" and get_text(msg).startswith(SUMMARY_MARKER)
+def _is_summary(msg: Message) -> bool:
+    return msg.is_user and msg.text.startswith(SUMMARY_MARKER)
 
 
-def _render_summary_input(messages: list) -> list[str]:
+def _render_summary_input(messages: list[Message]) -> list[str]:
     """Render each message for the summarizer, one entry per message.
 
     A prior summary is skipped: it is handed to the summarizer separately so it
@@ -1134,22 +1076,19 @@ def _render_summary_input(messages: list) -> list[str]:
     for msg in messages:
         if _is_summary(msg):
             continue
-        role = get_role(msg)
-        text = get_text(msg)
-        limit = _SUMMARY_TOOL_RESULT_CHARS if role == "tool" else _SUMMARY_MESSAGE_CHARS
+        limit = _SUMMARY_TOOL_RESULT_CHARS if msg.is_tool else _SUMMARY_MESSAGE_CHARS
 
-        if role == "system":
-            parts.append(f"[System]: {text[:limit]}")
-        elif role == "user":
-            parts.append(f"User: {text[:limit]}")
-        elif role == "assistant":
-            if text:
-                parts.append(f"Assistant: {text[:limit]}")
-            for tc in get_tool_calls(msg):
-                name = tc.get("function", {}).get("name", "?")
-                parts.append(f"  [Called tool: {name}]")
-        elif role == "tool":
-            snippet = text[:limit] + "..." if len(text) > limit else text
+        if msg.is_system:
+            parts.append(f"[System]: {msg.text[:limit]}")
+        elif msg.is_user:
+            parts.append(f"User: {msg.text[:limit]}")
+        elif msg.is_assistant:
+            if msg.text:
+                parts.append(f"Assistant: {msg.text[:limit]}")
+            for tool_call in msg.tool_calls or []:
+                parts.append(f"  [Called tool: {tool_call.name}]")
+        elif msg.is_tool:
+            snippet = msg.text[:limit] + "..." if len(msg.text) > limit else msg.text
             parts.append(f"  [Tool result]: {snippet}")
     return parts
 
@@ -1200,24 +1139,18 @@ def _merge_recent(previous: list[str], current: list[str]) -> list[str]:
     return list(merged)[-_SUMMARY_FILE_LIST_LIMIT:]
 
 
-def _collect_tool_usage(messages: list) -> tuple[list[str], list[str], list[str]]:
+def _collect_tool_usage(messages: list[Message]) -> tuple[list[str], list[str], list[str]]:
     """Return (files read, files modified, skills loaded) in last-touch order."""
     read: dict[str, None] = {}
     modified: dict[str, None] = {}
     skills: dict[str, None] = {}
 
     for msg in messages:
-        if get_role(msg) != "assistant":
+        if not msg.is_assistant:
             continue
-        for tc in get_tool_calls(msg):
-            function = tc.get("function", {})
-            name = function.get("name")
-            try:
-                arguments = json.loads(function.get("arguments") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if not isinstance(arguments, dict):
-                continue
+        for tool_call in msg.tool_calls or []:
+            name = tool_call.name
+            arguments = _parse_call_arguments(tool_call)
             if name == "load_skill":
                 skill = str(arguments.get("name", ""))
                 if skill:
@@ -1254,7 +1187,7 @@ class CompactionState:
     modified_files: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
 
-    def absorb(self, messages: list) -> CompactionState:
+    def absorb(self, messages: list[Message]) -> CompactionState:
         """Fold the messages about to be summarized into the carried state."""
         read, modified, skills = _collect_tool_usage(messages)
         modified_files = _merge_recent(list(self.modified_files), modified)
@@ -1291,15 +1224,15 @@ class CompactionState:
         return lines
 
 
-def _first_user_text(messages: list) -> str:
+def _first_user_text(messages: list[Message]) -> str:
     """The opening request, skipping a summary standing in for earlier turns."""
     for msg in messages:
-        if get_role(msg) == "user" and not _is_summary(msg):
-            return get_text(msg)[:_FIRST_REQUEST_CHAR_LIMIT]
+        if msg.is_user and not _is_summary(msg):
+            return msg.text[:_FIRST_REQUEST_CHAR_LIMIT]
     return ""
 
 
-def _build_summary_message(summary: str, state: CompactionState) -> dict[str, Any]:
+def _build_summary_message(summary: str, state: CompactionState) -> Message:
     """Assemble the replacement message, carried sections included."""
     lines = [
         SUMMARY_MARKER,
@@ -1310,11 +1243,11 @@ def _build_summary_message(summary: str, state: CompactionState) -> dict[str, An
         lines += ["", _ORIGINAL_REQUEST_HEADING, state.original_request]
     lines += ["", summary]
     lines += state.render()
-    return {"role": "user", "content": "\n".join(lines)}
+    return Message.user("\n".join(lines))
 
 
 def _keep_recent_split_limit(
-    messages: list, context_length: int, chars_per_token: float
+    messages: list[Message], context_length: int, chars_per_token: float
 ) -> int:
     """Highest split index that leaves the protected recent window intact.
 
@@ -1327,14 +1260,14 @@ def _keep_recent_split_limit(
     ) * chars_per_token
     used = 0
     for i in range(len(messages) - 1, -1, -1):
-        used += msg_chars(messages[i])
+        used += messages[i].chars
         if used >= keep_chars:
             return i
     return 0
 
 
 def _yields_enough(
-    messages: list, split_index: int, context_length: int, chars_per_token: float
+    messages: list[Message], split_index: int, context_length: int, chars_per_token: float
 ) -> bool:
     """Whether summarizing ``messages[:split_index]`` is worth the round-trip.
 
@@ -1343,14 +1276,14 @@ def _yields_enough(
     the caller's floor would suppress on the next round anyway, so it is cheaper
     to notice here than after paying for the summarization.
     """
-    freed = sum(msg_chars(m) for m in messages[:split_index])
+    freed = sum(message.chars for message in messages[:split_index])
     written_back = COMPACTION_SUMMARY_MAX_TOKENS * chars_per_token
     min_yield = context_length * COMPACTION_MIN_YIELD_RATIO * chars_per_token
     return freed - written_back >= min_yield
 
 
 def compact_context(
-    messages: list,
+    messages: list[Message],
     summarize: Callable[[str], str],
     console: AgentConsole | None = None,
     context_length: int = 0,
@@ -1358,7 +1291,7 @@ def compact_context(
     used_tokens: int | None = None,
     max_output_tokens: int = 0,
     state: CompactionState = CompactionState(),
-) -> tuple[list, CompactionState]:
+) -> tuple[list[Message], CompactionState]:
     """Compact messages by LLM-summarizing the oldest portion.
 
     When *context_length* is provided the split point is calculated to bring
@@ -1407,7 +1340,7 @@ def compact_context(
             cumulative = 0
             split_index = 1
             for i in range(0, len(messages)):
-                cumulative += msg_chars(messages[i])
+                cumulative += messages[i].chars
                 if cumulative >= chars_to_free:
                     split_index = i + 1
                     break
@@ -1437,7 +1370,7 @@ def compact_context(
     to_compact = messages[:split_index]
     to_keep = messages[split_index:]
 
-    previous = next((get_text(m) for m in to_compact if _is_summary(m)), "")
+    previous = next((m.text for m in to_compact if _is_summary(m)), "")
     conversation = _fit_summary_input(
         _render_summary_input(to_compact), COMPACTION_SUMMARY_MAX_CHARS
     )

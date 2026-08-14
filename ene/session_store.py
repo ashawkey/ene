@@ -17,7 +17,7 @@ from typing import Any
 
 from filelock import FileLock
 
-from ene.context import get_display_text, get_role, get_text
+from ene.messages import Message
 from ene.utils.persistence import (
     append_jsonl,
     atomic_write_json,
@@ -27,8 +27,8 @@ from ene.utils.persistence import (
 )
 
 
-def _message_id(message: dict[str, Any]) -> str:
-    raw = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+def _message_id(wire: dict[str, Any]) -> str:
+    raw = json.dumps(wire, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -142,7 +142,7 @@ class SessionStore:
         self.meta_path = self.path / "meta.json"
         self.objects_path = self.path / "objects"
         self.lock = FileLock(str(self.path / ".lock"))
-        self.messages: dict[str, dict[str, Any]] = {}
+        self.messages: dict[str, Message] = {}
         self.revisions: dict[str, dict[str, Any]] = {}
         self.code_revisions: dict[str, dict[str, Any]] = {}
         self.revision_order: list[str] = []
@@ -151,20 +151,20 @@ class SessionStore:
         self._text_stats: dict[tuple[tuple[str, int] | None, ...], tuple[int, int]] = {}
         # id(message) -> (message, content hash). A message that has entered the
         # history is never mutated in place — rewrites (compaction, eviction)
-        # build new dicts — so hashing one twice is pure waste. Without this a
+        # build new objects — so hashing one twice is pure waste. Without this a
         # save, which names every message in the conversation, rehashes the whole
         # transcript once per round. The message object is kept in the entry so a
         # recycled id() cannot return another message's hash.
-        self._message_ids: dict[int, tuple[dict[str, Any], str]] = {}
+        self._message_ids: dict[int, tuple[Message, str]] = {}
         # (size, mtime_ns) of history.jsonl as of the last read or write.
         self._history_stat: tuple[int, int] | None = None
         self._load()
 
-    def _message_id(self, message: dict[str, Any]) -> str:
+    def _message_id(self, message: Message) -> str:
         entry = self._message_ids.get(id(message))
         if entry is not None and entry[0] is message:
             return entry[1]
-        digest = _message_id(message)
+        digest = _message_id(message.to_wire())
         self._message_ids[id(message)] = (message, digest)
         return digest
 
@@ -191,7 +191,7 @@ class SessionStore:
         for record in read_jsonl(self.history_path):
             kind = record.get("type")
             if kind == "message":
-                self.messages[record["id"]] = record["message"]
+                self.messages[record["id"]] = Message.from_wire(record["message"])
             elif kind == "code_revision":
                 self.code_revisions[record["id"]] = record
             elif kind == "revision":
@@ -339,8 +339,8 @@ class SessionStore:
         last_user_message = ""
         for message_id in reversed(revision["messageIds"]):
             message = self.messages.get(message_id)
-            if message is not None and get_role(message) == "user":
-                last_user_message = get_display_text(message).replace("\n", " ").strip()
+            if message is not None and message.is_user:
+                last_user_message = message.display.replace("\n", " ").strip()
                 break
         return {
             "version": 1,
@@ -453,8 +453,8 @@ class SessionStore:
     ) -> tuple[str, str | None, bool]:
         """Append a conversation revision and optional code revision."""
         messages = data["messages"]
-        # Callers pass their live state (token totals, the system prompt dict,
-        # …), which keeps mutating after this returns; a revision must record
+        # Callers pass their live state (token totals, the system prompt, …),
+        # which keeps mutating after this returns; a revision must record
         # what was true when it was written.
         state = copy.deepcopy(
             {key: value for key, value in data.items() if key != "messages"}
@@ -470,7 +470,7 @@ class SessionStore:
             records: list[dict[str, Any]] = []
             for mid, message in zip(message_ids, messages):
                 if mid not in self.messages:
-                    record = {"type": "message", "id": mid, "message": message}
+                    record = {"type": "message", "id": mid, "message": message.to_wire()}
                     records.append(record)
                     self.messages[mid] = message
 
@@ -663,9 +663,9 @@ class SessionStore:
         """Last user message in a revision, collapsed to a single line."""
         for message_id in reversed(self.revisions[revision_id]["messageIds"]):
             message = self.messages.get(message_id)
-            if message is None or get_role(message) != "user":
+            if message is None or not message.is_user:
                 continue
-            return " ".join(get_display_text(message).split())
+            return " ".join(message.display.split())
         return ""
 
     def revision_ancestors(self, revision_id: str) -> list[str]:

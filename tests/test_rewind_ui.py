@@ -7,6 +7,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ene.backend.sessions import SessionMixin
+from ene.messages import Message, ToolCall
 from ene.session_store import SessionStore
 from ene.utils.rewind import ChangeTracker
 
@@ -90,7 +91,7 @@ def _build(tmp_path: Path, answers: list[str]) -> tuple[_Agent, Path, _Console]:
     agent.save_session(reason="initial")
 
     agent.round_id = 1
-    agent.context.messages = [{"role": "user", "content": "set up the parser module"}]
+    agent.context.messages = [Message.user("set up the parser module")]
     for name, body in (("parser.py", "def parse():\n    return 1\n"), ("util.py", "X = 1\n")):
         tracker.track_write(1, str(work / name), body)
         (work / name).write_text(body)
@@ -98,8 +99,8 @@ def _build(tmp_path: Path, answers: list[str]) -> tuple[_Agent, Path, _Console]:
 
     agent.round_id = 2
     agent.context.messages += [
-        {"role": "assistant", "content": "done"},
-        {"role": "user", "content": "make the parser handle floats and drop util"},
+        Message.assistant("done"),
+        Message.user("make the parser handle floats and drop util"),
     ]
     new = "def parse(text):\n    return float(text)\n"
     tracker.track_edit_result(2, str(work / "parser.py"), (work / "parser.py").read_text(), new)
@@ -139,7 +140,7 @@ def test_picker_and_preview_describe_the_conversation_and_the_files(tmp_path: Pa
 def test_picker_options_are_the_listing_and_name_the_revision_type(tmp_path: Path):
     """No table precedes the picker, so every option must stand on its own."""
     agent, _, console = _build(tmp_path, [" 1.", "4."])
-    agent.context.messages.append({"role": "user", "content": "one more thought"})
+    agent.context.messages.append(Message.user("one more thought"))
     agent.save_session(reason="pre-compaction")
     agent._cmd_rewind()
 
@@ -184,20 +185,15 @@ def test_external_file_changes_disable_code_rewind(tmp_path: Path):
 def test_replay_omits_tool_activity(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [
-        {"role": "user", "content": "check the file"},
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "1", "function": {"name": "read_file", "arguments": '{"file": "a.txt"}'}},
-        ]},
-        {
-            "role": "tool",
-            "tool_call_id": "1",
-            "content": "1  an error message",
-            "display_content": "1 line read",
-        },
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "2", "function": {"name": "edit_file", "arguments": '{"file": "a.txt", "old_text": "x", "new_text": "y"}'}},
-        ]},
-        {"role": "tool", "tool_call_id": "2", "content": "Error: File not found: a.txt"},
+        Message.user("check the file"),
+        Message.assistant("", tool_calls=[
+            ToolCall(id="1", name="read_file", arguments='{"file": "a.txt"}'),
+        ]),
+        Message.tool("1", "1  an error message", display_content="1 line read"),
+        Message.assistant("", tool_calls=[
+            ToolCall(id="2", name="edit_file", arguments='{"file": "a.txt", "old_text": "x", "new_text": "y"}'),
+        ]),
+        Message.tool("2", "Error: File not found: a.txt"),
     ]
     SessionMixin._replay_context(agent)
 
@@ -214,8 +210,8 @@ def test_replay_shows_all_saved_conversation_turns(tmp_path: Path):
     agent.context.messages = []
     for iteration in range(1, 13):
         agent.context.messages.extend([
-            {"role": "user", "content": f"prompt {iteration}"},
-            {"role": "assistant", "content": f"answer {iteration}"},
+            Message.user(f"prompt {iteration}"),
+            Message.assistant(f"answer {iteration}"),
         ])
 
     SessionMixin._replay_context(agent)
@@ -230,13 +226,12 @@ def test_replay_shows_all_saved_conversation_turns(tmp_path: Path):
 def test_replay_omits_reasoning_only_assistant_messages(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [
-        {"role": "user", "content": "work it out"},
-        {
-            "role": "assistant",
-            "content": None,
-            "reasoning_content": "the retained final reasoning",
-            "provider_state": {"openai-codex": {}},
-        },
+        Message.user("work it out"),
+        Message.assistant(
+            None,
+            reasoning_content="the retained final reasoning",
+            provider_state={"openai-codex": {}},
+        ),
     ]
 
     SessionMixin._replay_context(agent)
@@ -248,12 +243,12 @@ def test_replay_omits_reasoning_only_assistant_messages(tmp_path: Path):
 def test_replay_shows_only_final_text_response_for_a_user_turn(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [
-        {"role": "user", "content": "finish this"},
-        {"role": "assistant", "content": "intermediate", "tool_calls": [
-            {"id": "1", "function": {"name": "read_file", "arguments": "{}"}},
-        ]},
-        {"role": "tool", "tool_call_id": "1", "content": "tool output"},
-        {"role": "assistant", "content": "final answer"},
+        Message.user("finish this"),
+        Message.assistant("intermediate", tool_calls=[
+            ToolCall(id="1", name="read_file", arguments="{}"),
+        ]),
+        Message.tool("1", "tool output"),
+        Message.assistant("final answer"),
     ]
 
     SessionMixin._replay_context(agent)
@@ -268,7 +263,7 @@ def test_replay_shows_only_final_text_response_for_a_user_turn(tmp_path: Path):
 def test_no_file_changes_only_offers_conversation_rewind(tmp_path: Path):
     agent, _, console = _build(tmp_path, [" 1.", "1."])
     agent.round_id = 3
-    agent.context.messages.append({"role": "user", "content": "just talking"})
+    agent.context.messages.append(Message.user("just talking"))
     agent.save_session(reason="round")
     agent._cmd_rewind()
 

@@ -9,6 +9,7 @@ import pytest
 
 from ene.backend import LLMAgent
 from ene.context import CompactionState, ContextManager
+from ene.messages import Message, ToolCall
 from ene.skills import BUNDLED_SKILLS_DIR, load_skill_tools
 from ene.utils.interrupt import TurnOutcome
 from ene.tools import ToolExecutor
@@ -96,7 +97,7 @@ def _agent(responses=None, system="system prompt", console=None, executor=None):
     def get_response():
         # Record what this turn actually sees, then behave like a real turn:
         # append an assistant message to the live context.
-        agent.seen.append([dict(m) for m in context.messages])
+        agent.seen.append(list(context.messages))
         outcome = queue.pop(0) if queue else "ok"
         if isinstance(outcome, Exception):
             raise outcome
@@ -106,7 +107,7 @@ def _agent(responses=None, system="system prompt", console=None, executor=None):
             if agent._last_interrupted else TurnOutcome.COMPLETED
         )
         text = outcome.text if hasattr(outcome, "text") else outcome
-        context.add({"role": "assistant", "content": text or ""})
+        context.add(Message.assistant(text or ""))
         return text
 
     agent.get_response = get_response
@@ -122,9 +123,9 @@ def _interrupted(text=None):
 
 def test_isolated_turn_restores_context_exactly():
     agent = _agent(["first", "second", "third"])
-    agent.context.add({"role": "user", "content": "prior conversation"})
-    agent.context.add({"role": "assistant", "content": "prior reply"})
-    before = [dict(m) for m in agent.context.messages]
+    agent.context.add(Message.user("prior conversation"))
+    agent.context.add(Message.assistant("prior reply"))
+    before = list(agent.context.messages)
     before_chars = agent.context.total_chars
 
     for i in range(3):
@@ -139,16 +140,10 @@ def test_isolated_turn_restores_context_exactly():
 
 def test_isolated_turns_do_not_see_enclosing_context_or_each_other():
     agent = _agent(["a", "b", "c"])
-    agent.context.add({"role": "user", "content": "prior"})
-    agent.context.add({
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{
-            "id": "batch-call",
-            "type": "function",
-            "function": {"name": "run_batch", "arguments": "{}"},
-        }],
-    })
+    agent.context.add(Message.user("prior"))
+    agent.context.add(Message.assistant(None, tool_calls=[
+        ToolCall(id="batch-call", name="run_batch", arguments="{}"),
+    ]))
 
     for i in range(3):
         agent.run_isolated_turn(f"item {i}")
@@ -156,7 +151,7 @@ def test_isolated_turns_do_not_see_enclosing_context_or_each_other():
     # Every turn saw only its own prompt. The enclosing context may end in an
     # unresolved run_batch tool call, so it cannot be sent as a provider prefix.
     for i, seen in enumerate(agent.seen):
-        assert seen == [{"role": "user", "content": f"item {i}"}]
+        assert seen == [Message.user(f"item {i}")]
 
 
 def test_isolated_turn_restores_compaction_state_and_images():
@@ -185,8 +180,8 @@ def test_isolated_turn_restores_compaction_state_and_images():
 
 def test_isolated_turn_restores_context_after_failure():
     agent = _agent([RuntimeError("provider exploded")])
-    agent.context.add({"role": "user", "content": "prior"})
-    before = [dict(m) for m in agent.context.messages]
+    agent.context.add(Message.user("prior"))
+    before = list(agent.context.messages)
 
     with pytest.raises(RuntimeError):
         agent.run_isolated_turn("item")
@@ -245,19 +240,19 @@ def test_isolated_turn_never_commits_a_session_revision():
     """A compaction inside an item must not move the durable head onto it."""
     saved = []
     agent = _agent()
-    agent.context.add({"role": "user", "content": "the real conversation"})
+    agent.context.add(Message.user("the real conversation"))
     agent._session_id = "s1"
     agent._session_store = object()
     agent._session_revision_id = "outer-revision"
 
     def save_session(name, *, reason="autosave"):
-        saved.append((reason, [dict(m) for m in agent.context.messages]))
+        saved.append((reason, list(agent.context.messages)))
         agent._session_revision_id = "revision-from-item"
 
     agent.save_session = save_session
 
     def get_response():
-        agent.context.add({"role": "assistant", "content": "item work"})
+        agent.context.add(Message.assistant("item work"))
         LLMAgent._snapshot_before_compaction(agent)
         return "done"
 
@@ -442,7 +437,7 @@ def test_isolated_turns_do_not_share_a_prompt_cache_key_with_the_conversation():
         context=NS(add=lambda message: None),
         _blocking_completion=lambda request: (
             requests.append(request),
-            NS(message={"role": "assistant", "content": "ok"}, usage=None, finish_reason="stop"),
+            NS(message=Message.assistant("ok"), usage=None, finish_reason="stop"),
         )[-1],
         _estimate_usage=lambda message: NS(
             prompt_tokens=1, completion_tokens=1, total_tokens=2,
@@ -526,8 +521,8 @@ def test_batch_returns_only_a_summary(tmp_path):
 def test_batch_leaves_the_conversation_untouched(tmp_path):
     entry = _load_batch_tools()
     agent = _agent(["x", "y"])
-    agent.context.add({"role": "user", "content": "prior"})
-    before = [dict(m) for m in agent.context.messages]
+    agent.context.add(Message.user("prior"))
+    before = list(agent.context.messages)
     executor = _executor(agent, tmp_path)
 
     entry["run"](executor, task="Do {item}", items=["1", "2"], name="run")
@@ -547,8 +542,8 @@ def test_batch_substitutes_item_and_appends_when_no_placeholder(tmp_path):
     )
     entry["run"](executor, task="Summarize", items=["doc.txt"], name="b")
 
-    assert agent.seen[0][-1]["content"] == 'Caption p.png as JSON {"a": 1}'
-    assert agent.seen[1][-1]["content"] == "Summarize\n\nItem: doc.txt"
+    assert agent.seen[0][-1].text == 'Caption p.png as JSON {"a": 1}'
+    assert agent.seen[1][-1].text == "Summarize\n\nItem: doc.txt"
 
 
 def test_batch_reads_items_file_skipping_blanks_and_comments(tmp_path):
@@ -584,7 +579,7 @@ def test_batch_resume_skips_successes_and_retries_failures(tmp_path):
 
     assert result["skipped"] == 1
     # 'b' is retried (it failed) and 'c' is attempted (its record was torn).
-    assert [seen[-1]["content"] for seen in agent.seen] == ["Do b", "Do c"]
+    assert [seen[-1].text for seen in agent.seen] == ["Do b", "Do c"]
     assert result["succeeded"] == 1 and result["failed"] == 1
 
 

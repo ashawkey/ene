@@ -3,8 +3,8 @@
 The OpenAI-compatible streaming API yields a sequence of chunks, each carrying
 a ``delta`` with partial content, partial reasoning ("thinking"), and partial
 tool-call arguments. :func:`consume_stream` folds those chunks back into a
-plain-dict message in the OpenAI wire format plus a usage object, so the rest
-of the agent (context, tool dispatch) can treat a streamed turn exactly like a
+:class:`~ene.messages.Message` plus a usage object, so the rest of the agent
+(context, tool dispatch) can treat a streamed turn exactly like a
 non-streamed one.
 
 While folding, it invokes callbacks so the UI can render tokens as they arrive:
@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable
 
+from ene.messages import Message, ToolCall
+
 from .interrupt import RequestInterrupted
 
 
@@ -28,26 +30,24 @@ from .interrupt import RequestInterrupted
 _REASONING_KEYS = ("reasoning_content", "reasoning")
 
 
-def message_to_dict(message: Any) -> dict[str, Any]:
-    """Convert an SDK ``ChatCompletionMessage`` to the plain-dict wire format
-    used throughout the agent's history."""
-    msg: dict[str, Any] = {"role": message.role, "content": message.content}
+def message_from_sdk(message: Any) -> Message:
+    """Convert an SDK ``ChatCompletionMessage`` into a typed :class:`Message`."""
+    tool_calls = None
     if message.tool_calls:
-        msg["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments or "",
-                },
-            }
+        tool_calls = [
+            ToolCall(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=tc.function.arguments or "",
+            )
             for tc in message.tool_calls
         ]
     reasoning = (message.model_extra or {}).get("reasoning_content")
-    if reasoning:
-        msg["reasoning_content"] = reasoning
-    return msg
+    return Message.assistant(
+        content=message.content,
+        tool_calls=tool_calls,
+        reasoning_content=reasoning or None,
+    )
 
 
 def _extract_reasoning(delta: Any) -> str | None:
@@ -80,12 +80,10 @@ class _ToolCallAccumulator:
             if function.arguments:
                 self.arguments += function.arguments
 
-    def build(self) -> dict[str, Any]:
-        return {
-            "id": self.id or "",
-            "type": "function",
-            "function": {"name": self.name, "arguments": self.arguments},
-        }
+    def build(self) -> ToolCall:
+        return ToolCall(
+            id=self.id or "", name=self.name, arguments=self.arguments
+        )
 
 
 def consume_stream(
@@ -93,7 +91,7 @@ def consume_stream(
     on_content: Callable[[str], None] | None = None,
     on_thinking: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
-) -> tuple[dict[str, Any], Any, str | None]:
+) -> tuple[Message, Any, str | None]:
     """Fold a stream into ``(message, usage, finish_reason)``.
 
     Callbacks fire synchronously as chunks arrive. If *should_stop* returns
@@ -151,11 +149,13 @@ def consume_stream(
     content = "".join(content_parts)
     reasoning = "".join(reasoning_parts)
 
-    message: dict[str, Any] = {"role": role, "content": content or None}
-    if tool_calls:
-        message["tool_calls"] = [tool_calls[i].build() for i in sorted(tool_calls)]
-    # Preserve reasoning so /context and session dumps can show it.
-    if reasoning:
-        message["reasoning_content"] = reasoning
+    message = Message.assistant(
+        content=content or None,
+        tool_calls=[tool_calls[i].build() for i in sorted(tool_calls)] or None,
+        # Preserve reasoning so /context and session dumps can show it.
+        reasoning_content=reasoning or None,
+    )
+    if role != "assistant":
+        message.role = role
 
     return message, usage, finish_reason

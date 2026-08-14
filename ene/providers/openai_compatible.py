@@ -6,7 +6,8 @@ import threading
 from typing import Any, Callable
 
 from ene.models import reasoning_kwargs
-from ene.utils.streaming import consume_stream, message_to_dict
+from ene.utils.io import sanitize_unicode
+from ene.utils.streaming import consume_stream, message_from_sdk
 
 from .registry import ProviderSettings
 from .types import (
@@ -107,17 +108,19 @@ class OpenAICompatibleProvider(LLMProvider):
             client.close()
 
     def _kwargs(self, request: CompletionRequest) -> dict[str, Any]:
+        # Serialize at the wire boundary: Messages become OpenAI wire dicts,
+        # minus the keys this API does not accept.
         messages = [
             {
                 key: value
-                for key, value in message.items()
+                for key, value in message.to_wire().items()
                 if key not in {"provider_state", "display_content"}
             }
             for message in request.messages
         ]
         kwargs: dict[str, Any] = {
             "model": request.model,
-            "messages": messages,
+            "messages": sanitize_unicode(messages),
             "stream": request.stream,
         }
         if request.max_output_tokens is not None:
@@ -141,7 +144,7 @@ class OpenAICompatibleProvider(LLMProvider):
             response = client.chat.completions.create(**self._kwargs(request))
             choice = response.choices[0]
             return CompletionResult(
-                message=message_to_dict(choice.message),
+                message=message_from_sdk(choice.message),
                 usage=normalize_usage(response.usage),
                 finish_reason=choice.finish_reason,
             )

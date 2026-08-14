@@ -4,6 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from ene.messages import Message
 from ene.models import reasoning_kwargs
 from ene.providers import (
     CompletionRequest,
@@ -83,7 +84,7 @@ def test_openai_provider_uses_only_native_effort_for_anthropic(monkeypatch):
 
     provider.complete(CompletionRequest(
         model="claude-test",
-        messages=[{"role": "user", "content": "hello"}],
+        messages=[Message.user("hello")],
         stream=False,
         reasoning_effort="high",
     ))
@@ -118,11 +119,11 @@ def test_openai_provider_builds_chat_request_and_normalizes_usage(monkeypatch):
 
     request = CompletionRequest(
         model="gpt-test",
-        messages=[{
+        messages=[Message.from_wire({
             "role": "user",
             "content": "hello",
             "provider_state": {"openai-codex": {"output": []}},
-        }],
+        })],
         tools=[{"type": "function", "function": {"name": "read_file"}}],
         stream=False,
         max_output_tokens=1234,
@@ -140,7 +141,7 @@ def test_openai_provider_builds_chat_request_and_normalizes_usage(monkeypatch):
         "reasoning_effort": "high",
         "timeout": 60,
     }
-    assert result.message == {"role": "assistant", "content": "done"}
+    assert result.message == Message.from_wire({"role": "assistant", "content": "done"})
     assert result.usage.prompt_tokens == 10
     assert result.usage.cached_prompt_tokens == 3
     assert result.usage.reasoning_tokens == 2
@@ -191,7 +192,7 @@ def test_openai_provider_stream_is_closed_and_normalized(monkeypatch):
 
     assert client.kwargs["stream"] is True
     assert client.kwargs["stream_options"] == {"include_usage": True}
-    assert result.message["content"] == "hello"
+    assert result.message.text == "hello"
     assert result.usage.total_tokens == 14
     assert parts == ["hello"]
     assert raw_stream.close_calls == 1

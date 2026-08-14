@@ -12,6 +12,9 @@ from typing import Any, Callable, Iterator
 
 import httpx
 
+from ene.messages import ContentPart, ImagePart, Message, RawPart, TextPart, ToolCall
+from ene.utils.io import sanitize_unicode
+
 from .auth import CredentialStore, OAuthCredential
 from .openai_codex_oauth import (
     _decode_account_id,
@@ -42,37 +45,26 @@ def _package_version() -> str:
         return "dev"
 
 
-def _message_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "".join(
-        item.get("text", "")
-        for item in content
-        if isinstance(item, dict) and item.get("type") == "text"
-    )
-
-
-def _user_content(content: Any) -> list[dict[str, Any]]:
+def _user_content(content: str | list[ContentPart] | None) -> list[dict[str, Any]]:
     if isinstance(content, str):
         return [{"type": "input_text", "text": content}]
     if not isinstance(content, list):
         raise ProviderError("Codex user message has invalid content", retryable=False)
     result: list[dict[str, Any]] = []
     for item in content:
-        if not isinstance(item, dict):
-            raise ProviderError("Codex user content item is invalid", retryable=False)
-        if item.get("type") == "text":
-            result.append({"type": "input_text", "text": item.get("text", "")})
-        elif item.get("type") == "image_url":
-            image = item.get("image_url")
+        if isinstance(item, TextPart):
+            result.append({"type": "input_text", "text": item.text})
+        elif isinstance(item, ImagePart):
+            image = item.image_url
             url = image.get("url") if isinstance(image, dict) else image
             if not isinstance(url, str):
                 raise ProviderError("Codex image content has no URL", retryable=False)
             result.append({"type": "input_image", "detail": "auto", "image_url": url})
+        elif isinstance(item, RawPart):
+            kind = item.raw.get("type") if isinstance(item.raw, dict) else "?"
+            raise ProviderError(f"Unsupported Codex user content type: {kind!r}", retryable=False)
         else:
-            raise ProviderError(f"Unsupported Codex user content type: {item.get('type')!r}", retryable=False)
+            raise ProviderError("Codex user content item is invalid", retryable=False)
     return result
 
 
@@ -82,21 +74,19 @@ def _call_id(value: Any) -> str:
     return normalized or "call_ene"
 
 
-def _messages_to_input(messages: list[dict[str, Any]], model: str) -> tuple[str, list[dict[str, Any]]]:
+def _messages_to_input(messages: list[Message], model: str) -> tuple[str, list[dict[str, Any]]]:
     instructions: list[str] = []
     items: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
-        role = message.get("role")
-        if role == "system":
-            text = _message_text(message.get("content"))
-            if text:
-                instructions.append(text)
-        elif role == "user":
-            content = _user_content(message.get("content"))
+        if message.is_system:
+            if message.text:
+                instructions.append(message.text)
+        elif message.is_user:
+            content = _user_content(message.content)
             if content:
                 items.append({"role": "user", "content": content})
-        elif role == "assistant":
-            provider_state = message.get("provider_state")
+        elif message.is_assistant:
+            provider_state = message.provider_state
             codex_state = provider_state.get("openai-codex") if isinstance(provider_state, dict) else None
             if (
                 isinstance(codex_state, dict)
@@ -106,31 +96,29 @@ def _messages_to_input(messages: list[dict[str, Any]], model: str) -> tuple[str,
                 items.extend(codex_state["output"])
                 continue
 
-            text = _message_text(message.get("content"))
-            if text:
+            if message.text:
                 items.append({
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                    "content": [{"type": "output_text", "text": message.text, "annotations": []}],
                     "status": "completed",
                     "id": f"msg_ene_{index}",
                 })
-            for tool_call in message.get("tool_calls") or []:
-                function = tool_call.get("function") or {}
+            for tool_call in message.tool_calls or []:
                 items.append({
                     "type": "function_call",
-                    "call_id": _call_id(tool_call.get("id")),
-                    "name": function.get("name", ""),
-                    "arguments": function.get("arguments") or "{}",
+                    "call_id": _call_id(tool_call.id),
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments or "{}",
                 })
-        elif role == "tool":
+        elif message.is_tool:
             items.append({
                 "type": "function_call_output",
-                "call_id": _call_id(message.get("tool_call_id")),
-                "output": _message_text(message.get("content")) or "(no tool output)",
+                "call_id": _call_id(message.tool_call_id),
+                "output": message.text or "(no tool output)",
             })
         else:
-            raise ProviderError(f"Unsupported Codex message role: {role!r}", retryable=False)
+            raise ProviderError(f"Unsupported Codex message role: {message.role!r}", retryable=False)
     return "\n\n".join(instructions) or "You are a helpful assistant.", items
 
 
@@ -238,10 +226,10 @@ def _canonical_message(
     model: str,
     streamed_text: str,
     streamed_reasoning: str,
-) -> dict[str, Any]:
+) -> Message:
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
+    tool_calls: list[ToolCall] = []
     for item in output:
         kind = item.get("type")
         if kind == "message":
@@ -254,28 +242,19 @@ def _canonical_message(
             blocks = item.get("summary") or item.get("content") or []
             reasoning_parts.extend(block.get("text") or "" for block in blocks)
         elif kind == "function_call":
-            tool_calls.append({
-                "id": item.get("call_id") or item.get("id") or "",
-                "type": "function",
-                "function": {
-                    "name": item.get("name") or "",
-                    "arguments": item.get("arguments") or "{}",
-                },
-            })
+            tool_calls.append(ToolCall(
+                id=item.get("call_id") or item.get("id") or "",
+                name=item.get("name") or "",
+                arguments=item.get("arguments") or "{}",
+            ))
     text = "".join(text_parts) or streamed_text
     reasoning = "\n\n".join(part for part in reasoning_parts if part) or streamed_reasoning
-    message: dict[str, Any] = {
-        "role": "assistant",
-        "content": text or None,
-        "provider_state": {
-            "openai-codex": {"model": model, "output": output},
-        },
-    }
-    if reasoning:
-        message["reasoning_content"] = reasoning
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return message
+    return Message.assistant(
+        content=text or None,
+        tool_calls=tool_calls or None,
+        provider_state={"openai-codex": {"model": model, "output": output}},
+        reasoning_content=reasoning or None,
+    )
 
 
 class _CodexCompletionStream(CompletionStream):
@@ -366,7 +345,7 @@ class _CodexCompletionStream(CompletionStream):
             # The accumulated output items may themselves be incomplete. Replay
             # the canonical partial text instead of treating this state as an
             # opaque completed Codex response.
-            message.pop("provider_state", None)
+            message.provider_state = None
             return CompletionResult(message, None, None)
         output = terminal.get("output")
         if not isinstance(output, list) or (not output and output_items):
@@ -383,8 +362,8 @@ class _CodexCompletionStream(CompletionStream):
             # Replay partial output canonically on the continuation request; the
             # terminal output items, including any tool calls, are incomplete.
             # The backend will resolve those calls without executing them.
-            message.pop("provider_state", None)
-        elif message.get("tool_calls"):
+            message.provider_state = None
+        elif message.tool_calls:
             finish_reason = "tool_calls"
         else:
             finish_reason = "stop"
@@ -495,7 +474,7 @@ class OpenAICodexProvider(LLMProvider):
                 "POST",
                 CODEX_RESPONSES_URL,
                 headers=headers,
-                json=_build_body(request),
+                json=sanitize_unicode(_build_body(request)),
             )
             response = client.send(outbound, stream=True)
             if not response.is_success:

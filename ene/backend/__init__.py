@@ -59,15 +59,11 @@ from ene.context import (
     compact_context,
     compact_tool_result_envelope,
     estimate_context_chars,
-    get_role,
-    get_text,
-    get_tool_call_id,
-    get_tool_calls,
-    msg_chars,
     needs_compaction,
     prune_context,
     tool_result_char_budget,
 )
+from ene.messages import ImagePart, Message, TextPart
 from ene.utils.rewind import ChangeTracker
 from ene.models import (
     REASONING_EFFORTS,
@@ -85,7 +81,6 @@ from ene.utils.io import (
     InputBroker,
     PromptBroker,
     UserSubmission,
-    sanitize_unicode,
 )
 
 # HTTP status codes that represent transient failures worth retrying even
@@ -320,18 +315,18 @@ class LLMAgent(
             supports_image=self.profile.supports_image_input,
         )
 
-    def _messages_with_pending_images(self) -> list[dict[str, Any]]:
+    def _messages_with_pending_images(self) -> list[Message]:
         messages = self.context.get()
         if not self._pending_images:
             return messages
 
-        content: list[dict[str, Any]] = []
+        content: list[TextPart | ImagePart] = []
         for image in self._pending_images:
             content.extend((
-                {"type": "text", "text": f"Image returned by read_image: {image['file']}"},
-                {"type": "image_url", "image_url": {"url": image["url"]}},
+                TextPart(f"Image returned by read_image: {image['file']}"),
+                ImagePart({"url": image["url"]}),
             ))
-        messages.append({"role": "user", "content": content})
+        messages.append(Message.user(content))
         return messages
 
     def _build_system_prompt(self) -> str:
@@ -477,11 +472,11 @@ class LLMAgent(
 
         had_pending_images = bool(self._pending_images)
 
-        def build_request() -> tuple[list, CompletionRequest]:
-            payload = sanitize_unicode(self._messages_with_pending_images())
-            return payload, CompletionRequest(
+        def build_request() -> tuple[list[Message], CompletionRequest]:
+            messages = self._messages_with_pending_images()
+            return messages, CompletionRequest(
                 model=self.model,
-                messages=payload,
+                messages=messages,
                 tools=self.tools,
                 stream=self.stream,
                 max_output_tokens=self.max_output_tokens,
@@ -566,7 +561,7 @@ class LLMAgent(
                 f"input: {usage.prompt_tokens} "
                 f"(cached: {usage.cached_prompt_tokens or 'N/A'})"
             )
-            tool_calls = get_tool_calls(message)
+            tool_calls = message.tool_calls
             if tool_calls:
                 self.console.debug(f"Requested tool calls: {len(tool_calls)}")
 
@@ -714,7 +709,7 @@ class LLMAgent(
                 raise RequestInterrupted()
             result = provider.complete(CompletionRequest(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[Message.user(prompt)],
                 stream=False,
                 timeout=60,
                 max_output_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
@@ -736,7 +731,7 @@ class LLMAgent(
                 self._active_compaction_provider = None
         if result.usage is not None:
             self._accumulate_usage(result.usage)
-        summary = get_text(result.message)
+        summary = result.message.text
         if not summary:
             raise RuntimeError("Compaction provider returned no summary text")
         return summary
@@ -778,9 +773,9 @@ class LLMAgent(
         """Build rough provider-neutral usage when an API omits it."""
         prompt_chars = estimate_context_chars(self.context.get())
         prompt_tokens = self.token_estimator.chars_to_tokens(prompt_chars)
-        completion_chars = len(message.get("content") or "")
-        for tc in message.get("tool_calls") or []:
-            completion_chars += len(tc["function"].get("arguments") or "")
+        completion_chars = len(message.text)
+        for tool_call in message.tool_calls or []:
+            completion_chars += len(tool_call.arguments)
         completion_tokens = self.token_estimator.chars_to_tokens(completion_chars)
         return ProviderUsage(
             prompt_tokens=prompt_tokens,
@@ -802,23 +797,22 @@ class LLMAgent(
         t_all = time.monotonic()
         interrupted = False
         for i, tool_call in enumerate(tool_calls):
-            function_name = tool_call["function"]["name"]
+            function_name = tool_call.name
 
             # A user cancel aborts the whole round; fill remaining calls with
             # skipped results to keep assistant/tool pairing valid.
             if self.cancellation is not None and self.cancellation.cancelled:
                 interrupted = True
             if interrupted:
-                self.context.add({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": "Tool call skipped: the user interrupted the turn.",
-                })
+                self.context.add(Message.tool(
+                    tool_call.id,
+                    "Tool call skipped: the user interrupted the turn.",
+                ))
                 continue
 
             parse_error = None
             try:
-                function_args = json.loads(tool_call["function"]["arguments"])
+                function_args = json.loads(tool_call.arguments)
             except json.JSONDecodeError as exc:
                 function_args = {}
                 parse_error = str(exc)
@@ -831,11 +825,10 @@ class LLMAgent(
 
             if self.cancellation is not None and self.cancellation.cancelled:
                 interrupted = True
-                self.context.add({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": "Tool call skipped: the user interrupted the turn.",
-                })
+                self.context.add(Message.tool(
+                    tool_call.id,
+                    "Tool call skipped: the user interrupted the turn.",
+                ))
                 continue
 
             if parse_error is not None:
@@ -902,7 +895,7 @@ class LLMAgent(
                         function_name,
                         compaction_text,
                         result,
-                        tool_call["id"],
+                        tool_call.id,
                         self.work_dir,
                         self._session_id,
                         self.round_id,
@@ -939,7 +932,7 @@ class LLMAgent(
                         function_name,
                         result_text,
                         result,
-                        tool_call["id"],
+                        tool_call.id,
                         self.work_dir,
                         self._session_id,
                         self.round_id,
@@ -953,13 +946,15 @@ class LLMAgent(
                 if cleanup_error:
                     self.console.warn(f"Could not remove temporary tool output: {cleanup_error}")
 
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "content": result_text,
-            }
-            if output_description != format_tool_summary(result_text):
-                tool_message["display_content"] = output_description
+            tool_message = Message.tool(
+                tool_call.id,
+                result_text,
+                display_content=(
+                    output_description
+                    if output_description != format_tool_summary(result_text)
+                    else None
+                ),
+            )
             self.context.add(tool_message)
 
             # Detect a user interrupt: either the tool self-reported it
@@ -986,17 +981,16 @@ class LLMAgent(
         arrived without an id cannot be answered at all — the truncation cut it
         that early — so the whole message is withdrawn instead.
         """
-        tool_calls = message.get("tool_calls") or []
-        if all(tool_call.get("id") for tool_call in tool_calls):
+        tool_calls = message.tool_calls or []
+        if all(tool_call.id for tool_call in tool_calls):
             for tool_call in tool_calls:
-                self.context.add({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": (
+                self.context.add(Message.tool(
+                    tool_call.id,
+                    (
                         "Tool call skipped: the response was cut off before the "
                         "call was complete, so it was never executed."
                     ),
-                })
+                ))
         else:
             self.context.drop_last(message)
 
@@ -1027,7 +1021,7 @@ class LLMAgent(
             submission_id=submission.id,
             steer=True,
         )
-        self.context.add({"role": "user", "content": query})
+        self.context.add(Message.user(query))
         return True
 
     def get_response(self):
@@ -1088,7 +1082,7 @@ class LLMAgent(
             # cancellation must preserve the turn (including tool results from
             # completed iterations) rather than withdrawing the user's prompt.
             turn_has_response = True
-            content = message.get("content")
+            content = message.text
             if content:
                 # The stream sink renders buffered Markdown and emits the final
                 # event on close, so avoid printing it twice here.
@@ -1101,16 +1095,16 @@ class LLMAgent(
             # reasoning alone (or the visible part was dropped) and the task is
             # left mid-flight, so it needs the same continuation as a truncated
             # response rather than ending the turn silently.
-            empty_response = not get_text(message).strip() and not message.get("tool_calls")
+            empty_response = not message.text.strip() and not message.tool_calls
             if finish_reason in (None, "length") or empty_response:
-                if message.get("tool_calls"):
+                if message.tool_calls:
                     self.console.warn(
                         "Response was truncated during a tool call; cannot "
                         "automatically continue safely."
                     )
                     self._resolve_unexecuted_tool_calls(message)
                     return content or None
-                if empty_response and not message.get("provider_state"):
+                if empty_response and not message.provider_state:
                     # Nothing in this message reaches the next request: no text,
                     # no tool call, no provider state to replay. Left in history
                     # it is re-sent every round for the rest of the session (and
@@ -1136,13 +1130,13 @@ class LLMAgent(
                 )
                 continue
 
-            if not message.get("tool_calls"):
+            if not message.tool_calls:
                 if self.verbose:
                     turn_elapsed = time.monotonic() - t_turn_start
                     self.console.debug(f"Turn complete: {iteration} iteration(s) in {turn_elapsed:.1f}s")
                 return content or None
 
-            outcome = self.execute_tool_calls(message["tool_calls"])
+            outcome = self.execute_tool_calls(message.tool_calls)
             # A skill loaded this round may contribute tools; `self.tools` is a
             # live registry view, so the next loop iteration advertises them
             # automatically with no manual rebuild.
@@ -1578,11 +1572,10 @@ class LLMAgent(
         else:
             model_query = query
 
-        self.context.add({
-            "role": "user",
-            "content": model_query,
-            **({"display_content": query} if model_query != query else {}),
-        })
+        self.context.add(Message.user(
+            model_query,
+            display_content=query if model_query != query else None,
+        ))
         self.round_id += 1
         self.console.rule()
         with AgentCommandsMixin._round_timer(self):
@@ -1767,7 +1760,7 @@ class LLMAgent(
                 self.console.warn("Usage: !<shell command>")
             return None
 
-        user_message = {"role": "user", "content": query}
+        user_message = Message.user(query)
         self.context.add(user_message)
 
         self.console.rule()

@@ -20,10 +20,9 @@ from ene.context import (
     compact_context,
     compact_tool_result_envelope,
     estimate_context_chars,
-    get_role,
-    get_text,
     tool_result_char_budget,
 )
+from ene.messages import Message, ToolCall
 from ene.utils.interrupt import RequestInterrupted
 from ene.utils.io import EventHub, InputBroker
 from ene.utils.interrupt import TurnOutcome
@@ -81,10 +80,10 @@ def test_direct_bash_routes_to_the_exec_tool(tmp_path):
 
 def test_compaction_uses_provider_neutral_summarizer():
     messages = [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "second"},
-        {"role": "user", "content": "third"},
-        {"role": "assistant", "content": "fourth"},
+        Message.user("first"),
+        Message.assistant("second"),
+        Message.user("third"),
+        Message.assistant("fourth"),
     ]
     prompts = []
 
@@ -95,7 +94,7 @@ def test_compaction_uses_provider_neutral_summarizer():
     result, _ = compact_context(messages, summarize)
 
     assert prompts and "first" in prompts[0]
-    content = result[0]["content"]
+    content = result[0].text
     assert content.startswith("[Previous conversation summary]")
     assert "## Original request\nfirst" in content
     assert "condensed history" in content
@@ -108,9 +107,9 @@ def test_failed_compaction_is_reported_as_no_compaction():
     handing back a copy would make it announce a successful 0 % compaction.
     """
     messages = [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "second"},
-        {"role": "user", "content": "third"},
+        Message.user("first"),
+        Message.assistant("second"),
+        Message.user("third"),
     ]
     def fail(_prompt):
         raise RuntimeError("offline")
@@ -123,9 +122,9 @@ def test_failed_compaction_is_reported_as_no_compaction():
 def test_cancelling_a_compaction_is_not_reported_as_a_failure():
     """Escape tears down the request; that is the user's doing, not an error."""
     messages = [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "second"},
-        {"role": "user", "content": "third"},
+        Message.user("first"),
+        Message.assistant("second"),
+        Message.user("third"),
     ]
     warnings = []
     console = _Console()
@@ -153,7 +152,7 @@ def test_a_failed_request_keeps_the_context_management_it_paid_for(error):
     """
     context = ContextManager("system prompt")
     for i in range(4):
-        context.add({"role": "user", "content": f"message {i}"})
+        context.add(Message.user(f"message {i}"))
 
     console = _Console()
     console.system = lambda *args, **kwargs: None
@@ -162,7 +161,7 @@ def test_a_failed_request_keeps_the_context_management_it_paid_for(error):
     def call_api():
         # Stands in for the eviction + compaction call_api runs before the
         # request; the assistant message is only ever appended on success.
-        context.replace_messages([{"role": "user", "content": SUMMARY_MARKER}])
+        context.replace_messages([Message.user(SUMMARY_MARKER)])
         raise error
 
     agent = NS(
@@ -175,7 +174,7 @@ def test_a_failed_request_keeps_the_context_management_it_paid_for(error):
     )
 
     assert LLMAgent.get_response(agent) is None
-    assert [get_text(m) for m in context.messages] == [SUMMARY_MARKER]
+    assert [m.text for m in context.messages] == [SUMMARY_MARKER]
 
 
 def test_actual_failed_exec_capture_is_compacted_and_persisted(tmp_path):
@@ -186,7 +185,7 @@ def test_actual_failed_exec_capture_is_compacted_and_persisted(tmp_path):
         "python -c \"import sys; print('HEAD'); print('x' * 5000); "
         "print('brief stderr', file=sys.stderr); sys.exit(1)\""
     )
-    tool_call = {"id": "call-real-failed", "type": "function", "function": {"name": "exec_command", "arguments": json.dumps({"command": command})}}
+    tool_call = ToolCall("call-real-failed", "exec_command", json.dumps({"command": command}))
     agent = NS(
         verbose=False,
         console=console,
@@ -203,7 +202,7 @@ def test_actual_failed_exec_capture_is_compacted_and_persisted(tmp_path):
 
     LLMAgent.execute_tool_calls(agent, [tool_call])
 
-    stored = agent.context.messages[-1]["content"]
+    stored = agent.context.messages[-1].text
     assert "Large exec_command result compacted" in stored
     assert "brief stderr" in stored
     artifact = (
@@ -226,7 +225,7 @@ def test_midsize_exec_capture_survives_for_eviction(tmp_path):
     console.system = lambda *args, **kwargs: None
     executor = ToolExecutor(console=console, work_dir=str(tmp_path))
     command = "python -c \"print('HEAD'); print('x' * 4000); print('TAIL')\""
-    tool_call = {"id": "call-mid", "type": "function", "function": {"name": "exec_command", "arguments": json.dumps({"command": command})}}
+    tool_call = ToolCall("call-mid", "exec_command", json.dumps({"command": command}))
     agent = NS(
         verbose=False,
         console=console,
@@ -243,7 +242,7 @@ def test_midsize_exec_capture_survives_for_eviction(tmp_path):
 
     LLMAgent.execute_tool_calls(agent, [tool_call])
 
-    stored = agent.context.messages[-1]["content"]
+    stored = agent.context.messages[-1].text
     assert "Large exec_command result compacted" not in stored  # entered whole
     assert "HEAD" in stored and "TAIL" in stored
 
@@ -281,8 +280,8 @@ def test_unparseable_arguments_still_answer_their_tool_call(tmp_path):
     console = _Console()
     executed = []
     calls = [
-        {"id": "bad", "type": "function", "function": {"name": "write_file", "arguments": "{not json"}},
-        {"id": "good", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"file": "ok.txt", "content": "ok"})}},
+        ToolCall("bad", "write_file", "{not json"),
+        ToolCall("good", "write_file", json.dumps({"file": "ok.txt", "content": "ok"})),
     ]
     console.error = lambda *args, **kwargs: None
     agent = NS(
@@ -303,16 +302,16 @@ def test_unparseable_arguments_still_answer_their_tool_call(tmp_path):
 
     assert outcome == TurnOutcome.COMPLETED
     assert executed == [("write_file", {"file": "ok.txt", "content": "ok"})]
-    assert [message["tool_call_id"] for message in agent.context.messages] == ["bad", "good"]
-    assert "Invalid tool arguments" in agent.context.messages[0]["content"]
+    assert [message.tool_call_id for message in agent.context.messages] == ["bad", "good"]
+    assert "Invalid tool arguments" in agent.context.messages[0].text
 
 
 def test_interrupted_wait_skips_later_sequential_calls(tmp_path):
     console = _Console()
     executed = []
     calls = [
-        {"id": "wait", "type": "function", "function": {"name": "wait", "arguments": '{"seconds": 10}'}},
-        {"id": "inspect", "type": "function", "function": {"name": "inspect_processes", "arguments": '{}'}},
+        ToolCall("wait", "wait", '{"seconds": 10}'),
+        ToolCall("inspect", "inspect_processes", '{}'),
     ]
 
     def execute(name, args):
@@ -337,15 +336,15 @@ def test_interrupted_wait_skips_later_sequential_calls(tmp_path):
 
     assert outcome == TurnOutcome.USER_INTERRUPTED
     assert executed == [("wait", {"seconds": 10})]
-    assert [message["tool_call_id"] for message in agent.context.messages] == ["wait", "inspect"]
-    assert "skipped" in agent.context.messages[-1]["content"].lower()
+    assert [message.tool_call_id for message in agent.context.messages] == ["wait", "inspect"]
+    assert "skipped" in agent.context.messages[-1].text.lower()
 
 
 def test_large_tool_result_is_persisted_before_context(tmp_path):
     console = _Console()
     console.system = lambda *args, **kwargs: None
     result_text = "first\n" + "noise\n" * 3000 + "ERROR final\n"
-    tool_call = {"id": "call-1", "type": "function", "function": {"name": "exec_command", "arguments": '{"command": "noisy"}'}}
+    tool_call = ToolCall("call-1", "exec_command", '{"command": "noisy"}')
     agent = NS(
         verbose=False,
         console=console,
@@ -363,7 +362,7 @@ def test_large_tool_result_is_persisted_before_context(tmp_path):
     outcome = LLMAgent.execute_tool_calls(agent, [tool_call])
 
     assert outcome == TurnOutcome.COMPLETED
-    stored = agent.context.messages[-1]["content"]
+    stored = agent.context.messages[-1].text
     assert len(stored) <= tool_result_char_budget(16_000, tool_name="exec_command")
     assert "Large exec_command result compacted" in stored
     artifact = tmp_path / ".ene" / "tool-results" / "test" / "r2-call-1-exec_command.txt"
@@ -378,18 +377,14 @@ def test_large_tool_result_is_persisted_before_context(tmp_path):
 
 def test_pending_message_steers_next_agentic_iteration():
     context = ContextManager("system")
-    context.add({"role": "user", "content": "start"})
+    context.add(Message.user("start"))
     broker = InputBroker(EventHub())
     user_inputs = []
     request_contexts = []
-    tool_call = {
-        "id": "call-1",
-        "type": "function",
-        "function": {"name": "read_file", "arguments": '{"file": "a.py"}'},
-    }
+    tool_call = ToolCall("call-1", "read_file", '{"file": "a.py"}')
     responses = [
-        {"role": "assistant", "content": None, "tool_calls": [tool_call]},
-        {"role": "assistant", "content": "done"},
+        Message.assistant(content=None, tool_calls=[tool_call]),
+        Message.assistant("done"),
     ]
 
     def call_api():
@@ -399,11 +394,7 @@ def test_pending_message_steers_next_agentic_iteration():
         return message
 
     def execute_tool_calls(_tool_calls):
-        context.add({
-            "role": "tool",
-            "tool_call_id": "call-1",
-            "content": "file contents",
-        })
+        context.add(Message.tool("call-1", "file contents"))
         broker.submit("use @config.py instead", source="web")
         return False
 
@@ -426,10 +417,10 @@ def test_pending_message_steers_next_agentic_iteration():
     agent._inject_pending_steer = lambda: LLMAgent._inject_pending_steer(agent)
 
     assert LLMAgent.get_response(agent) == "done"
-    assert [message["role"] for message in request_contexts[1]] == [
+    assert [message.role for message in request_contexts[1]] == [
         "user", "assistant", "tool", "user",
     ]
-    assert request_contexts[1][-1]["content"] == "use config.py instead"
+    assert request_contexts[1][-1].text == "use config.py instead"
     assert broker.submission is None
     assert user_inputs[0][0] == "use config.py instead"
     assert user_inputs[0][1]["source"] == "web"
@@ -472,17 +463,13 @@ def test_pending_local_query_waits_for_round_completion(query):
 
 def test_interrupted_tool_iteration_does_not_consume_pending_message():
     context = ContextManager("system")
-    context.add({"role": "user", "content": "start"})
+    context.add(Message.user("start"))
     broker = InputBroker(EventHub())
     pending = None
-    tool_call = {
-        "id": "call-1",
-        "type": "function",
-        "function": {"name": "read_file", "arguments": '{"file": "a.py"}'},
-    }
+    tool_call = ToolCall("call-1", "read_file", '{"file": "a.py"}')
 
     def call_api():
-        message = {"role": "assistant", "content": None, "tool_calls": [tool_call]}
+        message = Message.assistant(content=None, tool_calls=[tool_call])
         context.add(message)
         return message
 
@@ -525,7 +512,7 @@ def test_call_api_preserves_output_limited_response_for_continuation():
             "max_tokens": request.max_output_tokens,
         })
         return CompletionResult(
-            {"role": "assistant", "content": "partial"}, usage, "length"
+            Message.assistant("partial"), usage, "length"
         )
 
     agent = NS(
@@ -554,7 +541,7 @@ def test_call_api_preserves_output_limited_response_for_continuation():
     message = LLMAgent.call_api(agent)
 
     assert kwargs_seen["max_tokens"] == max_output_tokens
-    assert message["content"] == "partial"
+    assert message.text == "partial"
     assert added == [message]
     assert agent._last_finish_reason == "length"
 
@@ -562,11 +549,11 @@ def test_call_api_preserves_output_limited_response_for_continuation():
 @pytest.mark.parametrize("unfinished_reason", [None, "length"])
 def test_get_response_warns_and_automatically_continues(unfinished_reason):
     context = ContextManager("system")
-    context.add({"role": "user", "content": "write it"})
+    context.add(Message.user("write it"))
     warnings = []
     responses = iter([
-        ({"role": "assistant", "content": "partial "}, unfinished_reason),
-        ({"role": "assistant", "content": "answer"}, "stop"),
+        (Message.assistant("partial "), unfinished_reason),
+        (Message.assistant("answer"), "stop"),
     ])
 
     agent = NS(
@@ -595,7 +582,7 @@ def test_get_response_warns_and_automatically_continues(unfinished_reason):
     assert LLMAgent.get_response(agent) == "answer"
     assert len(warnings) == 1
     assert "automatically continuing (1/3)" in warnings[0]
-    assert [get_text(message) for message in context.messages] == [
+    assert [message.text for message in context.messages] == [
         "write it", "partial ", "answer"
     ]
 
@@ -603,11 +590,11 @@ def test_get_response_warns_and_automatically_continues(unfinished_reason):
 def test_get_response_continues_after_empty_stopped_response():
     """A "stop" round with no text and no tool call left the task mid-flight."""
     context = ContextManager("system")
-    context.add({"role": "user", "content": "keep going"})
+    context.add(Message.user("keep going"))
     warnings = []
     responses = iter([
-        ({"role": "assistant", "content": None}, "stop"),
-        ({"role": "assistant", "content": "answer"}, "stop"),
+        (Message.assistant(content=None), "stop"),
+        (Message.assistant("answer"), "stop"),
     ])
 
     agent = NS(
@@ -641,7 +628,7 @@ def test_get_response_continues_after_empty_stopped_response():
 
 def test_get_response_stops_after_repeated_empty_responses():
     context = ContextManager("system")
-    context.add({"role": "user", "content": "keep going"})
+    context.add(Message.user("keep going"))
     warnings = []
 
     agent = NS(
@@ -661,7 +648,7 @@ def test_get_response_stops_after_repeated_empty_responses():
 
     def call_api():
         agent._last_finish_reason = "stop"
-        message = {"role": "assistant", "content": ""}
+        message = Message.assistant("")
         context.add(message)
         return message
 
@@ -671,7 +658,7 @@ def test_get_response_stops_after_repeated_empty_responses():
     assert "still unfinished after 2 automatic continuations" in warnings[-1]
     # Nothing in a contentless assistant turn reaches the next request, so none
     # of them may accumulate in the history that every later round re-sends.
-    assert [get_role(message) for message in context.messages] == ["user"]
+    assert [message.role for message in context.messages] == ["user"]
 
 
 def _unfinished_agent(context, warnings):
@@ -703,21 +690,16 @@ def test_truncated_tool_call_is_answered_so_history_stays_valid():
     session rather than just this round.
     """
     context = ContextManager("system")
-    context.add({"role": "user", "content": "run it"})
+    context.add(Message.user("run it"))
     warnings = []
     agent = _unfinished_agent(context, warnings)
 
     def call_api():
         agent._last_finish_reason = "length"
-        message = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": "call-cut",
-                "type": "function",
-                "function": {"name": "exec_command", "arguments": '{"command": "ls -'},
-            }],
-        }
+        message = Message.assistant(
+            content=None,
+            tool_calls=[ToolCall("call-cut", "exec_command", '{"command": "ls -')],
+        )
         context.add(message)
         return message
 
@@ -725,46 +707,45 @@ def test_truncated_tool_call_is_answered_so_history_stays_valid():
 
     assert LLMAgent.get_response(agent) is None
     assert "cannot automatically continue safely" in warnings[-1]
-    assert [get_role(message) for message in context.messages] == [
+    assert [message.role for message in context.messages] == [
         "user", "assistant", "tool"
     ]
     result = context.messages[-1]
-    assert result["tool_call_id"] == "call-cut"
-    assert "never executed" in result["content"]
+    assert result.tool_call_id == "call-cut"
+    assert "never executed" in result.text
 
 
 def test_truncated_tool_call_without_an_id_withdraws_the_message():
     """A call cut off before its id cannot be answered, so it cannot stay."""
     context = ContextManager("system")
-    context.add({"role": "user", "content": "run it"})
+    context.add(Message.user("run it"))
     warnings = []
     agent = _unfinished_agent(context, warnings)
 
     def call_api():
         agent._last_finish_reason = "length"
-        message = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "", "type": "function", "function": {"name": "", "arguments": ""}}],
-        }
+        message = Message.assistant(
+            content=None,
+            tool_calls=[ToolCall("", "", "")],
+        )
         context.add(message)
         return message
 
     agent.call_api = call_api
 
     assert LLMAgent.get_response(agent) is None
-    assert [get_role(message) for message in context.messages] == ["user"]
+    assert [message.role for message in context.messages] == ["user"]
 
 
 def test_empty_response_with_provider_state_is_kept_for_replay():
     """Provider state is what the continuation replays; dropping it loses the turn."""
     context = ContextManager("system")
-    context.add({"role": "user", "content": "keep going"})
+    context.add(Message.user("keep going"))
     warnings = []
     agent = _unfinished_agent(context, warnings)
     responses = iter([
-        ({"role": "assistant", "content": None, "provider_state": {"openai-codex": {}}}, "stop"),
-        ({"role": "assistant", "content": "answer"}, "stop"),
+        (Message.assistant(content=None, provider_state={"openai-codex": {}}), "stop"),
+        (Message.assistant("answer"), "stop"),
     ])
 
     def call_api():
@@ -776,7 +757,7 @@ def test_empty_response_with_provider_state_is_kept_for_replay():
     agent.call_api = call_api
 
     assert LLMAgent.get_response(agent) == "answer"
-    assert [get_role(message) for message in context.messages] == [
+    assert [message.role for message in context.messages] == [
         "user", "assistant", "assistant"
     ]
 
@@ -793,8 +774,8 @@ def _compaction_agent(token_readings):
     console.system = lambda *args, **kwargs: None
     context = ContextManager("system prompt")
     for i in range(10):
-        context.add({"role": "user", "content": f"request {i} " + "x" * 6_000})
-        context.add({"role": "assistant", "content": f"reply {i} " + "y" * 6_000})
+        context.add(Message.user(f"request {i} " + "x" * 6_000))
+        context.add(Message.assistant(f"reply {i} " + "y" * 6_000))
     readings = iter(token_readings)
     return NS(
         console=console,
@@ -837,8 +818,8 @@ def test_effective_compaction_still_holds_off_the_next_one():
 def test_compaction_is_skipped_while_the_floor_holds():
     context = ContextManager("system prompt")
     for i in range(6):
-        context.add({"role": "user", "content": "x" * 5_000})
-        context.add({"role": "assistant", "content": "y" * 5_000})
+        context.add(Message.user("x" * 5_000))
+        context.add(Message.assistant("y" * 5_000))
 
     compactions = []
     usage = ProviderUsage(prompt_tokens=10, completion_tokens=1, total_tokens=11)
@@ -868,7 +849,7 @@ def test_compaction_is_skipped_while_the_floor_holds():
         cancellation=None,
         _accumulate_usage=lambda value: None,
         _blocking_completion=lambda request: CompletionResult(
-            {"role": "assistant", "content": "ok"}, usage, "stop"
+            Message.assistant("ok"), usage, "stop"
         ),
     )
     agent._context_tokens = lambda: agent.token_estimator.prompt_tokens(
@@ -924,13 +905,13 @@ def test_context_overflow_compacts_and_retries_instead_of_failing():
         calls.append(request)
         if len(calls) == 1:
             raise _OverflowError("maximum context length is 200000 tokens")
-        return CompletionResult({"role": "assistant", "content": "ok"}, usage, "stop")
+        return CompletionResult(Message.assistant("ok"), usage, "stop")
 
     message = LLMAgent.call_api(_overflow_agent(completion, compactions))
 
     assert compactions == ["Context overflow reported by the API"]
     assert len(calls) == 2
-    assert message["content"] == "ok"
+    assert message.text == "ok"
 
 
 def test_context_overflow_recovery_is_attempted_only_once():
@@ -961,7 +942,7 @@ def test_rate_limit_mentioning_tokens_is_not_treated_as_overflow():
         calls.append(request)
         if len(calls) == 1:
             raise _RateLimit("rate limit: too many tokens per minute")
-        return CompletionResult({"role": "assistant", "content": "ok"}, usage, "stop")
+        return CompletionResult(Message.assistant("ok"), usage, "stop")
 
     LLMAgent.call_api(_overflow_agent(completion, compactions))
 
@@ -975,7 +956,7 @@ def test_stream_is_closed_when_consumption_is_cancelled(monkeypatch):
 
         def consume(self, **kwargs):
             return CompletionResult(
-                {"role": "assistant", "content": "partial"}, None, None
+                Message.assistant("partial"), None, None
             )
 
         def close(self):
@@ -1022,7 +1003,7 @@ def test_stream_status_remains_active_while_body_is_consumed(monkeypatch):
         def consume(self, **kwargs):
             assert state["thinking"] is True
             return CompletionResult(
-                {"role": "assistant", "content": "done"}, None, "stop"
+                Message.assistant("done"), None, "stop"
             )
 
         def close(self):
@@ -1046,10 +1027,7 @@ def test_stream_status_remains_active_while_body_is_consumed(monkeypatch):
 
 
 def _tool_call_msg(name, args_json):
-    return {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [
-            {"id": "t1", "type": "function", "function": {"name": name, "arguments": args_json}}
-        ],
-    }
+    return Message.assistant(
+        content=None,
+        tool_calls=[ToolCall("t1", name, args_json)],
+    )

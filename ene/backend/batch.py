@@ -18,6 +18,7 @@ when to give up — belongs to the ``batch`` skill, which drives this through
 """
 
 from ene.context import CompactionState
+from ene.messages import Message
 from ene.utils.interrupt import TurnOutcome
 
 
@@ -82,7 +83,7 @@ class IsolatedTurnMixin:
             self.context.compaction_state = CompactionState()
             self._compaction_floor_tokens = None
             self._pending_images.clear()
-            self.context.add({"role": "user", "content": prompt})
+            self.context.add(Message.user(prompt))
             # The turn is not part of the conversation, so it is not rendered or
             # published either: streaming hundreds of discarded item turns would
             # bury the transcript and evict the real timeline from the bounded

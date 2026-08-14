@@ -11,9 +11,6 @@ from rich.text import Text
 
 from ene.context import (
     CompactionState,
-    get_display_text,
-    get_role,
-    get_text,
 )
 from ene.personas import get_persona
 from ene.session_store import SessionStore
@@ -455,7 +452,7 @@ class SessionMixin:
             "token_totals": self.token_totals,
             "tool_compaction_totals": self.tool_compaction_totals,
             "compaction_totals": self.compaction_totals,
-            "system_prompt": self.context.system_prompt,
+            "system_prompt": self.context.system_prompt.to_wire(),
             "persona": self.persona.name,
             "persona_digest": self.persona.digest,
             "session_name": getattr(self, "session_name", ""),
@@ -534,7 +531,7 @@ class SessionMixin:
             if persona != self.persona:
                 self.persona = persona
                 self.system_prompt = self._build_system_prompt()
-                self.context.system_prompt["content"] = self.system_prompt
+                self.context.system_prompt.content = self.system_prompt
 
         self.context.replace_messages(data["messages"])
         # Sessions saved before compaction state was carried structurally simply
@@ -590,11 +587,11 @@ class SessionMixin:
         msgs = compact_replay(
             self.context.messages,
             is_user=lambda msg: (
-                get_role(msg) == "user"
-                and not get_text(msg).startswith(SUMMARY_MARKER)
+                msg.is_user
+                and not msg.text.startswith(SUMMARY_MARKER)
             ),
-            is_assistant=lambda msg: get_role(msg) == "assistant",
-            has_text=lambda msg: bool(get_text(msg).strip()),
+            is_assistant=lambda msg: msg.is_assistant,
+            has_text=lambda msg: bool(msg.text.strip()),
         )
         if not msgs:
             return
@@ -603,9 +600,9 @@ class SessionMixin:
         for msg in msgs:
             if isinstance(msg, HiddenMessages):
                 self.console.system(hidden_message(msg.count))
-            elif get_role(msg) == "user":
-                self.console.user_input(get_display_text(msg))
+            elif msg.is_user:
+                self.console.user_input(msg.display)
             else:
-                self.console.response(get_text(msg))
+                self.console.response(msg.text)
         self.console.system("── End of replay ──")
 

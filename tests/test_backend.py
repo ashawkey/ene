@@ -15,6 +15,7 @@ import ene.backend as backend
 from ene.backend import LLMAgent, _is_fatal_api_error
 from ene.backend.commands import AgentCommandsMixin
 from ene.context import CompactionState, ContextManager
+from ene.messages import Message, ToolCall
 from ene.providers import CompletionResult, ProviderError, ProviderUsage
 from ene.utils.interrupt import RequestInterrupted
 from ene.terminal import MessageValidator
@@ -249,7 +250,7 @@ def test_recap_uses_only_user_requests_and_keeps_context_unchanged(monkeypatch):
         def complete(self, request):
             requests.append(request)
             return CompletionResult(
-                message={"role": "assistant", "content": "  Build the recap feature.  "},
+                message=Message.assistant("  Build the recap feature.  "),
                 usage=usage,
                 finish_reason="stop",
             )
@@ -258,16 +259,16 @@ def test_recap_uses_only_user_requests_and_keeps_context_unchanged(monkeypatch):
             pass
 
     messages = [
-        {"role": "user", "content": "build it"},
-        {"role": "assistant", "content": "I will inspect the code"},
-        {"role": "assistant", "content": "", "tool_calls": [{
-            "id": "c1", "function": {"name": "read_file", "arguments": "{}"},
-        }]},
-        {"role": "tool", "tool_call_id": "c1", "content": "secret tool output"},
-        {"role": "user", "content": "model-facing", "display_content": "/skill follow up"},
+        Message.user("build it"),
+        Message.assistant("I will inspect the code"),
+        Message.assistant("", tool_calls=[
+            ToolCall(id="c1", name="read_file", arguments="{}"),
+        ]),
+        Message.tool("c1", "secret tool output"),
+        Message.user("model-facing", display_content="/skill follow up"),
     ]
     agent, output, warnings = _recap_agent(messages, Provider())
-    before = [dict(message) for message in agent.context.messages]
+    before = list(agent.context.messages)
 
     agent._handle_command("/recap")
 
@@ -276,7 +277,7 @@ def test_recap_uses_only_user_requests_and_keeps_context_unchanged(monkeypatch):
     assert output[-1] == ("Recap: Build the recap feature.", {"markup": False})
     assert len(requests) == 1
     request = requests[0]
-    prompt = request.messages[0]["content"]
+    prompt = request.messages[0].text
     assert "build it" in prompt
     assert "/skill follow up" in prompt
     assert "model-facing" not in prompt
@@ -295,10 +296,10 @@ def test_recap_uses_compacted_original_request_and_bounds_input(monkeypatch):
     monkeypatch.delitem(conf, "recap_model", raising=False)
     provider = NS()
     agent, _, _ = _recap_agent([
-        {"role": "user", "content": "[Previous conversation summary]\ninternal handoff"},
-        {"role": "user", "content": "x" * 30_000},
-        {"role": "assistant", "content": "irrelevant"},
-        {"role": "user", "content": "latest request"},
+        Message.user("[Previous conversation summary]\ninternal handoff"),
+        Message.user("x" * 30_000),
+        Message.assistant("irrelevant"),
+        Message.user("latest request"),
     ], provider)
     agent.context.compaction_state = CompactionState(original_request="opening request")
 
@@ -320,7 +321,7 @@ def test_recap_uses_configured_alias_and_closes_temporary_provider(monkeypatch):
         def complete(self, request):
             requests.append(request)
             return CompletionResult(
-                message={"role": "assistant", "content": "Remember the task."},
+                message=Message.assistant("Remember the task."),
                 usage=None,
                 finish_reason="stop",
             )
@@ -348,7 +349,7 @@ def test_recap_uses_configured_alias_and_closes_temporary_provider(monkeypatch):
     )
     active = NS(close=lambda: pytest.fail("active provider was closed"))
     agent, output, warnings = _recap_agent([
-        {"role": "user", "content": "remember this"},
+        Message.user("remember this"),
     ], active)
 
     agent._cmd_recap()
@@ -371,7 +372,7 @@ def test_compaction_uses_configured_summary_alias_and_closes_provider(monkeypatc
         def complete(self, request):
             requests.append(request)
             return CompletionResult(
-                message={"role": "assistant", "content": "condensed history"},
+                message=Message.assistant("condensed history"),
                 usage=ProviderUsage(20, 5, 25),
                 finish_reason="stop",
             )
@@ -430,7 +431,7 @@ def test_compaction_defaults_to_active_model(monkeypatch):
     requests = []
     provider = NS(
         complete=lambda request: requests.append(request) or CompletionResult(
-            message={"role": "assistant", "content": "summary"},
+            message=Message.assistant("summary"),
             usage=None,
             finish_reason="stop",
         ),
@@ -466,7 +467,7 @@ def test_recap_handles_empty_history_bad_usage_and_provider_failure(monkeypatch)
             pass
 
     agent, _, warnings = _recap_agent([
-        {"role": "user", "content": "task"},
+        Message.user("task"),
     ], FailingProvider())
     agent._cmd_recap()
     assert warnings == ["Could not generate recap: offline"]
@@ -478,9 +479,9 @@ def test_export_writes_last_assistant_response_to_relative_path(tmp_path):
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.work_dir = str(tmp_path)
     agent.context = NS(messages=[
-        {"role": "assistant", "content": "earlier response"},
-        {"role": "user", "content": "revise it"},
-        {"role": "assistant", "content": "# Result\n\nFinal **answer**.\n"},
+        Message.assistant("earlier response"),
+        Message.user("revise it"),
+        Message.assistant("# Result\n\nFinal **answer**.\n"),
     ])
     agent.console = NS(system=output.append, warn=warnings.append)
 
@@ -496,7 +497,7 @@ def test_export_validates_path_and_requires_assistant_response(tmp_path):
     warnings = []
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.work_dir = str(tmp_path)
-    agent.context = NS(messages=[{"role": "user", "content": "hello"}])
+    agent.context = NS(messages=[Message.user("hello")])
     agent.console = NS(system=lambda message: pytest.fail(message), warn=warnings.append)
 
     agent._cmd_export()
@@ -524,15 +525,15 @@ def test_context_detail_shows_untruncated_message_content():
 
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.console = Console()
-    agent.context = NS(messages=[{
-        "role": "assistant",
-        "content": "full [literal] response\nsecond line",
-        "reasoning_content": "private [reasoning]",
-        "tool_calls": [{
-            "id": "call-1",
-            "function": {"name": "write_file", "arguments": '{"content":"complete"}'},
-        }],
-    }])
+    agent.context = NS(messages=[Message.assistant(
+        "full [literal] response\nsecond line",
+        tool_calls=[ToolCall(
+            id="call-1",
+            name="write_file",
+            arguments='{"content":"complete"}',
+        )],
+        reasoning_content="private [reasoning]",
+    )])
 
     agent._handle_command("/context 0")
 
@@ -552,9 +553,9 @@ def test_context_list_highlights_conversation_and_dims_tools():
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.console = Console()
     agent.context = NS(messages=[
-        {"role": "user", "content": "please [inspect] this"},
-        {"role": "assistant", "content": "I will check"},
-        {"role": "tool", "tool_call_id": "call-1", "content": "noisy [output]"},
+        Message.user("please [inspect] this"),
+        Message.assistant("I will check"),
+        Message.tool("call-1", "noisy [output]"),
     ])
     agent.token_estimator = NS(chars_to_tokens=lambda chars: chars // 4)
     agent.context_length = 1000
@@ -574,7 +575,7 @@ def test_context_detail_validates_message_id():
     warnings = []
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.console = NS(warn=warnings.append)
-    agent.context = NS(messages=[{"role": "user", "content": "hello"}])
+    agent.context = NS(messages=[Message.user("hello")])
 
     agent._cmd_context("/context nope")
     agent._cmd_context("/context 2")
@@ -947,19 +948,19 @@ def test_explicit_skill_invocation_without_task_asks_model_not_to_infer(tmp_path
     agent._process_query(UserSubmission("/general-skill", "terminal", "s1"))
 
     call, result, message = agent.context.messages
-    tool_call = call["tool_calls"][0]
-    assert call["role"] == "assistant"
-    assert tool_call["function"]["name"] == "load_skill"
-    assert tool_call["function"]["arguments"] == '{"name": "general-skill"}'
-    assert result["role"] == "tool"
-    assert result["tool_call_id"] == tool_call["id"]
-    assert body in result["content"]
-    assert message["display_content"] == "/general-skill"
-    assert body not in message["content"]
-    assert "Default invocation" in message["content"]
-    assert "do not infer or start a task" in message["content"]
+    tool_call = call.tool_calls[0]
+    assert call.role == "assistant"
+    assert tool_call.name == "load_skill"
+    assert tool_call.arguments == '{"name": "general-skill"}'
+    assert result.role == "tool"
+    assert result.tool_call_id == tool_call.id
+    assert body in result.text
+    assert message.display_content == "/general-skill"
+    assert body not in message.text
+    assert "Default invocation" in message.text
+    assert "do not infer or start a task" in message.text
     state = CompactionState().absorb(agent.context.messages)
-    assert state.original_request == message["content"]
+    assert state.original_request == message.text
     assert state.skills == ("general-skill",)
     assert agent.round_id == 1
 
@@ -975,14 +976,14 @@ def test_explicit_skill_invocation_with_task_and_when_already_loaded(tmp_path):
     first_call, first_result, first, second_call, second_result, second = (
         agent.context.messages
     )
-    assert first_call["tool_calls"][0]["function"]["name"] == "load_skill"
-    assert body in first_result["content"]
-    assert first["content"] == "first task"
-    assert first["display_content"] == "/general-skill first task"
-    assert second_call["tool_calls"][0]["function"]["name"] == "load_skill"
-    assert body in second_result["content"]
-    assert second["content"] == "second task"
-    assert second["display_content"] == "/general-skill second task"
+    assert first_call.tool_calls[0].name == "load_skill"
+    assert body in first_result.text
+    assert first.text == "first task"
+    assert first.display_content == "/general-skill first task"
+    assert second_call.tool_calls[0].name == "load_skill"
+    assert body in second_result.text
+    assert second.text == "second task"
+    assert second.display_content == "/general-skill second task"
     state = CompactionState().absorb(agent.context.messages)
     assert state.original_request == "first task"
     assert state.skills == ("general-skill",)
@@ -1000,13 +1001,13 @@ def test_manual_skill_load_records_tool_pair_without_user_message(tmp_path):
     agent._cmd_skills("/skills general-skill")
 
     call, result = agent.context.messages
-    tool_call = call["tool_calls"][0]
-    assert call["role"] == "assistant"
-    assert tool_call["function"]["name"] == "load_skill"
-    assert result["role"] == "tool"
-    assert result["tool_call_id"] == tool_call["id"]
-    assert body in result["content"]
-    assert not any(message["role"] == "user" for message in agent.context.messages)
+    tool_call = call.tool_calls[0]
+    assert call.role == "assistant"
+    assert tool_call.name == "load_skill"
+    assert result.role == "tool"
+    assert result.tool_call_id == tool_call.id
+    assert body in result.text
+    assert not any(message.is_user for message in agent.context.messages)
     assert agent.round_id == 0
 
 
@@ -1030,8 +1031,8 @@ def test_cancelled_skill_invocation_restores_skill_state(tmp_path):
 
 def test_cancelled_initial_request_restores_context_and_message_draft():
     context = ContextManager("system")
-    context.add({"role": "user", "content": "u1"})
-    context.add({"role": "assistant", "content": "a1"})
+    context.add(Message.user("u1"))
+    context.add(Message.assistant("a1"))
     messages_before = list(context.messages)
     state_before = CompactionState(original_request="u1")
     context.compaction_state = state_before
@@ -1067,7 +1068,7 @@ def test_cancelled_initial_request_restores_context_and_message_draft():
     )
 
     def cancel_after_context_management():
-        context.replace_messages([{"role": "user", "content": "compacted u2"}])
+        context.replace_messages([Message.user("compacted u2")])
         context.compaction_state = CompactionState(original_request="u2")
         agent._session_revision_id = "cancelled-round-snapshot"
         agent._compaction_floor_tokens = 999
@@ -1093,8 +1094,8 @@ def test_cancelled_initial_request_restores_context_and_message_draft():
 
 def test_failed_initial_request_restores_context_and_message_draft():
     context = ContextManager("system")
-    context.add({"role": "user", "content": "u1"})
-    context.add({"role": "assistant", "content": "a1"})
+    context.add(Message.user("u1"))
+    context.add(Message.assistant("a1"))
     messages_before = list(context.messages)
     state_before = CompactionState(original_request="u1")
     context.compaction_state = state_before
@@ -1132,7 +1133,7 @@ def test_failed_initial_request_restores_context_and_message_draft():
     )
 
     def fail_after_context_management():
-        context.replace_messages([{"role": "user", "content": "compacted u2"}])
+        context.replace_messages([Message.user("compacted u2")])
         context.compaction_state = CompactionState(original_request="u2")
         agent._session_revision_id = "failed-round-snapshot"
         agent._compaction_floor_tokens = 999
@@ -1157,14 +1158,14 @@ def test_failed_initial_request_restores_context_and_message_draft():
 
 def test_cancelled_exec_preserves_its_partial_result_in_round_context(tmp_path):
     context = ContextManager("system")
-    context.add({"role": "user", "content": "u1"})
-    context.add({"role": "assistant", "content": "a1"})
+    context.add(Message.user("u1"))
+    context.add(Message.assistant("a1"))
     messages_before = list(context.messages)
-    tool_call = {
-        "id": "call-1",
-        "type": "function",
-        "function": {"name": "exec_command", "arguments": '{"command": "slow"}'},
-    }
+    tool_call = ToolCall(
+        id="call-1",
+        name="exec_command",
+        arguments='{"command": "slow"}',
+    )
 
     events = EventHub()
     resets = []
@@ -1218,7 +1219,7 @@ def test_cancelled_exec_preserves_its_partial_result_in_round_context(tmp_path):
     agent.save_session = lambda *args, **kwargs: saved.append(list(context.messages))
 
     def call_api():
-        message = {"role": "assistant", "content": None, "tool_calls": [tool_call]}
+        message = Message.assistant(None, tool_calls=[tool_call])
         context.add(message)
         return message
 
@@ -1226,16 +1227,13 @@ def test_cancelled_exec_preserves_its_partial_result_in_round_context(tmp_path):
     agent._process_query(UserSubmission("run it", "terminal", "submission-2"))
 
     expected = messages_before + [
-        {"role": "user", "content": "run it"},
-        {"role": "assistant", "content": None, "tool_calls": [tool_call]},
-        {
-            "role": "tool",
-            "tool_call_id": "call-1",
-            "content": (
-                "partial output\n"
-                "[exit_code: 143, interrupted: true, timed_out: false]"
-            ),
-        },
+        Message.user("run it"),
+        Message.assistant(None, tool_calls=[tool_call]),
+        Message.tool(
+            "call-1",
+            "partial output\n"
+            "[exit_code: 143, interrupted: true, timed_out: false]",
+        ),
     ]
     assert context.messages == expected
     assert agent.round_id == 2
@@ -1289,17 +1287,11 @@ def test_name_command_shows_sets_and_persists_name():
 
 def test_continue_resumes_after_tool_result_without_adding_user_message():
     messages = [
-        {"role": "user", "content": "do it"},
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": "call-1",
-                "type": "function",
-                "function": {"name": "load_skill", "arguments": '{"name":"lean"}'},
-            }],
-        },
-        {"role": "tool", "tool_call_id": "call-1", "content": "loaded"},
+        Message.user("do it"),
+        Message.assistant(None, tool_calls=[
+            ToolCall(id="call-1", name="load_skill", arguments='{"name":"lean"}'),
+        ]),
+        Message.tool("call-1", "loaded"),
     ]
     agent, warnings, calls, saved = _continue_agent(messages)
 
@@ -1313,8 +1305,8 @@ def test_continue_resumes_after_tool_result_without_adding_user_message():
 
 def test_continue_warns_when_round_is_complete():
     messages = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "done"},
+        Message.user("hello"),
+        Message.assistant("done"),
     ]
     agent, warnings, calls, saved = _continue_agent(messages)
 
@@ -1327,8 +1319,8 @@ def test_continue_warns_when_round_is_complete():
 
 def test_continue_resumes_after_empty_assistant_message():
     messages = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": ""},
+        Message.user("hello"),
+        Message.assistant(""),
     ]
     agent, warnings, calls, saved = _continue_agent(messages)
 
@@ -1341,15 +1333,11 @@ def test_continue_resumes_after_empty_assistant_message():
 
 def test_continue_rejects_partial_tool_results():
     messages = [
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {"id": "call-1", "function": {"name": "one", "arguments": "{}"}},
-                {"id": "call-2", "function": {"name": "two", "arguments": "{}"}},
-            ],
-        },
-        {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+        Message.assistant(None, tool_calls=[
+            ToolCall(id="call-1", name="one", arguments="{}"),
+            ToolCall(id="call-2", name="two", arguments="{}"),
+        ]),
+        Message.tool("call-1", "done"),
     ]
     agent, warnings, calls, saved = _continue_agent(messages)
 

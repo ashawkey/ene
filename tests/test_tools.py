@@ -465,9 +465,15 @@ def test_exec_command_decodes_utf8_when_windows_locale_is_legacy(tmp_path, monke
     monkeypatch.setattr(command_tools.sys, "platform", host_platform)
     monkeypatch.setattr(command_tools, "_command_output_encoding", lambda: "utf-8")
     te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
-    res = te._exec_command(
-        f'"{sys.executable}" -c "import sys; sys.stdout.buffer.write(\'héllo 世界\\n\'.encode(\'utf-8\'))"'
+    command = (
+        f'"{sys.executable}" -c "import sys; '
+        "sys.stdout.buffer.write('héllo 世界\\n'.encode('utf-8'))\""
     )
+    if sys.platform == "win32":
+        # PowerShell treats a quoted path at statement start as an expression;
+        # the call operator is required to invoke it.
+        command = "& " + command
+    res = te._exec_command(command)
     Path(res["_artifact_path"]).unlink(missing_ok=True)
     assert res["stdout"].replace("\r\n", "\n") == "héllo 世界\n"
 

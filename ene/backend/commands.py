@@ -8,13 +8,8 @@ from rich.markup import escape
 from ene.context import (
     SUMMARY_MARKER,
     build_tool_name_index,
-    get_display_text,
-    get_role,
-    get_text,
-    get_tool_call_id,
-    get_tool_calls,
-    msg_chars,
 )
+from ene.messages import Message
 from ene.models import REASONING_EFFORTS, resolve_model_profile
 from ene.providers import (
     AuthInteraction,
@@ -194,9 +189,9 @@ class AgentCommandsMixin:
             requests.append(original)
 
         for message in self.context.messages:
-            if get_role(message) != "user" or get_text(message).startswith(SUMMARY_MARKER):
+            if not message.is_user or message.text.startswith(SUMMARY_MARKER):
                 continue
-            text = get_display_text(message).strip()
+            text = message.display.strip()
             if text and text not in requests:
                 requests.append(text)
 
@@ -278,7 +273,7 @@ class AgentCommandsMixin:
                     result = run_interruptible(
                         lambda: provider.complete(CompletionRequest(
                             model=model,
-                            messages=[{"role": "user", "content": prompt}],
+                            messages=[Message.user(prompt)],
                             stream=False,
                             max_output_tokens=_RECAP_MAX_OUTPUT_TOKENS,
                             reasoning_effort="low",
@@ -291,7 +286,7 @@ class AgentCommandsMixin:
                 raise RequestInterrupted()
             if result.usage is not None:
                 self._accumulate_usage(result.usage)
-            recap = " ".join(get_text(result.message).split())
+            recap = " ".join(result.message.text.split())
             if not recap:
                 raise RuntimeError("Recap provider returned no text")
             self.console.print(f"Recap: {recap}", markup=False)
@@ -312,9 +307,9 @@ class AgentCommandsMixin:
 
         response = next(
             (
-                get_text(message)
+                message.text
                 for message in reversed(self.context.messages)
-                if get_role(message) == "assistant" and get_text(message)
+                if message.is_assistant and message.text
             ),
             None,
         )
@@ -346,15 +341,15 @@ class AgentCommandsMixin:
 
         messages = self.context.messages
         last = messages[-1]
-        role = get_role(last)
+        role = last.role
         if role == "assistant":
-            if get_tool_calls(last):
+            if last.tool_calls:
                 self.console.warn(
                     "The last assistant message has unresolved tool calls; "
                     "cannot continue safely."
                 )
                 return
-            if get_text(last).strip():
+            if last.text.strip():
                 self.console.warn("The last round is already complete; nothing to continue.")
                 return
             # An assistant turn with neither text nor tool calls left the task
@@ -365,11 +360,11 @@ class AgentCommandsMixin:
             # sending a partial tool batch is invalid for provider APIs.
             result_ids = set()
             index = len(messages) - 1
-            while index >= 0 and get_role(messages[index]) == "tool":
-                result_ids.add(get_tool_call_id(messages[index]))
+            while index >= 0 and messages[index].is_tool:
+                result_ids.add(messages[index].tool_call_id)
                 index -= 1
-            calls = get_tool_calls(messages[index]) if index >= 0 else []
-            call_ids = {call.get("id") for call in calls}
+            calls = messages[index].tool_calls if index >= 0 else []
+            call_ids = {call.id for call in calls}
             if not call_ids or result_ids != call_ids:
                 self.console.warn(
                     "The last assistant message has unresolved tool calls; "
@@ -550,13 +545,13 @@ class AgentCommandsMixin:
         self.persona = persona
         # self.tools follows the new persona automatically (live registry view).
         self.system_prompt = self._build_system_prompt()
-        self.context.system_prompt["content"] = self.system_prompt
+        self.context.system_prompt.content = self.system_prompt
         self.console.system(f"Switched to persona: {persona.name}")
 
 
     def _cmd_system_prompt(self):
         self.console.print(
-            f"[bold blue]System prompt:[/bold blue]\n\n{self.context.system_prompt['content']}"
+            f"[bold blue]System prompt:[/bold blue]\n\n{self.context.system_prompt.text}"
         )
 
     def _cmd_context(self, raw: str = "/context"):
@@ -588,9 +583,9 @@ class AgentCommandsMixin:
         tc_id_to_name = build_tool_name_index(msgs)
 
         for idx, m in enumerate(msgs):
-            role = get_role(m)
-            text = get_display_text(m) if role == "user" else get_text(m)
-            chars = msg_chars(m)
+            role = m.role
+            text = m.display if m.is_user else m.text
+            chars = m.chars
             total_chars += chars
 
             preview = text.replace("\n", " ").strip()
@@ -605,10 +600,10 @@ class AgentCommandsMixin:
             role_tag = f"[{role_style}]{escape(role):>9}[/{role_style}]"
             size_tag = f"[dim]{chars:>6} ch[/dim]"
 
-            tcs = get_tool_calls(m) if role == "assistant" else []
+            tcs = m.tool_calls if m.is_assistant else []
             if tcs:
                 n_tc = len(tcs)
-                tc_names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs)
+                tc_names = ", ".join(tc.name for tc in tcs)
                 extra = (
                     f"[yellow]{n_tc} call{'s' if n_tc > 1 else ''}[/yellow] "
                     f"({escape(tc_names)})"
@@ -621,7 +616,7 @@ class AgentCommandsMixin:
                 else:
                     lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {extra}")
             elif role == "tool":
-                tid = get_tool_call_id(m)
+                tid = m.tool_call_id
                 tool_name = tc_id_to_name.get(tid, "?") if tid else "?"
                 lines.append(
                     f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  "
@@ -647,45 +642,44 @@ class AgentCommandsMixin:
         lines.append("  [dim]Use /context <id> to show a message in full.[/dim]")
         self.console.print("\n".join(lines))
 
-    def _print_context_message(self, idx: int, message: dict) -> None:
+    def _print_context_message(self, idx: int, message: Message) -> None:
         """Print one context message without truncating or interpreting its text."""
-        role = get_role(message)
-        chars = msg_chars(message)
+        role = message.role
+        chars = message.chars
         self.console.print(
             f"[bold blue]Context message #{idx}[/bold blue] "
             f"([cyan]{escape(role)}[/cyan], {chars:,} ch)"
         )
 
         shown = False
-        content = get_text(message)
-        display_content = get_display_text(message)
+        content = message.text
+        display_content = message.display
         if display_content != content:
             self.console.print("[bold]Display content:[/bold]")
             self.console.print(display_content, markup=False)
             shown = True
-        if content or "content" in message:
+        if content or message.content is not None:
             self.console.print("[bold]Content:[/bold]")
             self.console.print(content, markup=False)
             shown = True
 
-        reasoning = message.get("reasoning_content")
+        reasoning = message.reasoning_content
         if isinstance(reasoning, str):
             self.console.print("[bold]Reasoning:[/bold]")
             self.console.print(reasoning, markup=False)
             shown = True
 
-        for call_idx, tool_call in enumerate(get_tool_calls(message)):
-            function = tool_call.get("function", {})
-            name = function.get("name", "?")
-            call_id = tool_call.get("id")
+        for call_idx, tool_call in enumerate(message.tool_calls or []):
+            name = tool_call.name or "?"
+            call_id = tool_call.id
             id_suffix = f" · {escape(str(call_id))}" if call_id else ""
             self.console.print(
                 f"[bold]Tool call {call_idx}:[/bold] {escape(str(name))}{id_suffix}"
             )
-            self.console.print(function.get("arguments") or "", markup=False)
+            self.console.print(tool_call.arguments, markup=False)
             shown = True
 
-        tool_call_id = get_tool_call_id(message)
+        tool_call_id = message.tool_call_id
         if tool_call_id:
             self.console.print(f"[bold]Tool call ID:[/bold] {escape(str(tool_call_id))}")
             shown = True

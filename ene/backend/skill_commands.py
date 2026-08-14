@@ -4,6 +4,7 @@ import json
 import uuid
 from pathlib import Path
 
+from ene.messages import Message, ToolCall
 from ene.tools import format_tool_result
 
 
@@ -137,7 +138,7 @@ class SkillCommandsMixin:
         # The advertised tool surface follows the registry automatically via the
         # `tools` property, so removed skills' tools stop being advertised.
         self.system_prompt = self._build_system_prompt()
-        self.context.system_prompt["content"] = self.system_prompt
+        self.context.system_prompt.content = self.system_prompt
         self._refresh_slash_commands()
         self._report_skills_summary()
 
@@ -159,23 +160,16 @@ class SkillCommandsMixin:
             return None
 
         call_id = f"call_ene_skill_{uuid.uuid4().hex}"
-        self.context.add({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": "load_skill",
-                    "arguments": json.dumps({"name": name}),
-                },
-            }],
-        })
-        self.context.add({
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": format_tool_result(result),
-        })
+        self.context.add(Message.assistant(
+            tool_calls=[ToolCall(
+                id=call_id,
+                name="load_skill",
+                arguments=json.dumps({"name": name}),
+            )],
+        ))
+        self.context.add(Message.tool(
+            call_id, format_tool_result(result)
+        ))
         return result
 
     def _load_skill_into_context(self, name: str):
