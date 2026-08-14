@@ -646,6 +646,10 @@ class TerminalInput:
             def _(event):
                 event.app.exit(exception=SessionDetach)
 
+            @kb.add("c-k", filter=~is_searching)
+            def _(event):
+                event.app.exit(exception=SessionKill)
+
             @kb.add("c-s", filter=~is_searching)
             def _(event):
                 event.app.exit(exception=SessionSwitch)

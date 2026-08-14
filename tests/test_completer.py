@@ -17,7 +17,12 @@ from prompt_toolkit.completion import Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.keys import Keys
 
-from ene.terminal import AtFileCompleter, SlashCommandCompleter, TerminalInput
+from ene.terminal import (
+    AtFileCompleter,
+    SessionKill,
+    SlashCommandCompleter,
+    TerminalInput,
+)
 
 
 class _Doc:
@@ -98,6 +103,26 @@ def test_ctrl_c_exit_hint_uses_system_message(monkeypatch):
     handler(SimpleNamespace(current_buffer=Buffer(), app=Mock()))
 
     system_message.assert_called_once_with("press Ctrl+C again to exit")
+
+
+def test_ctrl_k_kills_persistent_session():
+    terminal = object.__new__(TerminalInput)
+    terminal._persistent = True
+    bindings = terminal._create_keybindings()
+    handler = next(b.handler for b in bindings.bindings if b.keys == (Keys.ControlK,))
+    app = Mock()
+
+    handler(SimpleNamespace(app=app))
+
+    app.exit.assert_called_once_with(exception=SessionKill)
+
+
+def test_ctrl_k_keeps_default_behavior_outside_persistent_session():
+    terminal = object.__new__(TerminalInput)
+    terminal._persistent = False
+    bindings = terminal._create_keybindings()
+
+    assert not any(b.keys == (Keys.ControlK,) for b in bindings.bindings)
 
 
 def _message_terminal(*, pending=None, status=None):

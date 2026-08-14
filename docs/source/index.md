@@ -120,10 +120,10 @@ Interactive sessions run in detached workers and survive closing the terminal or
 - List workers with `ene ls` (`ene l`).
 - Reattach with `ene attach [name]`, or choose with bare `ene attach` (`ene a`).
 - Switch sessions using `/switch` or Ctrl+S; cancelling the picker leaves the current attachment untouched.
-- Terminate sessions with the `ene kill` (`ene k`) multi-select picker.
+- Terminate the attached session with Ctrl+K, or use the `ene kill` (`ene k`) multi-select picker.
 - Use `/resume` to activate a stopped conversation in the current live worker.
 
-Resume, attach, and switch replay the latest 10 user turns and final assistant responses, omitting historical tool activity and warnings. Double Ctrl+C at an idle prompt and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
+Resume, attach, and switch replay the latest 10 user turns and final assistant responses, omitting historical tool activity and warnings. Ctrl+K, double Ctrl+C at an idle prompt, and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
 
 ## Resume a session
 

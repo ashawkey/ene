@@ -155,7 +155,7 @@ class LiveTerminal:
         self._show_attach_preamble(session)
         self.console.system(
             f"Attached to '{label}'. Use /detach or Ctrl+D to detach; "
-            "/switch or Ctrl+S to switch."
+            "/switch or Ctrl+S to switch; Ctrl+K to kill."
         )
         reader = threading.Thread(target=self._read_loop, name="ene-live-reader", daemon=True)
         try:
