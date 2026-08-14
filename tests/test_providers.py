@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from ene.messages import Message
-from ene.models import reasoning_kwargs
+from ene.models import reasoning_kwargs, resolve_model_profile
 from ene.providers import (
     CompletionRequest,
     OpenAICompatibleProvider,
@@ -55,6 +55,7 @@ def test_reasoning_effort_maps_provider_specific_max_levels():
 
 
 def test_reasoning_effort_preserves_openai_and_deepseek_mappings():
+    # Legacy DeepSeek/GLM models honor only high and max.
     assert reasoning_kwargs("openai", "none") == {"reasoning_effort": "none"}
     assert reasoning_kwargs("openai", "high") == {"reasoning_effort": "high"}
     assert reasoning_kwargs("openai", "max") == {"reasoning_effort": "xhigh"}
@@ -69,6 +70,58 @@ def test_reasoning_effort_preserves_openai_and_deepseek_mappings():
         "reasoning_effort": "max",
         "extra_body": {"thinking": {"type": "enabled"}},
     }
+    assert reasoning_kwargs("glm", "low") == {
+        "reasoning_effort": "high",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+
+def test_reasoning_effort_three_tier_deepseek_v4():
+    # deepseek-v4-flash/pro support low/high/max; per the official mapping
+    # table low→low, medium→high, high→high, xhigh→high, max→max.
+    assert reasoning_kwargs("deepseek-v4", "none") == {
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+    for effort, mapped in {
+        "minimal": "low",
+        "low": "low",
+        "medium": "high",
+        "high": "high",
+        "xhigh": "high",
+        "max": "max",
+    }.items():
+        assert reasoning_kwargs("deepseek-v4", effort) == {
+            "reasoning_effort": mapped,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+
+
+def test_reasoning_effort_three_tier_glm5():
+    # GLM-5.3 accepts max/high/low; xhigh maps to its top tier.
+    assert reasoning_kwargs("glm-5", "none") == {
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+    for effort, mapped in {
+        "minimal": "low",
+        "low": "low",
+        "medium": "high",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max",
+    }.items():
+        assert reasoning_kwargs("glm-5", effort) == {
+            "reasoning_effort": mapped,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+
+
+def test_catalog_resolves_versioned_reasoning_styles():
+    assert resolve_model_profile("deepseek-v4-flash").reasoning == "deepseek-v4"
+    assert resolve_model_profile("deepseek-v4-pro").reasoning == "deepseek-v4"
+    assert resolve_model_profile("deepseek-chat").reasoning == "deepseek"
+    assert resolve_model_profile("glm-5.3").reasoning == "glm-5"
+    assert resolve_model_profile("glm-5.2").reasoning == "glm"
+    assert resolve_model_profile("glm-4.6").reasoning == "glm"
 
 
 def test_openai_provider_uses_only_native_effort_for_anthropic(monkeypatch):

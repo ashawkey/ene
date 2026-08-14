@@ -105,6 +105,7 @@ class ContextStatus:
     limit: int
     input_tokens: int
     output_tokens: int
+    cached_tokens: int = 0
 
     @property
     def fraction(self) -> float:
@@ -112,10 +113,20 @@ class ContextStatus:
             return 0.0
         return min(max(self.tokens / self.limit, 0.0), 1.0)
 
+    @property
+    def cache_hit_ratio(self) -> float:
+        if self.input_tokens <= 0:
+            return 0.0
+        return min(max(self.cached_tokens / self.input_tokens, 0.0), 1.0)
+
     def plain(self) -> str:
+        details = (
+            f"↑{_compact_tokens(self.input_tokens)} · "
+            f"↓{_compact_tokens(self.output_tokens)} · {self.cache_hit_ratio:.0%} hit"
+        )
         if self.limit <= 0:
-            return f"~{_compact_tokens(self.tokens)} · ↑{_compact_tokens(self.input_tokens)} · ↓{_compact_tokens(self.output_tokens)}"
-        return f"{self.fraction:.0%} · ↑{_compact_tokens(self.input_tokens)} · ↓{_compact_tokens(self.output_tokens)}"
+            return f"~{_compact_tokens(self.tokens)} · {details}"
+        return f"{self.fraction:.0%} · {details}"
 
     def render(self) -> Table | Text:
         if self.limit <= 0:
@@ -134,7 +145,8 @@ class ContextStatus:
             ),
             Text(f"{self.fraction:.0%}", style=color),
             Text(
-                f"· ↑{_compact_tokens(self.input_tokens)} · ↓{_compact_tokens(self.output_tokens)}",
+                f"· ↑{_compact_tokens(self.input_tokens)} · "
+                f"↓{_compact_tokens(self.output_tokens)} · {self.cache_hit_ratio:.0%} hit",
                 style="dim",
             ),
         )
@@ -285,6 +297,7 @@ class ThinkingIndicator:
                 context_limit=self._status_suffix.limit,
                 input_tokens=self._status_suffix.input_tokens,
                 output_tokens=self._status_suffix.output_tokens,
+                cached_tokens=self._status_suffix.cached_tokens,
                 started_at=self._started_at,
                 label=self._label_text,
                 progress=self._progress,
@@ -352,7 +365,8 @@ class ThinkingIndicator:
             suffix = (
                 f"{self._status_suffix.fraction:.0%} · "
                 f"↑{_compact_tokens(self._status_suffix.input_tokens)} · "
-                f"↓{_compact_tokens(self._status_suffix.output_tokens)}"
+                f"↓{_compact_tokens(self._status_suffix.output_tokens)} · "
+                f"{self._status_suffix.cache_hit_ratio:.0%} hit"
                 if isinstance(self._status_suffix, ContextStatus)
                 else str(self._status_suffix)
             )

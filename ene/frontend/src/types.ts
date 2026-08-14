@@ -12,6 +12,7 @@ export type EventData = {
   context_limit?: number
   input_tokens?: number
   output_tokens?: number
+  cached_tokens?: number
   label?: string
   progress?: boolean
   name?: string

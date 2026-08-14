@@ -359,6 +359,7 @@ class LiveTerminal:
                     int(data.get("context_limit", 0)),
                     int(data.get("input_tokens", 0)),
                     int(data.get("output_tokens", 0)),
+                    int(data.get("cached_tokens", 0)),
                 )
             if self.indicator is not None:
                 self.indicator.__exit__(None, None, None)

@@ -195,6 +195,7 @@ function SessionPane({
           contextLimit: typeof data.context_limit === 'number' ? data.context_limit : 0,
           inputTokens: typeof data.input_tokens === 'number' ? data.input_tokens : 0,
           outputTokens: typeof data.output_tokens === 'number' ? data.output_tokens : 0,
+          cachedTokens: typeof data.cached_tokens === 'number' ? data.cached_tokens : 0,
           label: typeof data.label === 'string' ? data.label : 'Working',
           startedAt: typeof data.started_at === 'number' ? data.started_at * 1000 : Date.now(),
           progress: data.progress === true,

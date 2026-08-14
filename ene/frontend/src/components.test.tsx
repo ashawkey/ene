@@ -130,11 +130,12 @@ describe('interaction components', () => {
           contextLimit={100}
           inputTokens={226_000}
           outputTokens={5_000}
+          cachedTokens={180_800}
           roundElapsed={312}
         />,
       )
       expect(screen.getByText('Working... (0s)')).toBeInTheDocument()
-      expect(screen.getByText('↑226K · ↓5K')).toBeInTheDocument()
+      expect(screen.getByText('↑226K · ↓5K · 80% hit')).toBeInTheDocument()
       expect(screen.getByText('· 5m')).toBeInTheDocument()
       act(() => { vi.advanceTimersByTime(2000) })
       expect(screen.getByText('Working... (2s)')).toBeInTheDocument()
@@ -207,11 +208,17 @@ describe('interaction components', () => {
 
   it('shows terminal-style context progress while working', () => {
     const { container } = render(
-      <Thinking contextTokens={1_000} contextLimit={128_000} inputTokens={2_000} outputTokens={500} />,
+      <Thinking
+        contextTokens={1_000}
+        contextLimit={128_000}
+        inputTokens={2_000}
+        outputTokens={500}
+        cachedTokens={1_600}
+      />,
     )
     expect(screen.getByText('Working... (0s)')).toBeInTheDocument()
     expect(screen.getByText('1%')).toBeInTheDocument()
-    expect(screen.getByText('↑2K · ↓500')).toBeInTheDocument()
+    expect(screen.getByText('↑2K · ↓500 · 80% hit')).toBeInTheDocument()
     expect(container.querySelector('.context-progress > i')).toHaveStyle({ width: '0.78125%' })
   })
 

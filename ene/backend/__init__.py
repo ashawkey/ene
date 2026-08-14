@@ -376,6 +376,7 @@ class LLMAgent(
             limit=self.context_length,
             input_tokens=self.token_totals["prompt"],
             output_tokens=self.token_totals["completion"],
+            cached_tokens=self.token_totals["cached_prompt"],
         )
 
     def _interruptible_sleep(self, seconds: float):

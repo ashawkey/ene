@@ -782,6 +782,7 @@ def test_live_terminal_reconstructs_remote_status_bar():
             "context_limit": 100,
             "input_tokens": 20,
             "output_tokens": 5,
+            "cached_tokens": 16,
             "started_at": 0,
             "round_elapsed": 12,
         },
@@ -790,6 +791,7 @@ def test_live_terminal_reconstructs_remote_status_bar():
     status = client.console.thinking_args["status_suffix"]
     assert isinstance(status, ContextStatus)
     assert status.fraction == 0.25
+    assert status.cache_hit_ratio == 0.8
     assert client.console.thinking_args["label"] == "Executing"
     assert client.console.thinking_args["round_elapsed"] == 12
     assert client.console.indicator.entered

@@ -63,13 +63,13 @@ def test_thinking_indicator_resumes_remote_elapsed_time(monkeypatch):
 def test_thinking_indicator_shows_frozen_accumulated_round_time():
     output = io.StringIO()
     console = Console(file=output, width=80, no_color=True)
-    context = ContextStatus(13, 100, 226_000, 5_000)
+    context = ContextStatus(13, 100, 226_000, 5_000, 180_800)
     indicator = ThinkingIndicator(
         console, status_suffix=context, round_elapsed=312.9
     )
 
     assert indicator._label_plain(12) == (
-        "Working... (12s) · 13% · ↑226K · ↓5K · 5m"
+        "Working... (12s) · 13% · ↑226K · ↓5K · 80% hit · 5m"
     )
     status = "".join(text for _, text in indicator._prompt_status("⠋", 12))
     assert status.endswith(" · 5m")

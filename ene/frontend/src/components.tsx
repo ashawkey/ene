@@ -170,6 +170,7 @@ export type ThinkingProps = {
   contextLimit?: number
   inputTokens?: number
   outputTokens?: number
+  cachedTokens?: number
   label?: string
   progress?: boolean
   countdown?: number
@@ -184,6 +185,7 @@ export function Thinking({
   contextLimit = 0,
   inputTokens = 0,
   outputTokens = 0,
+  cachedTokens = 0,
   label = 'Working',
   progress = false,
   countdown,
@@ -199,6 +201,9 @@ export function Thinking({
     ? Math.min(Math.max(contextTokens / contextLimit, 0), 1)
     : 0
   const contextLevel = fraction >= 0.9 ? 'danger' : fraction >= 0.75 ? 'warning' : 'info'
+  const cacheHitRatio = inputTokens > 0
+    ? Math.min(Math.max(cachedTokens / inputTokens, 0), 1)
+    : 0
   useEffect(() => {
     setSeconds(elapsed())
     const id = window.setInterval(() => setSeconds(elapsed()), 1000)
@@ -216,7 +221,9 @@ export function Thinking({
             <i style={{ width: `${fraction * 100}%` }} />
           </i>
           <strong className={contextLevel}>{Math.round(fraction * 100)}%</strong>
-          <small>↑{compactTokens(inputTokens)} · ↓{compactTokens(outputTokens)}</small>
+          <small>
+            ↑{compactTokens(inputTokens)} · ↓{compactTokens(outputTokens)} · {Math.round(cacheHitRatio * 100)}% hit
+          </small>
         </>
       ) : suffix ? <small>{suffix}</small> : null}
       {roundElapsed == null ? null : <small>· {formatRoundDuration(roundElapsed)}</small>}

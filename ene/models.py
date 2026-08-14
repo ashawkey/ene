@@ -14,7 +14,8 @@ class ModelProfile:
     """Properties of a model family that affect API behaviour."""
 
     context_length: int = 128_000
-    reasoning: str | None = None  # "openai" | "anthropic" | "gemini" | "deepseek" | "kimi"
+    # "openai" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi"
+    reasoning: str | None = None
     supports_image_input: bool = False
     # Max output tokens per request. Reasoning tokens count against this budget,
     # so reasoning models need generous ceilings to avoid mid-tool-call
@@ -29,8 +30,14 @@ MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
     ("gpt", ModelProfile(supports_image_input=True)),
     ("gemini", ModelProfile(context_length=1_000_000, reasoning="gemini", supports_image_input=True, max_output_tokens=64_000)),
     ("claude", ModelProfile(context_length=1_000_000, reasoning="anthropic", supports_image_input=True, max_output_tokens=64_000)),
+    # deepseek-v4-flash/pro gained three-tier thinking effort (low/high/max);
+    # older deepseek models keep the legacy two-tier mapping.
+    ("deepseek-v4", ModelProfile(context_length=1_000_000, reasoning="deepseek-v4", max_output_tokens=64_000)),
     ("deepseek", ModelProfile(context_length=1_000_000, reasoning="deepseek", max_output_tokens=64_000)),
-    ("glm", ModelProfile(context_length=1_000_000, reasoning="deepseek", max_output_tokens=64_000)),
+    # GLM-5.3 supports low/high/max; GLM-5.2 (and older) accept only max/high.
+    ("glm-5.3", ModelProfile(context_length=1_000_000, reasoning="glm-5", max_output_tokens=64_000)),
+    ("glm-5", ModelProfile(context_length=1_000_000, reasoning="glm", max_output_tokens=64_000)),
+    ("glm", ModelProfile(context_length=1_000_000, reasoning="glm", max_output_tokens=64_000)),
     ("kimi-k3", ModelProfile(context_length=1_000_000, reasoning="kimi", supports_image_input=True, max_output_tokens=64_000)),
     ("kimi", ModelProfile(supports_image_input=True)),
 ]
@@ -77,11 +84,27 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
                 }
             }
         }
-    if style == "deepseek":
+    if style in ("deepseek", "glm"):
+        # Legacy two-tier thinking effort for older DeepSeek/GLM models: only
+        # high and max are honored; anything lower collapses to high.
         if effort == "none":
             return {"extra_body": {"thinking": {"type": "disabled"}}}
-        # DeepSeek officially maps low/medium to high and xhigh/max to max.
         mapped = "max" if effort in ("xhigh", "max") else "high"
+        return {
+            "reasoning_effort": mapped,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+    if style in ("deepseek-v4", "glm-5"):
+        # Three-tier thinking effort (low/high/max) for deepseek-v4-flash/pro
+        # and GLM-5.3. DeepSeek's official mapping table (identical for
+        # v4-flash and v4-pro): low→low, medium→high, high→high, xhigh→high,
+        # max→max. GLM-5.3 accepts max/high/low, so xhigh maps to its top tier.
+        if effort == "none":
+            return {"extra_body": {"thinking": {"type": "disabled"}}}
+        mapped = {
+            "deepseek-v4": {"minimal": "low", "medium": "high", "xhigh": "high", "max": "max"},
+            "glm-5": {"minimal": "low", "medium": "high", "xhigh": "max", "max": "max"},
+        }[style].get(effort, effort)
         return {
             "reasoning_effort": mapped,
             "extra_body": {"thinking": {"type": "enabled"}},
