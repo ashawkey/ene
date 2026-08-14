@@ -53,15 +53,15 @@ Useful runner options:
 
 ```text
 --task-file PATH
---model-alias ALIAS
 --persona NAME
 --work-dir PATH
---reasoning-effort {none,minimal,low,medium,high,xhigh,max}
 ```
 
-Omitting `--model-alias` selects the first configured model, as `run_agent` does.
-Omitting `--persona` uses the default `coder` persona. Normally set the command's
-`cwd` and omit `--work-dir`; use `--work-dir` only when it should differ.
+The child automatically runs with the same model and reasoning effort as you
+(inherited through `ENE_MODEL_ALIAS` / `ENE_REASONING_EFFORT`), so no model
+flags are needed. Omitting `--persona` uses the default `coder` persona.
+Normally set the command's `cwd` and omit `--work-dir`; use `--work-dir` only
+when it should differ.
 
 Shell-quote every argument. For a multiline or quote-heavy foreground prompt,
 write a unique temporary task file under `.ene/scratch/`, pass `--task-file`, and
@@ -91,9 +91,10 @@ For read-only investigations, disjoint files, or separate worktrees:
    file under `.ene/scratch/subagents/`. Use `--task-file` for every background
    run, even when its prompt is short.
 3. Give each `start_process` call a concise, distinct `label` describing the
-   delegated task. Start the runner in the intended project `cwd`, retaining its
-   process ID, log path, and task-file path. The managed process log receives the
-   child’s output as it runs, so `inspect_processes` and `/ps <process-id>` can
+   delegated task, so it is identifiable in `/ps` and the live status bar.
+   Start the runner in the intended project `cwd`, retaining its process ID,
+   log path, and task-file path. The managed process log receives the child’s
+   output as it runs, so `inspect_processes` and `/ps <label|process-id>` can
    show current progress. If `start_process` itself fails, do not add that child
    to the active set.
 4. Call `wait_processes` once with all active process IDs and no timeout. When it

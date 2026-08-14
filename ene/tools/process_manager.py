@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -21,9 +22,10 @@ from .constants import (
 )
 from ene.utils.interrupt import CancelWatcher
 from ene.utils.process import (
+    agent_process_env,
+    decode_output_text,
     windows_hidden_process_kwargs,
     windows_utf8_powershell_command,
-    windows_utf8_process_env,
 )
 
 from .process_util import (
@@ -35,11 +37,40 @@ from .process_util import (
 )
 
 
-def format_process_status(running: int, finished: int) -> str:
-    """Return the compact process summary shared by terminal and web UIs."""
+def format_process_status(
+    running: int,
+    finished: int,
+    activity: list[dict[str, Any]] | None = None,
+) -> str:
+    """Return the multiline process summary shared by terminal and web UIs."""
     if running <= 0:
         return ""
-    return f"{running}/{running + finished} running processes"
+    noun = "process" if running == 1 else "processes"
+    lines = [f"{running} {noun} running · {finished} finished"]
+    active = [item for item in activity or [] if item["status"] == "running"]
+    for index, item in enumerate(active):
+        marker = "└" if index == len(active) - 1 else "├"
+        label = item.get("label") or " ".join(item["command"].split())
+        label = _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS]
+        latest = _clean_process_line(item.get("last_line", ""))
+        lines.append(f"{marker} {item['pid']} [{label}] {latest}".rstrip())
+    return "\n".join(lines)
+
+
+_PROCESS_LABEL_MAX_CHARS = 40
+_PROCESS_LINE_MAX_CHARS = 80
+# Log bytes still reach the file and wait_processes immediately; only live
+# status refreshes are coalesced.
+_ACTIVITY_NOTIFY_INTERVAL = 0.5
+_LAST_LINE_MAX_CHARS = 80
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+
+def _clean_process_line(text: str) -> str:
+    """Return one bounded printable line suitable for status rendering."""
+    text = _ANSI_RE.sub("", text)
+    text = "".join(char for char in text if char.isprintable())
+    return " ".join(text.split())[:_PROCESS_LINE_MAX_CHARS]
 
 
 class ProcessManagerMixin:
@@ -53,6 +84,7 @@ class ProcessManagerMixin:
         self._process_listeners: set[Callable[[int, int], None]] = set()
         self._last_process_counts = (0, 0)
         self._process_status_callback = None
+        self._activity_flush_timer: threading.Timer | None = None
 
     def add_process_listener(
         self, listener: Callable[[int, int], None], *, notify: bool = True
@@ -88,6 +120,23 @@ class ProcessManagerMixin:
         running = sum(self._process_info(record)["status"] == "running" for record in records)
         return running, len(records) - running
 
+    def process_activity(self) -> list[dict[str, Any]]:
+        """Return status-bar and ``/ps`` metadata for every managed process."""
+        with self._process_lock:
+            records = list(self._processes.values())
+            snapshots = [
+                (self._process_info(record), record["started_at"], record.get("last_line") or "")
+                for record in records
+            ]
+        return [
+            {
+                **info,
+                "elapsed_seconds": time.time() - started_at,
+                "last_line": _clean_process_line(last_line),
+            }
+            for info, started_at, last_line in snapshots
+        ]
+
     def _notify_process_status(self, *, force: bool = False) -> None:
         # Lifecycle changes can arrive from several capture threads. Serialize
         # both the count snapshot and callback delivery so an older update can
@@ -105,6 +154,22 @@ class ProcessManagerMixin:
                 except Exception:
                     # Process lifecycle must not depend on a UI observer.
                     pass
+
+    def _schedule_activity_flush(self) -> None:
+        """Coalesce process log activity into one status notify per interval."""
+        with self._process_notify_lock:
+            if self._activity_flush_timer is not None:
+                return
+            timer = threading.Timer(_ACTIVITY_NOTIFY_INTERVAL, self._flush_activity)
+            timer.daemon = True
+            self._activity_flush_timer = timer
+            timer.start()
+
+    def _flush_activity(self) -> None:
+        """Publish the current process activity snapshot (timer callback)."""
+        with self._process_notify_lock:
+            self._activity_flush_timer = None
+        self._notify_process_status(force=True)
 
     @staticmethod
     def _release_completed_windows_job(record: dict[str, Any]) -> bool:
@@ -155,7 +220,7 @@ class ProcessManagerMixin:
         return record
 
     def _start_process(
-        self, command: str, cwd: str | None = None, label: str | None = None
+        self, command: str, cwd: str | None = None, label: str | None = None,
     ) -> dict[str, Any]:
         """Start a session-managed background process with file-backed output."""
         if label is not None:
@@ -184,7 +249,7 @@ class ProcessManagerMixin:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
-                    env=windows_utf8_process_env(),
+                    env=agent_process_env(self.model_alias, self.reasoning_effort),
                     **windows_hidden_process_kwargs(
                         subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004
                     ),
@@ -218,6 +283,7 @@ class ProcessManagerMixin:
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
                     start_new_session=True,
+                    env=agent_process_env(self.model_alias, self.reasoning_effort),
                 )
                 process_backend = "linux_supervisor"
             else:
@@ -230,6 +296,7 @@ class ProcessManagerMixin:
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
                     start_new_session=True,
+                    env=agent_process_env(self.model_alias, self.reasoning_effort),
                 )
                 process_backend = "process_group"
         except Exception:
@@ -249,6 +316,7 @@ class ProcessManagerMixin:
             "started_at": time.time(),
             "log_truncated": False,
             "log_bytes": 0,
+            "last_line": "",
             "job_handle": job_handle,
             "process_backend": process_backend,
             "job_lock": threading.Lock(),
@@ -258,6 +326,7 @@ class ProcessManagerMixin:
         def capture_output() -> None:
             written = 0
             log_enabled = True
+            tail = b""
             try:
                 while chunk := proc.stdout.read1(65536):
                     remaining = MAX_PROCESS_LOG_BYTES - written
@@ -273,9 +342,19 @@ class ProcessManagerMixin:
                             written += len(data)
                             with self._process_condition:
                                 record["log_bytes"] = written
+                                tail = (tail + data)[-8192:]
+                                lines = [line for line in tail.split(b"\n") if line.strip()]
+                                if lines:
+                                    record["last_line"] = (
+                                        decode_output_text(lines[-1].strip())
+                                        [:_LAST_LINE_MAX_CHARS]
+                                    )
                                 self._process_condition.notify_all()
                     if len(chunk) > remaining:
                         record["log_truncated"] = True
+                    # Refresh the live status on a coalescing timer; the flush
+                    # reads current state, so it publishes the newest line.
+                    self._schedule_activity_flush()
             except OSError as exc:
                 record["capture_error"] = str(exc)
             finally:
@@ -338,8 +417,24 @@ class ProcessManagerMixin:
             byte_limit = log_tail_chars * 4
             start = max(0, size - byte_limit)
             with log_path.open("rb") as handle:
+                if start > 0:
+                    handle.seek(start - 1)
+                    starts_mid_line = handle.read(1) not in (b"\r", b"\n")
+                else:
+                    starts_mid_line = False
                 handle.seek(start)
-                decoded = handle.read().decode("utf-8", errors="replace")
+                raw = handle.read()
+            # Decode complete lines with the legacy-codepage fallback. The first
+            # line may be a UTF-8 fragment because the bounded read starts at a
+            # byte offset, so decode that fragment without reinterpreting it.
+            lines = raw.split(b"\n")
+            decoded_lines = [
+                line.decode("utf-8", errors="replace")
+                if index == 0 and starts_mid_line
+                else decode_output_text(line)
+                for index, line in enumerate(lines)
+            ]
+            decoded = "\n".join(decoded_lines)
             processes[0]["log_tail"] = decoded[-log_tail_chars:]
             processes[0]["log_tail_truncated"] = start > 0 or len(decoded) > log_tail_chars
         truncated = bool(log_tail_chars and processes[0].get("log_tail_truncated"))
@@ -557,6 +652,10 @@ class ProcessManagerMixin:
 
     def shutdown_processes(self, clear: bool = False) -> None:
         """Stop all running managed processes, optionally forgetting their records."""
+        with self._process_notify_lock:
+            timer, self._activity_flush_timer = self._activity_flush_timer, None
+        if timer is not None:
+            timer.cancel()
         with self._process_lock:
             records = list(self._processes.values())
         for record in records:

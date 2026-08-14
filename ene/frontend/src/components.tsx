@@ -209,7 +209,7 @@ export function Thinking({
       <span /><span /><span />
       <em>{label}... ({countdown == null ? `${seconds}s` : formatDuration(countdown - seconds)})</em>
       {progress ? <i className="indeterminate-progress" aria-hidden="true"><i /></i> : null}
-      {processStatus ? <small>{processStatus}</small> : null}
+      {processStatus ? <small className="process-status">{processStatus}</small> : null}
       {contextLimit > 0 ? (
         <>
           <i className={`context-progress ${contextLevel}`} aria-hidden="true">
@@ -235,7 +235,7 @@ export function ActivityStatus({
 }) {
   if (!busy && status === null) {
     return processStatus ? (
-      <div className="working" aria-label="background processes"><small>{processStatus}</small></div>
+      <div className="working" aria-label="background processes"><small className="process-status">{processStatus}</small></div>
     ) : null
   }
   return <Thinking {...(status ?? {})} processStatus={processStatus} />

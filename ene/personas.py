@@ -307,7 +307,10 @@ def _build_context_section(work_dir: str | None) -> str:
     git_info = _get_git_context(cwd)
     os_line = f"- Operating System: {platform.system()} {platform.release()}"
     if platform.system() == "Windows":
-        os_line += "\n- Shell: PowerShell"
+        os_line += (
+            "\n- Shell: Windows PowerShell (not bash: '&&', '||', 'tail', 'grep', "
+            "'ls -l' are unavailable; chain with ';' and use PowerShell cmdlets)"
+        )
     return f"## Current Context\n- Working Directory: {cwd}\n{os_line}{git_info}"
 
 

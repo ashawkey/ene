@@ -14,9 +14,10 @@ from typing import Any
 
 from ene.utils.interrupt import CancelWatcher
 from ene.utils.process import (
+    agent_process_env,
+    decode_output_text,
     windows_hidden_process_kwargs,
     windows_utf8_powershell_command,
-    windows_utf8_process_env,
 )
 
 from .constants import (
@@ -60,7 +61,7 @@ class CommandToolsMixin:
                 proc = subprocess.Popen(
                     shell_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=cwd or None,
-                    env=windows_utf8_process_env(),
+                    env=agent_process_env(self.model_alias, self.reasoning_effort),
                     **windows_hidden_process_kwargs(
                         subprocess.CREATE_NEW_PROCESS_GROUP
                     ),
@@ -75,6 +76,7 @@ class CommandToolsMixin:
                 proc = subprocess.Popen(
                     shell_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=cwd or None, start_new_session=True,
+                    env=agent_process_env(self.model_alias, self.reasoning_effort),
                 )
             except Exception:
                 artifact_file.close()
@@ -91,11 +93,17 @@ class CommandToolsMixin:
         capture_stopped = threading.Event()
 
         def _drain(stream, lines_buf, size_ref):
-            # PowerShell is explicitly configured to emit UTF-8 on Windows;
-            # elsewhere preserve the command's locale-based encoding.
-            decoder = codecs.getincrementaldecoder(_command_output_encoding())(
-                errors="replace"
-            )
+            # On Windows, PowerShell host errors (e.g. a parse error reported
+            # before the UTF-8 launch wrapper runs) arrive in the console's OEM
+            # codepage; decode per line so valid UTF-8 lines stay intact while
+            # legacy-codepage error lines fall back to the locale encoding.
+            # Elsewhere preserve the command's locale-based encoding.
+            if sys.platform == "win32":
+                decoder = None
+            else:
+                decoder = codecs.getincrementaldecoder(_command_output_encoding())(
+                    errors="replace"
+                )
             # Rendering through rich's per-line layout costs ~70us/line, which
             # would throttle a command with lots of output via pipe backpressure
             # (rich manages ~14k lines/s; the stream must not wait on that).
@@ -157,18 +165,33 @@ class CommandToolsMixin:
                     if display:
                         display_buf.append(f"  {display}")
 
-            pending = ""
+            pending = b"" if sys.platform == "win32" else ""
             try:
                 while raw := stream.read1(4096):
-                    pending += decoder.decode(raw)
-                    start = 0
-                    for match in re.finditer(r"\r\n|\r|\n", pending):
-                        consume(pending[start:match.end()])
-                        start = match.end()
-                    pending = pending[start:]
+                    if decoder is None:
+                        # Windows: split raw bytes at line ends and decode each
+                        # complete line so one encoding choice cannot corrupt a
+                        # line written in the other.
+                        pending += raw
+                        start = 0
+                        for match in re.finditer(rb"\r\n|\r|\n", pending):
+                            consume(decode_output_text(pending[start:match.end()]))
+                            start = match.end()
+                        pending = pending[start:]
+                    else:
+                        pending += decoder.decode(raw)
+                        start = 0
+                        for match in re.finditer(r"\r\n|\r|\n", pending):
+                            consume(pending[start:match.end()])
+                            start = match.end()
+                        pending = pending[start:]
                     flush_display()
-                pending += decoder.decode(b"", final=True)
-                consume(pending)
+                if decoder is None:
+                    if pending:
+                        consume(decode_output_text(pending))
+                else:
+                    pending += decoder.decode(b"", final=True)
+                    consume(pending)
             finally:
                 flush_display(force=True)
                 stream.close()

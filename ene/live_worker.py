@@ -281,7 +281,8 @@ class Worker:
                 agent.INSTANT_LISTING_COMMANDS
             )
             status["process_status"] = format_process_status(
-                *agent.tool_executor.process_counts()
+                *agent.tool_executor.process_counts(),
+                agent.tool_executor.process_activity(),
             )
         return status
 
@@ -433,7 +434,8 @@ class Worker:
             },
         )
         self.hub_client.get_process_status = lambda: format_process_status(
-            *self.agent.tool_executor.process_counts()
+            *self.agent.tool_executor.process_counts(),
+            self.agent.tool_executor.process_activity(),
         )
         self.hub_client.start()
 

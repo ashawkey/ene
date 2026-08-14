@@ -167,9 +167,12 @@ describe('interaction components', () => {
     expect(screen.getByText('read_file')).toBeInTheDocument()
   })
 
-  it('shows background processes while otherwise idle', () => {
-    render(<ActivityStatus busy={false} status={null} processStatus="1/3 running processes" />)
-    expect(screen.getByText('1/3 running processes')).toBeInTheDocument()
+  it('shows multiline background process activity while otherwise idle', () => {
+    const processStatus = '1 process running · 2 finished\n└ 42 [review parser] reading src/parse.py'
+    render(<ActivityStatus busy={false} status={null} processStatus={processStatus} />)
+    const status = screen.getByLabelText('background processes').querySelector('small')
+    expect(status).toHaveClass('process-status')
+    expect(status?.textContent).toBe(processStatus)
   })
 
   it('hides the status when the operation and indicator are both idle', () => {

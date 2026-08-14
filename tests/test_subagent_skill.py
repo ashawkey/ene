@@ -100,6 +100,75 @@ def test_subagent_runner_reads_task_file_and_reports_failure(monkeypatch, capsys
     assert payload["error"] == "request failed"
 
 
+def test_subagent_runner_inherits_model_and_effort_from_env(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("ENE_MODEL_ALIAS", "fast")
+    monkeypatch.setenv("ENE_REASONING_EFFORT", "medium")
+    runner = _load_runner()
+    calls = []
+
+    def fake_run_agent(task, **kwargs):
+        calls.append((task, kwargs))
+        return SimpleNamespace(
+            success=True,
+            outcome=TurnOutcome.COMPLETED,
+            response="done",
+            error=None,
+            token_usage={},
+        )
+
+    monkeypatch.setitem(runner["main"].__globals__, "run_agent", fake_run_agent)
+
+    code = runner["main"](["--task", "inspect", "--work-dir", str(tmp_path)])
+
+    assert code == 0
+    assert calls == [("inspect", {
+        "model_alias": "fast",
+        "persona": None,
+        "work_dir": Path(tmp_path),
+        "reasoning_effort": "medium",
+        "stream": True,
+        "quiet": False,
+    })]
+
+
+def test_subagent_runner_explicit_flags_override_env(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("ENE_MODEL_ALIAS", "fast")
+    monkeypatch.setenv("ENE_REASONING_EFFORT", "low")
+    runner = _load_runner()
+    calls = []
+
+    def fake_run_agent(task, **kwargs):
+        calls.append((task, kwargs))
+        return SimpleNamespace(
+            success=True,
+            outcome=TurnOutcome.COMPLETED,
+            response="done",
+            error=None,
+            token_usage={},
+        )
+
+    monkeypatch.setitem(runner["main"].__globals__, "run_agent", fake_run_agent)
+
+    code = runner["main"]([
+        "--task", "inspect",
+        "--model-alias", "other",
+        "--reasoning-effort", "high",
+        "--work-dir", str(tmp_path),
+    ])
+
+    assert code == 0
+    assert calls == [("inspect", {
+        "model_alias": "other",
+        "persona": None,
+        "work_dir": Path(tmp_path),
+        "reasoning_effort": "high",
+        "stream": True,
+        "quiet": False,
+    })]
+
+
 def test_subagent_runner_reports_startup_error(monkeypatch, capsys):
     runner = _load_runner()
 

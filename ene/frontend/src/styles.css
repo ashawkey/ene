@@ -622,6 +622,7 @@ html { scrollbar-gutter: stable; }
 .working em { margin-left: 0.2rem; font-style: normal; }
 .working strong { font-size: inherit; font-weight: 500; }
 .working small { color: var(--dim); font-size: inherit; }
+.working .process-status { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .context-progress { position: relative; width: 6rem; height: 0.5rem; overflow: hidden; border-radius: 999px; background: var(--line-strong); }
 .context-progress i { position: absolute; inset: 0 auto 0 0; background: currentColor; }
 .indeterminate-progress { position: relative; width: 6rem; height: 0.5rem; overflow: hidden; border-radius: 999px; background: var(--line-strong); }

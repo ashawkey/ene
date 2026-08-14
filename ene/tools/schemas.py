@@ -6,6 +6,8 @@ how each tool dispatches and when it is advertised are decided in
 single source of truth per tool.
 """
 
+import sys
+
 from .constants import (
     MAX_GLOB_RESULTS,
     MAX_GREP_MATCHES,
@@ -387,3 +389,28 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
 BUILTIN_TOOL_SCHEMAS = {
     schema["function"]["name"]: schema for schema in _BUILTIN_TOOL_SCHEMAS_LIST
 }
+
+_SHELL_TOOLS_NOTE = (
+    " Commands run in Windows PowerShell, not bash: '&&' and '||' are invalid "
+    "(chain statements with ';'), and bash utilities like 'tail', 'grep', 'ls -l', "
+    "and 'cat' do not exist - use PowerShell equivalents (Select-Object -Last N, "
+    "Select-String, Get-ChildItem, Get-Content)."
+)
+
+
+def _apply_platform_notes(schemas: dict[str, dict]) -> None:
+    """Append platform-specific guidance to tool descriptions in place.
+
+    On Windows the shell tools run in Windows PowerShell, not bash. Say so in
+    the descriptions the model reads when composing commands; bash-only syntax
+    (e.g. ``&&``) is the most common Windows failure mode and produces a parse
+    error rather than a useful message.
+    """
+    if sys.platform != "win32":
+        return
+    for name in ("exec_command", "start_process"):
+        function = schemas[name]["function"]
+        function["description"] = function["description"] + _SHELL_TOOLS_NOTE
+
+
+_apply_platform_notes(BUILTIN_TOOL_SCHEMAS)

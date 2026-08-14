@@ -1,5 +1,6 @@
 """Interactive slash commands for :class:`LLMAgent`."""
 
+import math
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -18,12 +19,25 @@ from ene.providers import (
     create_provider,
 )
 from ene.personas import DEFAULT_PERSONA, PersonaInfo, discover_personas, get_persona
+from ene.tools.constants import MAX_PROCESS_LOG_TAIL_CHARS
 from ene.utils.interrupt import RequestInterrupted, run_interruptible
 
 
 _RECAP_INPUT_MAX_CHARS = 24_000
 _RECAP_MAX_OUTPUT_TOKENS = 128
 _RECAP_TIMEOUT_SECONDS = 60
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Compact wall-clock age for process listings."""
+    total = max(0, math.ceil(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
 
 
 class AgentCommandsMixin:
@@ -42,7 +56,7 @@ class AgentCommandsMixin:
         "export": "Export the last assistant response (/export <path/filename>)",
         "continue": "Resume an unfinished round without adding a user message",
         "usage": "Show token usage for this session",
-        "ps": "List background processes; /ps <process-id|pid> shows its recent log",
+        "ps": "List processes; /ps <label|id|pid> [tail-chars] inspects; /ps stop <label|id|pid> stops",
         "model": "Show or switch LLM model (/model <name>)",
         "login": "Log in to an OAuth provider (/login [provider|model-alias])",
         "logout": "Remove stored OAuth credentials (/logout [provider|model-alias])",
@@ -61,8 +75,8 @@ class AgentCommandsMixin:
 
     # Commands that answer while an agent round is in flight instead of queueing
     # behind it. A round owns the conversation, the provider, and the terminal
-    # prompt, so only commands that read session state or take effect on the
-    # *next* API call qualify.
+    # prompt, so only commands that do not mutate conversation/provider state
+    # (including managed-process controls) or affect only the *next* API call qualify.
     INSTANT_COMMANDS = frozenset({
         "help", "usage", "ps", "context", "system_prompt", "auth", "effort", "name",
     })
@@ -385,54 +399,134 @@ class AgentCommandsMixin:
             self.console.warn(f"Could not save continued round: {e}")
 
     def _cmd_ps(self, raw: str) -> None:
-        """List managed processes, or inspect one with a recent log tail."""
-        parts = raw.split()
-        if len(parts) > 2:
-            self.console.warn("Usage: /ps [process-id]")
+        """List, inspect, or stop a managed process by ID, PID, or label."""
+        parts = raw.split(maxsplit=1)
+        activity = self.tool_executor.process_activity()
+
+        def exact_matches(value: str):
+            return [
+                item for item in activity
+                if item["process_id"] == value
+                or str(item["pid"]) == value
+                or item.get("label") == value
+            ]
+
+        def resolve_matches(value: str):
+            matches = exact_matches(value)
+            labels = [item for item in activity if item.get("label")]
+            if not matches:
+                matches = [
+                    item for item in labels
+                    if item["label"].lower().startswith(value.lower())
+                ]
+            if not matches:
+                matches = [
+                    item for item in labels if value.lower() in item["label"].lower()
+                ]
+            return matches
+
+        def one_match(value: str):
+            matches = resolve_matches(value)
+            if not matches:
+                self.console.warn(f"No process matches: {value}")
+                return None
+            if len(matches) > 1:
+                names = ", ".join(
+                    item.get("label") or item["process_id"] for item in matches
+                )
+                self.console.warn(f"Ambiguous process '{value}': {names}")
+                return None
+            return matches[0]
+
+        if len(parts) == 1:
+            if not activity:
+                self.console.system("No managed background processes.")
+                return
+            lines = []
+            for item in activity:
+                display = item.get("label") or " ".join(item["command"].split())
+                display = display[:97] + "..." if len(display) > 100 else display
+                status = item["status"]
+                if status == "exited":
+                    status += f" ({item['exit_code']})"
+                lines.append(
+                    f"  [cyan]{escape(item['process_id'])}[/cyan] "
+                    f"pid={item['pid']} [bold]{status}[/bold] "
+                    f"{_format_elapsed(item['elapsed_seconds'])}  {escape(display)}"
+                )
+                if item["last_line"]:
+                    lines.append(f"    └ {escape(item['last_line'])}")
+            self.console.print(
+                "[bold blue]Background processes:[/bold blue]\n" + "\n".join(lines)
+            )
             return
-        process_id = parts[1] if len(parts) == 2 else None
+
+        argument = " ".join(parts[1].split())
+        stop_parts = argument.split(maxsplit=1)
+        if stop_parts[0].lower() == "stop":
+            if len(stop_parts) == 1:
+                self.console.warn("Usage: /ps stop <label|process-id|pid>")
+                return
+            process = one_match(stop_parts[1])
+            if process is None:
+                return
+            result = self.tool_executor.execute(
+                "stop_process", {"process_id": process["process_id"]}
+            )
+            if not result["success"]:
+                self.console.warn(result["error"])
+                return
+            label = f" ({process['label']})" if process.get("label") else ""
+            self.console.system(f"Stopped process {process['process_id']}{label}.")
+            return
+
+        target = argument
+        tail_chars = 8000
+        matches = exact_matches(target)
+        if not matches:
+            possible_target, separator, possible_tail = target.rpartition(" ")
+            if separator:
+                try:
+                    requested_tail = int(possible_tail)
+                except ValueError:
+                    pass
+                else:
+                    if requested_tail < 0:
+                        self.console.warn("Usage: /ps [label|process-id] [tail-chars]")
+                        return
+                    target = possible_target
+                    tail_chars = min(requested_tail, MAX_PROCESS_LOG_TAIL_CHARS)
+                    matches = exact_matches(target)
+        if not matches:
+            matches = resolve_matches(target)
+        process_match = one_match(target) if len(matches) != 1 else matches[0]
+        if process_match is None:
+            return
+
         result = self.tool_executor.inspect_processes(
-            process_id=process_id,
-            log_tail_chars=8000 if process_id else 0,
+            process_id=process_match["process_id"], log_tail_chars=tail_chars
         )
         if not result["success"]:
             self.console.warn(result["error"])
             return
-        processes = result["processes"]
-        if not processes:
-            self.console.system("No managed background processes.")
-            return
-        lines = []
-        for process in processes:
-            display = process.get("label") or process["command"]
-            display = " ".join(display.split())
-            if len(display) > 100:
-                display = display[:97] + "..."
-            status = process["status"]
-            if status == "exited":
-                status += f" ({process['exit_code']})"
-            lines.append(
-                f"  [cyan]{escape(process['process_id'])}[/cyan] "
-                f"pid={process['pid']} [bold]{status}[/bold]  {escape(display)}"
+        process = result["processes"][0]
+        details = []
+        if process.get("label"):
+            details.append(f"  label: {escape(process['label'])}")
+        details.extend((
+            f"  command: {escape(process['command'])}",
+            f"  cwd: {escape(process['cwd'])}",
+            f"  log: {escape(process['log_path'])}",
+        ))
+        self.console.print("[bold blue]Background process:[/bold blue]\n" + "\n".join(details))
+        tail = process.get("log_tail", "")
+        if tail:
+            prefix = "... (tail truncated)\n" if process.get("log_tail_truncated") else ""
+            self.console.print(
+                f"[bold blue]Recent output:[/bold blue]\n{escape(prefix + tail)}"
             )
-        self.console.print("[bold blue]Background processes:[/bold blue]\n" + "\n".join(lines))
-        if process_id:
-            process = processes[0]
-            details = []
-            if process.get("label"):
-                details.append(f"  label: {escape(process['label'])}")
-            details.extend((
-                f"  command: {escape(process['command'])}",
-                f"  cwd: {escape(process['cwd'])}",
-                f"  log: {escape(process['log_path'])}",
-            ))
-            self.console.print("\n".join(details))
-            tail = process.get("log_tail", "")
-            if tail:
-                prefix = "... (tail truncated)\n" if process.get("log_tail_truncated") else ""
-                self.console.print(f"[bold blue]Recent output:[/bold blue]\n{escape(prefix + tail)}")
-            else:
-                self.console.print("[dim]No output captured yet.[/dim]")
+        else:
+            self.console.print("[dim]No output captured yet.[/dim]")
 
     def _cmd_usage(self):
         ctx_tokens = self._context_tokens()

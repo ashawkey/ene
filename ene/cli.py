@@ -160,7 +160,8 @@ def get_agent(args: Args) -> "tuple[LLMAgent | None, HubClient | None]":
         return None, None
     if hub_client is not None:
         hub_client.get_process_status = lambda: format_process_status(
-            *agent.tool_executor.process_counts()
+            *agent.tool_executor.process_counts(),
+            agent.tool_executor.process_activity(),
         )
     return agent, hub_client
 

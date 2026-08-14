@@ -71,6 +71,11 @@ ene models
 
 When `--model` is omitted, the first configured entry is used.
 
+Subagents launched through `exec_command` or `start_process` inherit the
+session's model and reasoning effort automatically (via `ENE_MODEL_ALIAS` and
+`ENE_REASONING_EFFORT` in the child environment), so a delegated agent runs
+with the same configuration as the parent unless explicitly overridden.
+
 ## CLI
 
 Run Ene in the current directory:
@@ -107,7 +112,18 @@ See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
 
 ## Persistent live sessions
 
-Interactive sessions run in detached workers and survive closing the terminal or shell. Name one with `ene api-refactor` (equivalent to `ene new api-refactor`), detach without interruption using `/detach` or Ctrl+D, rename it later with `/name api-refactor`, list workers with `ene ls`, reattach with `ene attach api-refactor` (or choose with bare `ene attach`), switch sessions using `/switch` or Ctrl+S, and terminate sessions with `ene kill` (`ene k`) using the interactive multi-select picker. `/resume` shows saved names and activates the selected stopped conversation in the current live worker. Resume, attach, and switch consistently replay the latest 10 user turns as prompts and final assistant responses, omitting historical tool activity and warnings. Cancelling the switch picker leaves the current attachment and its work untouched. Double Ctrl+C at an idle prompt and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
+Interactive sessions run in detached workers and survive closing the terminal or shell.
+
+- Start with an optional name using `ene [name]` (equivalent to `ene new [name]`).
+- Detach without interruption using `/detach` or Ctrl+D.
+- Rename the session with `/name [name]`.
+- List workers with `ene ls` (`ene l`).
+- Reattach with `ene attach [name]`, or choose with bare `ene attach` (`ene a`).
+- Switch sessions using `/switch` or Ctrl+S; cancelling the picker leaves the current attachment untouched.
+- Terminate sessions with the `ene kill` (`ene k`) multi-select picker.
+- Use `/resume` to activate a stopped conversation in the current live worker.
+
+Resume, attach, and switch replay the latest 10 user turns and final assistant responses, omitting historical tool activity and warnings. Double Ctrl+C at an idle prompt and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
 
 ## Resume a session
 

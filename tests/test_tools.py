@@ -32,10 +32,12 @@ from ene.tools import (
 )
 from ene.utils.io import CancellationToken, EventHub
 from ene.utils.process import (
+    decode_output_text,
     windows_hidden_process_kwargs,
     windows_utf8_powershell_command,
     windows_utf8_process_env,
 )
+import ene.utils.process as process_utils
 
 
 class _SilentConsole:
@@ -59,7 +61,8 @@ def _executor_with_monitor(tmp_path):
 
 
 def test_process_status_format():
-    assert format_process_status(2, 2) == "2/4 running processes"
+    assert format_process_status(2, 2) == "2 processes running · 2 finished"
+    assert format_process_status(1, 0) == "1 process running · 0 finished"
     assert format_process_status(0, 4) == ""
 
 
@@ -68,10 +71,90 @@ def test_windows_utf8_subprocess_settings(monkeypatch):
     command = windows_utf8_powershell_command("Write-Output 'héllo 世界'")
     assert "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)" in command
     assert "$OutputEncoding = [Console]::OutputEncoding" in command
-    assert command.endswith("Write-Output 'héllo 世界'")
+    assert "Invoke-Expression $eneScript" in command
+    assert "Write-Output 'héllo 世界'" not in command
+    encoded = command.split("FromBase64String('", 1)[1].split("')", 1)[0]
+    assert base64.b64decode(encoded).decode("utf-8") == "Write-Output 'héllo 世界'"
     env = windows_utf8_process_env()
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["PYTHONUTF8"] == "1"
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="PowerShell encoding is Windows-specific"
+)
+def test_windows_powershell_parser_errors_are_utf8():
+    wrapped = windows_utf8_powershell_command("Write-Output ok && Write-Output no")
+    result = subprocess.run(
+        ["powershell", "-NoLogo", "-Command", wrapped],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+    output = result.stdout.decode("utf-8")
+    assert result.returncode != 0
+    assert "&&" in output
+    assert "\ufffd" not in output
+
+
+def test_agent_process_env_injects_model_identity(monkeypatch):
+    monkeypatch.setenv("PYTHONIOENCODING", "legacy")
+    env = process_utils.agent_process_env("fast", "medium")
+    if sys.platform == "win32":
+        assert env["PYTHONIOENCODING"] == "utf-8"
+        assert env["PYTHONUTF8"] == "1"
+    assert env["ENE_MODEL_ALIAS"] == "fast"
+    assert env["ENE_REASONING_EFFORT"] == "medium"
+    bare = process_utils.agent_process_env()
+    assert "ENE_MODEL_ALIAS" not in bare
+    assert "ENE_REASONING_EFFORT" not in bare
+    only_alias = process_utils.agent_process_env("fast")
+    assert only_alias["ENE_MODEL_ALIAS"] == "fast"
+    assert "ENE_REASONING_EFFORT" not in only_alias
+
+
+def test_exec_command_injects_model_identity_env(tmp_path):
+    te = ToolExecutor(
+        console=_SilentConsole(), work_dir=str(tmp_path),
+        model_alias="fast", reasoning_effort="medium",
+    )
+    res = te._exec_command(
+        "python -c \"import os; print(os.environ.get('ENE_MODEL_ALIAS'), "
+        "os.environ.get('ENE_REASONING_EFFORT'))\""
+    )
+    Path(res["_artifact_path"]).unlink(missing_ok=True)
+    assert res["stdout"].replace("\r\n", "\n").strip() == "fast medium"
+
+
+def test_exec_command_omits_model_identity_env_without_model(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    res = te._exec_command(
+        "python -c \"import os; print(os.environ.get('ENE_MODEL_ALIAS'), "
+        "os.environ.get('ENE_REASONING_EFFORT'))\""
+    )
+    Path(res["_artifact_path"]).unlink(missing_ok=True)
+    assert res["stdout"].replace("\r\n", "\n").strip() == "None None"
+
+
+def test_start_process_injects_model_identity_env(tmp_path):
+    te = ToolExecutor(
+        console=_SilentConsole(), work_dir=str(tmp_path),
+        model_alias="fast", reasoning_effort="medium",
+    )
+    started = te.execute(
+        "start_process",
+        {"command": "python -c \"import os; print(os.environ.get('ENE_MODEL_ALIAS'), "
+         "os.environ.get('ENE_REASONING_EFFORT'))\""},
+    )
+    try:
+        assert te.wait_processes([started["process_id"]], timeout=10)["event"] == "process_exit"
+        process = te.inspect_processes(
+            started["process_id"], log_tail_chars=200
+        )["processes"][0]
+        assert "fast medium" in process["log_tail"].replace("\r\n", "\n")
+    finally:
+        te.shutdown_processes()
 
 
 def test_windows_hidden_process_kwargs():
@@ -115,6 +198,63 @@ def test_start_process_rejects_empty_label(tmp_path):
     te = _executor_with_monitor(tmp_path)
     result = te.execute("start_process", {"command": "true", "label": "  "})
     assert result == {"error": "label must not be empty", "success": False}
+
+
+def test_process_activity_lists_all_processes_with_last_line(tmp_path):
+    te = _executor_with_monitor(tmp_path)
+    plain = te.execute(
+        "start_process",
+        {"command": "python -u -c \"import time; print('worker'); time.sleep(30)\""},
+    )
+    labeled = te.execute(
+        "start_process",
+        {
+            "command": "python -u -c \"import time; print('hello'); print('world'); time.sleep(30)\"",
+            "label": "  review   parser  ",
+        },
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            activity = te.process_activity()
+            lines = {item["process_id"]: item["last_line"] for item in activity}
+            if lines.get(plain["process_id"]) == "worker" and lines.get(labeled["process_id"]) == "world":
+                break
+            assert time.monotonic() < deadline, "process logs did not reach expected lines"
+            time.sleep(0.02)
+        assert [item["process_id"] for item in activity] == [
+            plain["process_id"], labeled["process_id"]
+        ]
+        assert activity[1]["label"] == "review parser"
+        assert activity[1]["status"] == "running"
+        assert activity[1]["elapsed_seconds"] >= 0
+        assert activity[1]["log_path"].endswith(".log")
+    finally:
+        te.shutdown_processes()
+
+
+def test_format_process_status_shows_one_line_per_running_process():
+    activity = [
+        {
+            "pid": 42,
+            "label": "review parser",
+            "status": "running",
+            "last_line": "\x1b[32mreading\x1b[0m src/parse.py\x00",
+        },
+        {
+            "pid": 43,
+            "label": "plan refactor",
+            "status": "running",
+            "last_line": "",
+        },
+        {"pid": 44, "label": "done child", "status": "exited", "last_line": "stale line"},
+    ]
+    assert format_process_status(2, 1, activity) == (
+        "2 processes running · 1 finished\n"
+        "├ 42 [review parser] reading src/parse.py\n"
+        "└ 43 [plan refactor]"
+    )
+    assert format_process_status(0, 3, activity) == ""
 
 
 def test_native_tool_resource_cleanup(tmp_path):
@@ -476,6 +616,61 @@ def test_exec_command_decodes_utf8_when_windows_locale_is_legacy(tmp_path, monke
     res = te._exec_command(command)
     Path(res["_artifact_path"]).unlink(missing_ok=True)
     assert res["stdout"].replace("\r\n", "\n") == "héllo 世界\n"
+
+
+def test_decode_output_text_falls_back_to_legacy_codepage(monkeypatch):
+    monkeypatch.setattr(
+        process_utils, "_output_fallback_encoding", lambda: "cp936"
+    )
+    # PowerShell host errors (e.g. a parse error for bash-only `&&`) are written
+    # in the OEM codepage before the UTF-8 wrapper runs; GBK must decode to
+    # readable text instead of mojibake.
+    error = "标记“&&”不是此版本中的有效语句分隔符".encode("cp936")
+    assert decode_output_text(error) == "标记“&&”不是此版本中的有效语句分隔符"
+    # Valid UTF-8 output must pass through untouched.
+    assert decode_output_text("héllo 世界\n".encode("utf-8")) == "héllo 世界\n"
+    # A tail read can start or end inside a UTF-8 character. Preserve the
+    # remaining valid text rather than re-decoding the whole fragment as GBK.
+    utf8 = "结果: 世界你好, 检查完成".encode("utf-8")
+    assert decode_output_text(utf8[1:]).endswith("果: 世界你好, 检查完成")
+    assert decode_output_text(utf8[:-1]).endswith("检查完�")
+
+
+def test_process_log_tail_preserves_utf8_when_byte_offset_splits_character(tmp_path):
+    te = _executor_with_monitor(tmp_path)
+    started = te.execute("start_process", {"command": "python -c \"pass\""})
+    try:
+        assert te.wait_processes([started["process_id"]], timeout=5)["event"] == "process_exit"
+        text = "结果: 世界你好, 检查完成"
+        te._resolve_path(started["log_path"]).write_bytes(text.encode("utf-8"))
+        process = te.inspect_processes(started["process_id"], log_tail_chars=8)["processes"][0]
+        assert process["log_tail"] == text[-8:]
+    finally:
+        te.shutdown_processes()
+
+
+def test_windows_tool_schemas_note_powershell(monkeypatch):
+    import ene.tools.schemas as schemas
+
+    rebuilt = {
+        name: {
+            "type": "function",
+            "function": {"name": name, "description": f"Run {name}.", "parameters": {}},
+        }
+        for name in ("exec_command", "start_process", "read_file")
+    }
+    monkeypatch.setattr(schemas.sys, "platform", "win32")
+    schemas._apply_platform_notes(rebuilt)
+    assert "PowerShell" in rebuilt["exec_command"]["function"]["description"]
+    assert "&&" in rebuilt["start_process"]["function"]["description"]
+    assert rebuilt["read_file"]["function"]["description"] == "Run read_file."
+
+    # Non-Windows platforms leave the descriptions untouched.
+    monkeypatch.setattr(schemas.sys, "platform", "linux")
+    pristine = {"exec_command": {"type": "function", "function": {
+        "name": "exec_command", "description": "Run exec_command.", "parameters": {}}}}
+    schemas._apply_platform_notes(pristine)
+    assert pristine["exec_command"]["function"]["description"] == "Run exec_command."
 
 
 def test_exec_command_timeout_and_null_override(tmp_path):

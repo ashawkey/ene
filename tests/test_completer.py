@@ -131,14 +131,16 @@ def test_busy_prompt_shows_only_working_status_without_pending_message():
     assert ("class:prompt.busy", "> ") in message
 
 
-def test_process_status_is_appended_to_working_status():
+def test_multiline_process_status_is_appended_to_working_status():
     terminal = _message_terminal()
-    terminal._process_status = "1/3 running processes"
+    terminal._process_status = (
+        "1 process running · 2 finished\n└ 42 [review parser] reading src/parse.py"
+    )
 
     text = "".join(fragment for _, fragment in terminal._message())
 
-    assert "Working..." in text
-    assert "Working... · 1/3 running processes" in text
+    assert "Working... · 1 process running · 2 finished" in text
+    assert "\n└ 42 [review parser] reading src/parse.py\n" in text
 
 
 def test_detailed_status_overrides_busy_fallback_and_shows_pending_message():

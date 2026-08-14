@@ -204,6 +204,15 @@ def test_render_expands_markers_once(tmp_path):
     assert "## Skills" not in prompt
 
 
+def test_context_names_powershell_on_windows(monkeypatch):
+    monkeypatch.setattr(personas_module.platform, "system", lambda: "Windows")
+    section = personas_module._build_context_section(None)
+    assert "PowerShell" in section
+    assert "&&" in section and "tail" in section
+    monkeypatch.setattr(personas_module.platform, "system", lambda: "Linux")
+    assert "PowerShell" not in personas_module._build_context_section(None)
+
+
 def test_local_project_instructions_can_import_root(tmp_path):
     work = tmp_path / "work"
     (work / ".ene").mkdir(parents=True)

@@ -256,6 +256,8 @@ class LLMAgent(
             skills=self.skills,
             cancellation=cancellation,
             isolated_turn=self.run_isolated_turn,
+            model_alias=self.model_alias or None,
+            reasoning_effort=self.reasoning_effort,
         )
         self._process_status_sink = None
         self.tool_executor.set_process_status_callback(self._process_status_changed)
@@ -356,8 +358,10 @@ class LLMAgent(
         return self.token_estimator.prompt_tokens(self.context.total_chars)
 
     def _process_status_changed(self, running: int, finished: int) -> None:
-        """Publish process counts independently of model-driven inspections."""
-        status = format_process_status(running, finished)
+        """Publish process counts plus live activity, if any."""
+        status = format_process_status(
+            running, finished, self.tool_executor.process_activity()
+        )
         if self._process_status_sink is not None:
             self._process_status_sink(status)
         if self.events is not None:
@@ -1260,7 +1264,7 @@ class LLMAgent(
         set_process_status = getattr(terminal, "set_process_status", None)
         self._process_status_sink = set_process_status
         if set_process_status is not None:
-            set_process_status(format_process_status(*self.tool_executor.process_counts()))
+            self._process_status_changed(*self.tool_executor.process_counts())
 
         async def loop() -> None:
             nonlocal active, exit_requested, should_exit, prompts

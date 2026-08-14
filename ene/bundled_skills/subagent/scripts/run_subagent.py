@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def resolve_launch_options(
+    args: argparse.Namespace, environ: dict[str, str] | None = None
+) -> tuple[str | None, str | None]:
+    """Resolve model alias and reasoning effort for the delegated run.
+
+    Explicit CLI flags win. Otherwise inherit the parent session's identity
+    from ``ENE_MODEL_ALIAS`` / ``ENE_REASONING_EFFORT`` (stamped into the
+    environment of ``exec_command``/``start_process`` children by the agent's
+    tool executor); when neither is present the run falls back to the first
+    configured model, as ``run_agent`` does.
+    """
+    environ = os.environ if environ is None else environ
+    model_alias = args.model_alias or environ.get("ENE_MODEL_ALIAS")
+    reasoning_effort = args.reasoning_effort or environ.get("ENE_REASONING_EFFORT")
+    return model_alias, reasoning_effort
+
+
 RESULT_PREFIX = "ENE_SUBAGENT_RESULT="
 
 
@@ -34,6 +52,7 @@ def _emit(payload: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    model_alias, reasoning_effort = resolve_launch_options(args)
     try:
         task = args.task
         if args.task_file is not None:
@@ -41,10 +60,10 @@ def main(argv: list[str] | None = None) -> int:
 
         result = run_agent(
             task,
-            model_alias=args.model_alias,
+            model_alias=model_alias,
             persona=args.persona,
             work_dir=args.work_dir,
-            reasoning_effort=args.reasoning_effort,
+            reasoning_effort=reasoning_effort,
             stream=True,
             quiet=False,
         )

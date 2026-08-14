@@ -18,17 +18,23 @@ The agent has access to the following tools:
 | `web_fetch` | Fetch and parse content from a URL with an interruptible 30-second overall timeout; honors `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SOCKS_PROXY`, and `NO_PROXY` from the environment |
 | `remove_file` | Remove a file or directory |
 | `load_skill` | Load the full prompt instructions for a skill by name |
-| `start_process` | Start a managed background process with file-backed output |
+| `start_process` | Start a managed background process with file-backed output and live status |
 | `inspect_processes` | Inspect one or all managed background processes, with an optional bounded log tail for one process |
 | `wait_processes` | Block until a selected managed process exits, optionally writes output, or an optional timeout expires; omit the timeout for ordinary finite jobs |
 | `stop_process` | Stop a managed background process and its child process tree |
 
 Managed background process tools are built into ene so permitted model calls,
-the `/ps` command, and the live terminal/web status use the same process registry.
-Like other built-in model tools, their advertisement is subject to the active
-persona's tool policy; `/ps` and live status remain available to the UI.
+the `/ps` command, and the live terminal/web status use the same process
+registry. Like other built-in model tools, their advertisement is subject to
+the active persona's tool policy; `/ps` and live status remain available to the
+UI.
 
-While any jobs are active, the terminal and Web UI show `N/T running processes`, where `N` is running jobs and `T` is all jobs started in the current session. The indicator disappears when none are running. Use `/ps` to list jobs and `/ps <process-id>` (or its supervisor PID) for details and recent output. Combined output is stored in `.ene/processes/<process-id>.log`.
+While jobs are active, the terminal and Web UI show running and finished counts,
+followed by one line per running process with its PID, label, and latest log line.
+Use `/ps` to list all jobs with their latest output,
+`/ps <label|process-id|pid> [tail-chars]` for details and recent output, or
+`/ps stop <label|process-id|pid>` to stop one manually. Combined
+output is stored in `.ene/processes/<process-id>.log`.
 
 Processes are live-session-scoped. They survive terminal detach and session switching, but are terminated on explicit exit or `ene kill`. The bundled `monitor` skill adds an active-monitoring workflow. For periodic monitoring, call the core `wait` tool first and put the inspection or status calls after it in the same sequential tool-call batch; do not group the wait and checks in parallel.
 

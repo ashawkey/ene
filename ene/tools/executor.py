@@ -44,6 +44,8 @@ class ToolExecutor(
         skills: dict | None = None,
         cancellation: CancellationToken | None = None,
         isolated_turn=None,
+        model_alias: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.console = console or AgentConsole()
         self.cancellation = cancellation
@@ -51,6 +53,12 @@ class ToolExecutor(
         # Skill tools that drive repetitive work (the `batch` skill) call it;
         # None when no agent owns this executor.
         self.isolated_turn = isolated_turn
+        # Identity of the model this session runs on, injected into the
+        # environment of spawned subprocesses (ENE_MODEL_ALIAS /
+        # ENE_REASONING_EFFORT) so delegated subagents inherit the same model
+        # and effort without the model needing to know the configured list.
+        self.model_alias = model_alias
+        self.reasoning_effort = reasoning_effort
         self._work_dir = str(Path(work_dir).absolute()) if work_dir else str(Path.cwd())
         self._change_tracker = change_tracker
         self._get_round_id = get_round_id  # callable → int

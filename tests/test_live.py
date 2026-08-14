@@ -327,6 +327,39 @@ def test_live_worker_status_includes_prompt_opened_before_attach():
     prompt_thread.join(timeout=1)
 
 
+def test_live_worker_status_includes_current_process_activity():
+    worker = Worker.__new__(Worker)
+    worker.runtime_id = "runtime"
+    worker.record = {"workspace": "/tmp", "created_at": 0}
+    worker.terminal_attached = False
+    worker.inputs = SimpleNamespace(submission=None)
+    worker.prompts = SimpleNamespace(active=None)
+    worker.cancellation = SimpleNamespace(operation_id=None)
+    worker.agent = SimpleNamespace(
+        _session_id="session",
+        _startup_details=lambda: {},
+        _slash_command_help=lambda: {},
+        INSTANT_COMMANDS=frozenset(),
+        INSTANT_LISTING_COMMANDS=frozenset(),
+        tool_executor=SimpleNamespace(
+            process_counts=lambda: (1, 0),
+            process_activity=lambda: [{
+                "pid": 42,
+                "label": "review parser",
+                "command": "python review.py",
+                "status": "running",
+                "last_line": "reading src/parse.py",
+            }],
+        ),
+    )
+
+    status = worker._status()
+
+    assert status["process_status"] == (
+        "1 process running · 0 finished\n└ 42 [review parser] reading src/parse.py"
+    )
+
+
 def test_live_worker_status_tracks_state_transition_time(monkeypatch):
     timestamps = iter([10.0, 20.0, 30.0, 40.0])
     monkeypatch.setattr("ene.utils.io.time.time", lambda: next(timestamps))

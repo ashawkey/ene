@@ -185,6 +185,7 @@ def test_oauth_commands_use_current_provider():
         ("/usage", True),
         ("/ps", True),
         ("/ps p-12345678", True),
+        ("/ps review parser 100", True),
         ("/context", True),
         ("/effort", True),
         ("/effort max", True),
@@ -610,6 +611,36 @@ def test_process_status_callback_publishes_without_inspection(tmp_path):
         agent.tool_executor.shutdown_processes()
 
 
+def test_process_status_text_includes_running_process_activity(tmp_path):
+    events = EventHub()
+    agent = LLMAgent.__new__(LLMAgent)
+    agent.events = events
+    agent._process_status_sink = None
+    agent.tool_executor = backend.ToolExecutor(work_dir=str(tmp_path))
+    agent.tool_executor.set_process_status_callback(agent._process_status_changed)
+
+    started = agent.tool_executor.execute(
+        "start_process",
+        {
+            "command": "python -u -c \"import time; print('hello'); print('world'); time.sleep(30)\"",
+            "label": "review parser",
+        },
+    )
+    try:
+        assert _wait_until(
+            lambda: any(
+                event.type == "process_status" and "world" in event.data["text"]
+                for event in events.after(0)
+            )
+        )
+        statuses = [event for event in events.after(0) if event.type == "process_status"]
+        assert statuses[-1].data["text"] == (
+            f"1 process running · 0 finished\n└ {started['pid']} [review parser] world"
+        )
+    finally:
+        agent.tool_executor.shutdown_processes()
+
+
 def test_ps_lists_processes_and_shows_detail_tail():
     output = []
     calls = []
@@ -637,15 +668,18 @@ def test_ps_lists_processes_and_shows_detail_tail():
     }
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.console = Console()
-    agent.tool_executor = NS(inspect_processes=lambda **kwargs: (
-        calls.append(kwargs) or {"success": True, "processes": [process]}
-    ))
+    activity = [{**process, "elapsed_seconds": 75, "last_line": "ready"}]
+    agent.tool_executor = NS(
+        process_activity=lambda: activity,
+        inspect_processes=lambda **kwargs: (
+            calls.append(kwargs) or {"success": True, "processes": [process]}
+        ),
+    )
 
     agent._cmd_ps("/ps")
     agent._cmd_ps("/ps p-12345678")
 
     assert calls == [
-        {"process_id": None, "log_tail_chars": 0},
         {"process_id": "p-12345678", "log_tail_chars": 8000},
     ]
     assert "p-12345678" in output[0]
@@ -653,6 +687,173 @@ def test_ps_lists_processes_and_shows_detail_tail():
     assert any("label: inspect parser failures" in item for item in output)
     assert any("command: python worker.py --long-option value" in item for item in output)
     assert any("Recent output" in item and "ready" in item for item in output)
+
+
+def test_ps_resolves_labels_pids_and_tail_lengths():
+    output = []
+
+    class Console:
+        def print(self, message):
+            output.append(str(message))
+
+        def system(self, message):
+            output.append(str(message))
+
+        def warn(self, message):
+            output.append(str(message))
+
+    activity = [
+        {
+            "process_id": "p-aaaaaaaa",
+            "pid": 42,
+            "label": "review parser",
+            "command": "python review.py",
+            "status": "running",
+            "exit_code": None,
+            "elapsed_seconds": 75,
+            "log_path": ".ene/processes/p-aaaaaaaa.log",
+            "last_line": "reading src/parse.py",
+        },
+        {
+            "process_id": "p-bbbbbbbb",
+            "pid": 43,
+            "label": "plan refactor",
+            "command": "python plan.py",
+            "status": "exited",
+            "exit_code": 0,
+            "elapsed_seconds": 3600,
+            "log_path": ".ene/processes/p-bbbbbbbb.log",
+            "last_line": "done",
+        },
+    ]
+    calls = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = Console()
+    agent.tool_executor = NS(
+        process_activity=lambda: activity,
+        inspect_processes=lambda **kwargs: (
+            calls.append(kwargs)
+            or {
+                "success": True,
+                "processes": [{
+                    "process_id": "p-aaaaaaaa",
+                    "label": "review parser",
+                    "command": "python run_subagent.py --task review",
+                    "cwd": "/tmp/work",
+                    "log_path": ".ene/processes/p-aaaaaaaa.log",
+                    "log_tail": "ready\n",
+                }],
+            }
+        ),
+    )
+
+    agent._cmd_ps("/ps")
+    agent._cmd_ps("/ps review parser")
+    agent._cmd_ps("/ps review parser 100")
+    agent._cmd_ps("/ps 43")
+    agent._cmd_ps("/ps p 100")
+    agent._cmd_ps("/ps nosuch")
+    agent._cmd_ps("/ps review -1")
+
+    assert calls == [
+        {"process_id": "p-aaaaaaaa", "log_tail_chars": 8000},
+        {"process_id": "p-aaaaaaaa", "log_tail_chars": 100},
+        {"process_id": "p-bbbbbbbb", "log_tail_chars": 8000},
+        {"process_id": "p-bbbbbbbb", "log_tail_chars": 100},
+    ]
+    listing = output[0]
+    assert "Background processes:" in listing
+    assert "p-aaaaaaaa" in listing
+    assert "review parser" in listing
+    assert "running" in listing
+    assert "1m 15s" in listing
+    assert "p-bbbbbbbb" in listing
+    assert "plan refactor" in listing
+    assert "exited (0)" in listing
+    assert "1h 00m" in listing
+    assert any("label: review parser" in item for item in output)
+    assert any("Recent output" in item and "ready" in item for item in output)
+    assert any("No process matches: nosuch" in item for item in output)
+    assert any("Usage: /ps [label|process-id] [tail-chars]" in item for item in output)
+
+
+def test_ps_stop_dispatches_stop_process_tool():
+    output = []
+    calls = []
+
+    class Console:
+        def system(self, message):
+            output.append(str(message))
+
+        def warn(self, message):
+            output.append(str(message))
+
+    process = {
+        "process_id": "p-12345678",
+        "pid": 42,
+        "label": "review parser",
+        "command": "python worker.py",
+        "status": "running",
+        "exit_code": None,
+        "elapsed_seconds": 1,
+        "log_path": ".ene/processes/p-12345678.log",
+        "last_line": "working",
+    }
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = Console()
+    agent.tool_executor = NS(
+        process_activity=lambda: [process],
+        execute=lambda name, arguments: (
+            calls.append((name, arguments)) or {"success": True}
+        ),
+    )
+
+    agent._cmd_ps("/ps stop review parser")
+
+    assert calls == [("stop_process", {"process_id": "p-12345678"})]
+    assert output == ["Stopped process p-12345678 (review parser)."]
+
+
+def test_ps_warns_on_empty_list_and_ambiguous_target():
+    output = []
+
+    class Console:
+        def print(self, message):
+            output.append(str(message))
+
+        def system(self, message):
+            output.append(str(message))
+
+        def warn(self, message):
+            output.append(str(message))
+
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = Console()
+    agent.tool_executor = NS(process_activity=lambda: [], inspect_processes=None)
+
+    agent._cmd_ps("/ps")
+    assert output == ["No managed background processes."]
+
+    base = {
+        "process_id": "p-aaaaaaaa",
+        "pid": 42,
+        "command": "python worker.py",
+        "status": "running",
+        "exit_code": None,
+        "elapsed_seconds": 1,
+        "log_path": ".ene/processes/p-aaaaaaaa.log",
+        "last_line": "",
+    }
+    agent.tool_executor = NS(
+        process_activity=lambda: [
+            {**base, "label": "review parser"},
+            {**base, "process_id": "p-bbbbbbbb", "label": "review plan"},
+        ],
+        inspect_processes=None,
+    )
+    output.clear()
+    agent._cmd_ps("/ps revie")
+    assert any("Ambiguous process 'revie': review parser, review plan" in item for item in output)
 
 
 def test_effort_command_lists_choices_and_accepts_max():
