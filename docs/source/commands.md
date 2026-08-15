@@ -62,6 +62,7 @@ The agent supports the following slash commands while chatting:
 | `/auth [provider\|model-alias]` | Show authentication status |
 | `/effort [level]` | Show or set reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) |
 | `/rewind` | From an attached terminal, preview an earlier prompt boundary; restore conversation, tracked files, or both; then edit the restored prompt and branch |
+| `/fork [name]` | From an attached terminal, pick an earlier prompt boundary and continue its conversation in a new, optionally named session without changing tracked files |
 | `/skills` | List installed skills; `/skills reload` to re-scan; `/skills <name>` to load one |
 | `/<skill-name> [task]` | Invoke a skill for an optional task; without one, run its declared default or ask what to do |
 | `/persona` | List personas; `/persona <name>` to switch (restarts the conversation) |

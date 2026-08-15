@@ -1,4 +1,5 @@
 import io
+import time
 
 from rich.console import Console
 
@@ -32,6 +33,49 @@ def test_checkbox_terminal_normalizes_cancellation(monkeypatch):
     monkeypatch.setattr("ene.ui.questionary.checkbox", lambda *args, **kwargs: Question())
 
     assert AgentConsole().checkbox_terminal("Kill sessions", ["one"]) is None
+
+
+def test_terminal_title_animates_working_and_marks_done(monkeypatch):
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.application.current import create_app_session
+
+    output = DummyOutput()
+    titles = []
+    monkeypatch.setattr(output, "set_title", titles.append)
+    monkeypatch.setattr(output, "clear_title", lambda: titles.append(None))
+    monkeypatch.setattr(TerminalInput, "TITLE_ANIMATION_INTERVAL", 0.01)
+
+    with create_app_session(output=output):
+        terminal = TerminalInput(work_dir="/tmp/project", title_name="my session")
+    assert titles[-1] == "✓ ene my session"
+
+    terminal.set_busy(True)
+    deadline = time.monotonic() + 1
+    while "◑ ene my session" not in titles and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert "◐ ene my session" in titles
+    assert "◑ ene my session" in titles
+
+    terminal.set_busy(False)
+    assert titles[-1] == "✓ ene my session"
+    terminal.close_title()
+    assert titles[-1] is None
+
+
+def test_terminal_title_sanitizes_name_and_uses_workspace_fallback(monkeypatch):
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.application.current import create_app_session
+
+    output = DummyOutput()
+    titles = []
+    monkeypatch.setattr(output, "set_title", titles.append)
+
+    with create_app_session(output=output):
+        terminal = TerminalInput(work_dir="/tmp/project")
+    assert titles[-1] == "✓ ene project"
+    terminal.set_title_name(" new\n\x1bname ")
+    assert titles[-1] == "✓ ene new name"
+    terminal.close_title()
 
 
 def test_terminal_keeps_context_status_when_activity_stops(monkeypatch):

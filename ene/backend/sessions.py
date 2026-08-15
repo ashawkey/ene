@@ -1,6 +1,7 @@
 """Session selection, branchable persistence, loading, and replay."""
 
 import os
+import shutil
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -285,6 +286,97 @@ class SessionMixin:
             "The selected prompt is ready to edit; new work will branch from here."
         )
 
+    def _cmd_fork(self, raw: str) -> None:
+        """Start a new session at an earlier prompt boundary."""
+        if not self._session_id or not self.changes or self._session_store is None:
+            self.console.warn("Fork is only available in interactive chat mode with a session.")
+            return
+
+        parts = raw.split(maxsplit=1)
+        requested_name = parts[1].strip() if len(parts) > 1 else ""
+        source_store = self._session_store
+        source_id = self._session_id
+        source_name = getattr(self, "session_name", "")
+        try:
+            self.save_session(source_id, reason="pre-fork")
+        except Exception as exc:
+            self.console.error(f"Could not checkpoint current state: {exc}")
+            return
+
+        source_data = source_store.materialize()
+        candidates = source_store.candidates()
+        if not any(not candidate["current"] for candidate in candidates):
+            self.console.system("No earlier revisions to fork from.")
+            return
+
+        candidate = self._pick_revision(candidates, action="fork")
+        if candidate is None:
+            self.console.system("Fork cancelled.")
+            return
+
+        target = source_store.materialize(candidate["id"])
+        target.pop("revision_id", None)
+        target.pop("code_revision_id", None)
+        target["session_name"] = requested_name
+        session_id = self._reserve_session_id()
+        target_store = self._session_store_for(session_id)
+        try:
+            target_store.commit(
+                target,
+                parent_id=None,
+                code_parent_id=None,
+                changes=[],
+                reason="initial",
+                session_name=requested_name,
+            )
+        except Exception as exc:
+            shutil.rmtree(target_store.path, ignore_errors=True)
+            self.console.error(f"Could not create fork: {exc}")
+            return
+
+        callback = getattr(self, "_session_changed", None)
+        try:
+            if callback is not None:
+                callback(session_id, requested_name)
+        except Exception as exc:
+            shutil.rmtree(target_store.path, ignore_errors=True)
+            self.console.error(str(exc))
+            return
+
+        self.session_name = requested_name
+        try:
+            self._restore_session_data(target)
+        except Exception as exc:
+            self.session_name = source_name
+            try:
+                self._restore_session_data(source_data)
+            except Exception:
+                pass
+            if callback is not None:
+                try:
+                    callback(source_id, source_name)
+                except Exception:
+                    pass
+            shutil.rmtree(target_store.path, ignore_errors=True)
+            self.console.error(f"Could not restore fork: {exc}")
+            return
+
+        self._session_id = session_id
+        self._session_store = target_store
+        self._session_revision_id = target_store.head_id
+        self._pending_images.clear()
+        self._isolated_turn_active = False
+        self.tool_executor.shutdown_processes(clear=True)
+        self._install_change_tracker()
+        self._set_rewind_draft(candidate["prompt"])
+        self.console.reset_timeline()
+        self._replay_context()
+        name_note = f" named '{requested_name}'" if requested_name else ""
+        self.console.system(
+            f"Forked session '{source_id}' at round {self.round_id} into "
+            f"new session '{session_id}'{name_note}. The selected prompt is ready to edit."
+        )
+
     def _apply_code_plan(self, plan: CheckoutPlan, target_id: str) -> None:
         """Move files to the planned state; this is what advances the code revision."""
         operations = self.changes.apply_plan(plan)
@@ -296,7 +388,9 @@ class SessionMixin:
         else:
             self.console.system("Code already matched that revision; no files changed.")
 
-    def _pick_revision(self, candidates: list[dict]) -> dict | None:
+    def _pick_revision(
+        self, candidates: list[dict], *, action: str = "rewind"
+    ) -> dict | None:
         """Select a prompt boundary, showing the most recent prompt first."""
         ordered_candidates = list(
             reversed([candidate for candidate in candidates if not candidate["current"]])
@@ -313,7 +407,12 @@ class SessionMixin:
                 f"{_relative_time(revision['created_at']):<9} · {_file_label(revision['files']):<8} · "
                 f"{_shorten(prompt, self.REWIND_PROMPT_WIDTH)}"
             )
-        picked = self.console.select(message="Pick a prompt to rewind to", choices=labels)
+        message = (
+            "Pick a prompt to rewind to"
+            if action == "rewind"
+            else "Pick a prompt to fork from"
+        )
+        picked = self.console.select(message=message, choices=labels)
         if picked is None:
             return None
         return ordered_candidates[labels.index(picked)]

@@ -1458,6 +1458,9 @@ class LLMAgent(
             self.console.status_sink = None
             self.console.context_status_sink = None
             self.console.timeline_reset_sink = None
+            close_title = getattr(terminal, "close_title", None)
+            if close_title is not None:
+                close_title()
 
     def _run_round(self) -> bool:
         """Run one queued submission, absorbing an unexpected failure.
@@ -1563,7 +1566,7 @@ class LLMAgent(
             return True
         if query.startswith("/"):
             cmd_word = query.split()[0][1:].lower()
-            if submission.source == "web" and cmd_word in {"resume", "rewind"}:
+            if submission.source == "web" and cmd_word in {"resume", "rewind", "fork"}:
                 self.console.warn(
                     f"/{cmd_word} is only available from an attached terminal."
                 )
@@ -1731,6 +1734,7 @@ class LLMAgent(
             work_dir=_wd,
             commands=self._slash_commands,
             system_message=self.console.system,
+            title_name=self.session_name or Path(_wd).name,
         )
 
         try:

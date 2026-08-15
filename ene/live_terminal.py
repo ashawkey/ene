@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -124,6 +125,7 @@ class LiveTerminal:
             commands=self.commands,
             system_message=self.console.system,
             persistent=True,
+            title_name=str(session.get("name") or Path(workspace).name),
         )
         self.terminal.set_runtime_state(
             cancel=lambda: self._send({"type": "cancel", "operation_id": self.operation_id}),
@@ -231,6 +233,9 @@ class LiveTerminal:
                 if self.response_stream is not None:
                     self.response_stream.close()
                     self.response_stream = None
+            close_title = getattr(self.terminal, "close_title", None)
+            if close_title is not None:
+                close_title()
             self.console.interactive_input = False
             self.console.status_sink = None
             self.console.context_status_sink = None
@@ -391,6 +396,9 @@ class LiveTerminal:
             self.indicator = None
         elif kind == "process_status" and self.terminal is not None:
             self.terminal.set_process_status(str(data.get("text", "")))
+        elif kind == "session_meta" and self.terminal is not None:
+            name = str(data.get("name") or data.get("title") or "session")
+            self.terminal.set_title_name(name)
         elif kind == "commands":
             self.commands.clear()
             self.commands.update(data.get("commands", {}))

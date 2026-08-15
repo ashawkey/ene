@@ -389,7 +389,7 @@ class Worker:
             workspace=self.record["workspace"],
             conversation_id=conversation_id,
         )
-        self._update_hub_name(name)
+        self._publish_session_name(name)
 
     def _session_name_changed(self, name: str) -> str:
         assert self.agent is not None
@@ -399,19 +399,15 @@ class Worker:
             workspace=self.record["workspace"],
             conversation_id=self.agent._session_id,
         )
-        self._update_hub_name(name)
+        self._publish_session_name(name)
         return name
 
-    def _update_hub_name(self, name: str) -> None:
-        if self.hub_client is None:
-            return
-        self.hub_client.meta["name"] = name
-        self.hub_client.meta["title"] = name or Path(self.record["workspace"]).name
-        self.events.publish(
-            "session_meta",
-            name=name,
-            title=self.hub_client.meta["title"],
-        )
+    def _publish_session_name(self, name: str) -> None:
+        title = name or Path(self.record["workspace"]).name
+        if self.hub_client is not None:
+            self.hub_client.meta["name"] = name
+            self.hub_client.meta["title"] = title
+        self.events.publish("session_meta", name=name, title=title)
 
     def _cleanup_record(self) -> None:
         """Remove this worker's registry entry without deleting a replacement."""

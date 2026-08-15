@@ -203,6 +203,8 @@ def test_oauth_commands_use_current_provider():
         ("/export response.md", False),
         ("/continue", False),
         ("/rewind", False),
+        ("/fork", False),
+        ("/fork alternate", False),
         ("/exit", False),
         ("/nonsense", True),     # a typo is reported straight away
     ],
@@ -1126,8 +1128,10 @@ def _skill_invocation_agent(tmp_path, name="general-skill"):
     return agent, body
 
 
-@pytest.mark.parametrize("query", ["/resume", "/resume saved-session", "/rewind"])
-def test_web_cannot_resume_or_rewind(query, tmp_path):
+@pytest.mark.parametrize(
+    "query", ["/resume", "/resume saved-session", "/rewind", "/fork", "/fork branch"]
+)
+def test_web_cannot_switch_conversation(query, tmp_path):
     agent, _ = _skill_invocation_agent(tmp_path)
     warnings = []
     dispatched = []

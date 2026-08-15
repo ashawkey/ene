@@ -66,6 +66,7 @@ class AgentCommandsMixin:
         "persona": "List/switch personas; /persona reload to re-scan",
         "wait": "Send a prompt after a delay (/wait <30s|5m|1h> <prompt>)",
         "rewind": "Return to before a user prompt, edit it, then branch",
+        "fork": "Fork from before a user prompt into a new session (/fork [name])",
         "resume": "Save current, then resume a previous session (/resume [session_id])",
         "name": "Show or set the live session name (/name [name])",
         "exit": "Exit the agent (also: /quit)",
@@ -139,6 +140,8 @@ class AgentCommandsMixin:
             self._cmd_system_prompt()
         elif cmd == "rewind":
             self._cmd_rewind()
+        elif cmd == "fork":
+            self._cmd_fork(raw)
         elif cmd == "skills":
             self._cmd_skills(raw)
         elif cmd == "persona":

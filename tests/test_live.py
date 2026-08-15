@@ -439,6 +439,28 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
     assert inputs.submission == queued
 
 
+def test_live_terminal_updates_title_for_session_metadata():
+    client = LiveTerminal({})
+    names = []
+    client.terminal = SimpleNamespace(
+        set_title_name=names.append,
+        set_busy=lambda _busy: None,
+    )
+    client.operation_id = None
+    client._render = lambda *_args: None
+
+    client._event({
+        "type": "session_meta",
+        "data": {"name": "renamed", "title": "renamed"},
+    })
+    client._event({
+        "type": "session_meta",
+        "data": {"name": "", "title": "workspace"},
+    })
+
+    assert names == ["renamed", "workspace"]
+
+
 def test_live_terminal_renders_structured_output_with_ansi_styles():
     client = LiveTerminal({})
     printed = []
@@ -557,6 +579,9 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
         def set_busy(self, busy):
             self.busy.append(busy)
 
+        def close_title(self):
+            self.title_closed = True
+
         def prompt(self, **_kwargs):
             assert client.stopped.wait(timeout=1)
             raise EOFError
@@ -599,6 +624,7 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
     assert client.operation_id == "operation-1"
     assert client.pending == {"id": "pending-1", "text": "follow up"}
     assert terminal.busy == [True]
+    assert terminal.title_closed is True
     sent = []
     client._send = sent.append
     client._request = lambda message: sent.append(message) or {"ok": True}

@@ -97,6 +97,7 @@ Useful commands during a session include:
 | `/persona` | List or switch personas. |
 | `/skills` | List reusable skills. |
 | `/rewind` | Return conversation or code to an earlier prompt. |
+| `/fork [name]` | Start a new session from an earlier prompt boundary. |
 | `/exit` | Save and exit. |
 
 Prefix a shell command with `!` to run it directly without asking the model:
@@ -112,7 +113,7 @@ See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
 
 ## Persistent live sessions
 
-Interactive sessions run in detached workers and survive closing the terminal or shell.
+Interactive sessions run in detached workers and survive closing the terminal or shell. While attached, the terminal tab shows `◐ ene [name]` / `◑ ene [name]` while Ene is working and `✓ ene [name]` when it is ready; unnamed sessions use the workspace directory name. Terminal profiles configured to suppress application titles will ignore these updates.
 
 - Start with an optional name using `ene [name]` (equivalent to `ene new [name]`).
 - Detach without interruption using `/detach` or Ctrl+D.
@@ -141,4 +142,4 @@ Or resume a known session directly:
 ene resume SESSION_ID
 ```
 
-Within a running session, `/rewind` previews an earlier prompt boundary and lets you restore the conversation, tracked file changes, or both. The selected prompt returns to the editor so you can revise it before branching.
+Within a running session, `/rewind` previews an earlier prompt boundary and lets you restore the conversation, tracked file changes, or both. The selected prompt returns to the editor so you can revise it before branching. `/fork [name]` uses the same prompt picker but starts a new, optionally named session at that conversation state, leaving both the old session and tracked files unchanged.

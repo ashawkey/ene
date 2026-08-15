@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Callable, Iterable
@@ -448,6 +449,9 @@ class SessionSwitch(EOFError):
 
 
 class TerminalInput:
+    TITLE_ANIMATION_INTERVAL = 0.7
+    TITLE_ANIMATION_FRAMES = ("◐", "◑")
+
     def __init__(
         self,
         history_path: str | Path | None = None,
@@ -456,6 +460,7 @@ class TerminalInput:
         commands: dict[str, str] | None = None,
         system_message: Callable[[str], None] = print,
         persistent: bool = False,
+        title_name: str = "",
     ):
         self._prompt_label = prompt_label
         self._system_message = system_message
@@ -470,6 +475,12 @@ class TerminalInput:
         self._pending_text: Callable[[], str | None] | None = None
         self._edit_pending: Callable[[], str | None] | None = None
         self._can_submit_while_pending: Callable[[str], bool] | None = None
+        fallback_title = Path(work_dir).name if work_dir else "session"
+        self._title_name = self._clean_title_name(title_name or fallback_title)
+        self._title_condition = threading.Condition()
+        self._title_generation = 0
+        self._title_frame = 1
+        self._title_closed = False
         self.style = Style.from_dict({
             "prompt": "bold ansiyellow",
             "prompt.busy": "bold ansicyan",
@@ -508,6 +519,68 @@ class TerminalInput:
             ),
             erase_when_done=True,
         )
+        self._title_thread: threading.Thread | None = None
+        self._schedule_title("✓", expected_busy=False)
+
+    @staticmethod
+    def _clean_title_name(name: str) -> str:
+        """Keep terminal titles single-line and free of control sequences."""
+        cleaned = "".join(
+            " " if char.isspace() else char
+            for char in str(name)
+            if not unicodedata.category(char).startswith("C") or char.isspace()
+        )
+        return " ".join(cleaned.split())[:80] or "session"
+
+    def _schedule_title(
+        self, marker: str | None, *, expected_busy: bool | None = None
+    ) -> None:
+        """Write the latest title through prompt_toolkit's platform output."""
+        with self._title_condition:
+            if expected_busy is not None and self._busy != expected_busy:
+                return
+            self._title_generation += 1
+            generation = self._title_generation
+            title = f"{marker} ene {self._title_name}" if marker else None
+
+        def write() -> None:
+            with self._title_condition:
+                if generation != self._title_generation:
+                    return
+            try:
+                output = self._session.app.output
+                if title is None:
+                    output.clear_title()
+                else:
+                    output.set_title(title)
+                output.flush()
+            except Exception:
+                pass  # Terminal titles are best-effort display metadata.
+
+        app = self._session.app
+        loop = getattr(app, "loop", None)
+        if app.is_running and loop is not None:
+            loop.call_soon_threadsafe(write)
+        else:
+            write()
+
+    def _animate_title(self) -> None:
+        while True:
+            with self._title_condition:
+                while not self._busy and not self._title_closed:
+                    self._title_condition.wait()
+                if self._title_closed:
+                    return
+                self._title_condition.wait(self.TITLE_ANIMATION_INTERVAL)
+                if self._title_closed:
+                    return
+                if not self._busy:
+                    continue
+                marker = self.TITLE_ANIMATION_FRAMES[self._title_frame]
+                self._title_frame = (
+                    self._title_frame + 1
+                ) % len(self.TITLE_ANIMATION_FRAMES)
+            self._schedule_title(marker, expected_busy=True)
 
     @staticmethod
     def _visual_cursor_positions(event):
@@ -770,10 +843,45 @@ class TerminalInput:
         self._can_submit_while_pending = can_submit_while_pending
 
     def set_busy(self, busy: bool) -> None:
-        self._busy = busy
+        with self._title_condition:
+            changed = self._busy != busy
+            self._busy = busy
+            if busy and changed:
+                self._title_frame = 1
+            if busy and self._title_thread is None:
+                self._title_thread = threading.Thread(
+                    target=self._animate_title,
+                    name="ene-terminal-title",
+                    daemon=True,
+                )
+                self._title_thread.start()
+            if changed:
+                self._title_condition.notify_all()
+        if changed:
+            marker = self.TITLE_ANIMATION_FRAMES[0] if busy else "✓"
+            self._schedule_title(marker, expected_busy=busy)
         app = self._session.app
         if app.is_running:
             app.invalidate()
+
+    def set_title_name(self, name: str) -> None:
+        with self._title_condition:
+            self._title_name = self._clean_title_name(name)
+            busy = self._busy
+        marker = self.TITLE_ANIMATION_FRAMES[0] if busy else "✓"
+        self._schedule_title(marker, expected_busy=busy)
+
+    def close_title(self) -> None:
+        """Stop title animation and return title ownership to the shell."""
+        with self._title_condition:
+            if self._title_closed:
+                return
+            self._title_closed = True
+            self._busy = False
+            self._title_condition.notify_all()
+        if self._title_thread is not None:
+            self._title_thread.join(timeout=1.0)
+        self._schedule_title(None)
 
     def set_status(self, status: list[tuple[str, str]] | None) -> None:
         with self._status_lock:

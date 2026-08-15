@@ -20,6 +20,7 @@ class _Console:
         self.rich = Console(file=self.buffer, width=200, no_color=True, legacy_windows=False)
         self.answers = list(answers or [])
         self.prompts: list[list[str]] = []
+        self.prompt_messages: list[str] = []
 
     def print(self, *args, **kwargs):
         self.rich.print(*args, **kwargs)
@@ -38,6 +39,7 @@ class _Console:
         self._log("[timeline reset]")
 
     def select(self, message, choices, **kwargs):
+        self.prompt_messages.append(message)
         self.prompts.append(choices)
         wanted = self.answers.pop(0)
         return next(choice for choice in choices if choice.startswith(wanted))
@@ -60,6 +62,15 @@ class _Agent(SessionMixin):
         self.round_id = 0
         self.replayed = 0
         self.show_thinking = True
+        self.session_name = ""
+        self._pending_images = []
+        self._isolated_turn_active = False
+        self._session_changed = None
+        self.tool_executor = types.SimpleNamespace(
+            shutdown_processes=lambda **kwargs: None,
+            _work_dir=str(tracker.work_dir),
+            _change_tracker=tracker,
+        )
 
     def save_session(self, name=None, *, reason="autosave"):
         revision_id, code_revision_id, _ = self._session_store.commit(
@@ -78,6 +89,27 @@ class _Agent(SessionMixin):
 
     def _replay_context(self):
         self.replayed += 1
+
+    def _sessions_dir(self):
+        return self._session_store.path.parent
+
+    def _session_store_for(self, name):
+        return SessionStore(self._sessions_dir(), name)
+
+    def _reserve_session_id(self):
+        session_id = "fork"
+        (self._sessions_dir() / session_id).mkdir()
+        return session_id
+
+    def _install_change_tracker(self):
+        self.changes = ChangeTracker(
+            self._session_id,
+            self.changes.work_dir,
+            self.console,
+            self._session_store,
+            self._session_store.materialize().get("code_revision_id"),
+        )
+        self.tool_executor._change_tracker = self.changes
 
 
 def _build(tmp_path: Path, answers: list[str]) -> tuple[_Agent, Path, _Console]:
@@ -154,6 +186,44 @@ def test_picker_options_are_the_listing_and_name_the_revision_type(tmp_path: Pat
     assert all("(current state)" not in option for option in picker)
     # The options replace the table rather than repeating it.
     assert "Session revisions" not in console.text
+
+
+def test_fork_starts_named_session_at_selected_prompt_boundary(tmp_path: Path):
+    agent, work, console = _build(tmp_path, [" 1."])
+    changed = []
+    agent._session_changed = lambda session_id, name: changed.append((session_id, name))
+
+    agent._cmd_fork("/fork alternate approach")
+
+    assert agent._session_id == "fork"
+    assert agent.session_name == "alternate approach"
+    assert agent.round_id == 1
+    assert len(agent.context.messages) == 1
+    assert agent.context.messages[0].text == "set up the parser module"
+    assert agent._rewind_draft == "make the parser handle floats and drop util"
+    assert agent.replayed == 1
+    assert changed == [("fork", "alternate approach")]
+    assert agent.changes.session_id == "fork"
+    assert SessionStore(tmp_path / "sessions", "session").summary()["round_id"] == 2
+    fork = SessionStore(tmp_path / "sessions", "fork")
+    assert fork.summary()["session_name"] == "alternate approach"
+    assert fork.summary()["round_id"] == 1
+    # Forking only copies conversation state; it does not rewind the workspace.
+    assert (work / "parser.py").read_text() == "def parse(text):\n    return float(text)\n"
+    assert not (work / "util.py").exists()
+    assert console.prompt_messages == ["Pick a prompt to fork from"]
+    assert "Forked session 'session'" in console.text
+
+
+def test_cancelled_fork_keeps_current_session(tmp_path: Path):
+    agent, _, console = _build(tmp_path, [])
+    console.select = lambda **kwargs: None
+
+    agent._cmd_fork("/fork")
+
+    assert agent._session_id == "session"
+    assert not (tmp_path / "sessions" / "fork").exists()
+    assert "Fork cancelled." in console.text
 
 
 def test_conversation_only_rewind_leaves_the_files_alone(tmp_path: Path):
