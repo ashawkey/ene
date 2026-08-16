@@ -374,6 +374,7 @@ def test_live_worker_status_includes_current_process_activity():
                 "label": "review parser",
                 "command": "python review.py",
                 "status": "running",
+                "elapsed_seconds": 12,
                 "last_line": "reading src/parse.py",
             }],
         ),
@@ -382,7 +383,8 @@ def test_live_worker_status_includes_current_process_activity():
     status = worker._status()
 
     assert status["process_status"] == (
-        "1 process running · 0 finished\n└ 42 [review parser] reading src/parse.py"
+        "1 process running · 0 finished\n"
+        "└ 42 [review parser] (12 s) reading src/parse.py"
     )
 
 

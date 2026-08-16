@@ -636,9 +636,10 @@ def test_process_status_text_includes_running_process_activity(tmp_path):
             )
         )
         statuses = [event for event in events.after(0) if event.type == "process_status"]
-        assert statuses[-1].data["text"] == (
-            f"1 process running · 0 finished\n└ {started['pid']} [review parser] world"
+        assert statuses[-1].data["text"].startswith(
+            f"1 process running · 0 finished\n└ {started['pid']} [review parser] ("
         )
+        assert statuses[-1].data["text"].endswith(" s) world")
     finally:
         agent.tool_executor.shutdown_processes()
 

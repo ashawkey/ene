@@ -52,8 +52,11 @@ def format_process_status(
         marker = "└" if index == len(active) - 1 else "├"
         label = item.get("label") or " ".join(item["command"].split())
         label = _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS]
+        elapsed = max(0, int(item["elapsed_seconds"]))
         latest = _clean_process_line(item.get("last_line", ""))
-        lines.append(f"{marker} {item['pid']} [{label}] {latest}".rstrip())
+        lines.append(
+            f"{marker} {item['pid']} [{label}] ({elapsed} s) {latest}".rstrip()
+        )
     return "\n".join(lines)
 
 
@@ -170,6 +173,8 @@ class ProcessManagerMixin:
         with self._process_notify_lock:
             self._activity_flush_timer = None
         self._notify_process_status(force=True)
+        if self.process_counts()[0]:
+            self._schedule_activity_flush()
 
     @staticmethod
     def _release_completed_windows_job(record: dict[str, Any]) -> bool:
@@ -381,6 +386,7 @@ class ProcessManagerMixin:
             self._process_condition.notify_all()
         capture_thread.start()
         self._notify_process_status()
+        self._schedule_activity_flush()
         return {**self._process_info(record), "success": True}
 
     def inspect_processes(

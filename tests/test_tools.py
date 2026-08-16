@@ -239,20 +239,22 @@ def test_format_process_status_shows_one_line_per_running_process():
             "pid": 42,
             "label": "review parser",
             "status": "running",
+            "elapsed_seconds": 12.9,
             "last_line": "\x1b[32mreading\x1b[0m src/parse.py\x00",
         },
         {
             "pid": 43,
             "label": "plan refactor",
             "status": "running",
+            "elapsed_seconds": 3,
             "last_line": "",
         },
         {"pid": 44, "label": "done child", "status": "exited", "last_line": "stale line"},
     ]
     assert format_process_status(2, 1, activity) == (
         "2 processes running · 1 finished\n"
-        "├ 42 [review parser] reading src/parse.py\n"
-        "└ 43 [plan refactor]"
+        "├ 42 [review parser] (12 s) reading src/parse.py\n"
+        "└ 43 [plan refactor] (3 s)"
     )
     assert format_process_status(0, 3, activity) == ""
 

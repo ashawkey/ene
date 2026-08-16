@@ -809,7 +809,7 @@ class TerminalInput:
                 preview = preview[:20] + "..."
             label = f"pending: {preview} · runs next"
             if status:
-                status.append(("class:status.pending", f" · {label}"))
+                status.append(("class:status.pending", f"\n{label}"))
             else:
                 status = [("class:status.pending", label)]
         width = max(1, self._session.app.output.get_size().columns - 1)

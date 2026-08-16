@@ -159,13 +159,14 @@ def test_busy_prompt_shows_only_working_status_without_pending_message():
 def test_multiline_process_status_is_appended_to_working_status():
     terminal = _message_terminal()
     terminal._process_status = (
-        "1 process running · 2 finished\n└ 42 [review parser] reading src/parse.py"
+        "1 process running · 2 finished\n"
+        "└ 42 [review parser] (12 s) reading src/parse.py"
     )
 
     text = "".join(fragment for _, fragment in terminal._message())
 
     assert "Working... · 1 process running · 2 finished" in text
-    assert "\n└ 42 [review parser] reading src/parse.py\n" in text
+    assert "\n└ 42 [review parser] (12 s) reading src/parse.py\n" in text
 
 
 def test_detailed_status_overrides_busy_fallback_and_shows_pending_message():
@@ -178,7 +179,19 @@ def test_detailed_status_overrides_busy_fallback_and_shows_pending_message():
 
     assert "Authenticating..." in text
     assert "Working..." not in text
-    assert "pending: follow up · runs next" in text
+    assert "\npending: follow up · runs next\n" in text
+
+
+def test_pending_message_uses_new_line_after_processes():
+    terminal = _message_terminal(pending="follow up")
+    terminal._process_status = (
+        "1 process running · 0 finished\n"
+        "└ 42 [review parser] (12 s) reading src/parse.py"
+    )
+
+    text = "".join(fragment for _, fragment in terminal._message())
+
+    assert "reading src/parse.py\npending: follow up · runs next\n" in text
 
 
 def test_enter_applies_selected_completion():
