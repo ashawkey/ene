@@ -295,6 +295,68 @@ def test_response_stream_does_not_commit_unclosed_fence():
     assert "print('pending')" in output.getvalue()
 
 
+def test_response_stream_fence_opener_split_across_chunks():
+    output, stream = make_stream()
+
+    # The opener's trailing newline arrives glued to the first code line; the
+    # merged line would otherwise be parsed as the fence info string, leaving
+    # an empty block and raw code.
+    for chunk in ["```python", "def foo():\n", "    return 1\n", "```\n", "After\n"]:
+        stream.on_content(chunk)
+    stream.close()
+
+    rendered = output.getvalue()
+    assert "def foo():" in rendered
+    assert "return 1" in rendered
+    assert "After" in rendered
+    assert "```" not in rendered
+    assert rendered.index("def foo():") < rendered.index("After")
+
+
+def test_response_stream_fence_opener_without_info_split_across_chunks():
+    output, stream = make_stream()
+
+    # A bare ``` opener is still waiting for its info string, so it must
+    # absorb the next word instead of being split off.
+    for chunk in ["```", "python\nprint(1)\n", "```\n"]:
+        stream.on_content(chunk)
+    stream.close()
+
+    rendered = output.getvalue()
+    assert "print(1)" in rendered
+    assert "```" not in rendered
+
+
+def test_response_stream_fence_closer_split_across_chunks():
+    output, stream = make_stream()
+
+    # The closing fence may arrive glued to the last code line.
+    for chunk in ["```python\n", "def foo():\n", "    return 1", "```\n", "After\n"]:
+        stream.on_content(chunk)
+    stream.close()
+
+    rendered = output.getvalue()
+    assert "def foo():" in rendered
+    assert "return 1" in rendered
+    assert "After" in rendered
+    assert "```" not in rendered
+    assert rendered.index("return 1") < rendered.index("After")
+
+
+def test_response_stream_keeps_backticks_inside_fence_content():
+    output, stream = make_stream()
+
+    # A backtick run inside the content (e.g. a quoted ```) is not a fence
+    # line: it arrives without its own newline, so it must not be split off.
+    for chunk in ["```python\n", "s = \"", "```", "\"\n", "```\n"]:
+        stream.on_content(chunk)
+    stream.close()
+
+    rendered = output.getvalue()
+    assert "s = \"```\"" in rendered
+    assert "```" not in rendered.replace("s = \"```\"", "")
+
+
 def test_response_stream_waits_for_late_reference_definition():
     output, stream = make_stream()
 

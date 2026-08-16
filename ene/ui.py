@@ -529,6 +529,14 @@ class _TerminalMarkdownStream:
         "thematic_break",
     }
 
+    # A partial line that already opens a fenced block (3+ backticks or tildes,
+    # up to three leading spaces, followed by an info string). CommonMark treats
+    # everything after the marker on that line as the info string, so a streamed
+    # opener must never absorb the following content.
+    _FENCE_OPENER_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})\S[^\n]*$")
+    # A complete fence-marker line (opener without info, or a closing fence).
+    _FENCE_LINE_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})\s*$")
+
     def __init__(self, console: Console):
         self._console = console
         self._parser = MarkdownIt().enable("strikethrough").enable("table")
@@ -664,6 +672,17 @@ class _TerminalMarkdownStream:
                 self._references[label] = reference
 
     def feed(self, text: str) -> None:
+        if self._pending and text and not text.startswith("\n"):
+            first_line = text.split("\n", 1)[0]
+            if self._FENCE_OPENER_RE.match(self._pending) or (
+                "\n" in text and self._FENCE_LINE_RE.match(first_line)
+            ):
+                # A fenced-block opener is only complete once its trailing
+                # newline arrives, and that newline may come glued to the next
+                # line. Without a boundary, markdown-it reads the glued line as
+                # the fence's info string, swallowing the first code line (or
+                # rendering an empty block). Keep the marker line intact.
+                self._pending += "\n"
         self._pending += text
         complete = self._pending.rpartition("\n")
         if not complete[1]:
