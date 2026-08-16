@@ -48,6 +48,10 @@ _QS_STYLE = questionary.Style([
 _DOT = "\u2022"      # bullet •
 _CHECK = "\u2713"    # ✓
 _CROSS = "\u2717"    # ✗
+# Brand marker: diamond-with-a-dot, the closest single-glyph emoji to the
+# four-diamond logo mark. It prefixes model replies so agent speech reads
+# distinctly from the •-prefixed system/tool lines.
+_BRAND = "💠"  # 💠
 _REFERENCE_LINK_RE = re.compile(
     r"(?<!\\)\[([^\]\n]+)\]\[([^\]\n]*)\]"
 )
@@ -91,9 +95,9 @@ def _compact_tokens(value: int) -> str:
 
 def _print_markdown_response(console: Console, content: str) -> None:
     row = Table.grid(padding=0, expand=True)
-    row.add_column(width=2, no_wrap=True)
+    row.add_column(width=3, no_wrap=True)
     row.add_column(ratio=1, overflow="fold")
-    row.add_row(Text(f"{_DOT} "), Markdown(content))
+    row.add_row(Text(f"{_BRAND} "), Markdown(content))
     console.print(row)
 
 
@@ -535,9 +539,9 @@ class _TerminalMarkdownStream:
 
     def _print(self, renderable) -> None:
         row = Table.grid(padding=0, expand=True)
-        row.add_column(width=2, no_wrap=True)
+        row.add_column(width=3, no_wrap=True)
         row.add_column(ratio=1, overflow="fold")
-        prefix = f"{_DOT} " if not self._started else ""
+        prefix = f"{_BRAND} " if not self._started else ""
         row.add_row(Text(prefix), renderable)
         self._console.print(row)
         self._started = True

@@ -207,10 +207,14 @@ def test_response_stream_keeps_streamed_list_items_compact():
     stream.close()
 
     lines = output.getvalue().splitlines()
-    assert [line.strip() for line in lines] == ["•  • first", "• second", "• third"]
+    assert [line.strip() for line in lines] == [
+        "💠  • first", "• second", "• third",
+    ]
 
 
 def test_response_stream_preserves_nested_list_indentation():
+    from rich.cells import cell_len
+
     output, stream = make_stream()
 
     stream.on_content(
@@ -221,9 +225,12 @@ def test_response_stream_preserves_nested_list_indentation():
     )
     stream.close()
 
+    # Compare display columns (the 💠 brand marker is one char but two cells).
     lines = output.getvalue().splitlines()
     positions = {
-        text: next(line.rindex("•") for line in lines if text in line)
+        text: next(
+            cell_len(line[: line.rindex("•")]) for line in lines if text in line
+        )
         for text in ("parent", "child one", "child two", "sibling")
     }
     assert positions["child one"] == positions["child two"]
