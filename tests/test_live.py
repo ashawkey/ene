@@ -1,3 +1,4 @@
+import contextlib
 import socket
 import threading
 import time
@@ -64,6 +65,31 @@ def test_connect_normalizes_transport_failure(monkeypatch):
 
     with pytest.raises(live.LiveError, match="Could not connect"):
         live.connect({"port": 1234}, "status")
+
+
+def test_connect_marks_a_reserved_attachment_slot_as_busy(monkeypatch):
+    """A busy slot is retryable; every other rejection is fatal."""
+    class FakeSocket:
+        def settimeout(self, _timeout):
+            pass
+
+        def close(self):
+            pass
+
+    reply = {}
+    monkeypatch.setattr(socket, "create_connection", lambda *_args, **_kwargs: FakeSocket())
+    monkeypatch.setattr(live, "send_frame", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(live, "recv_frame", lambda _sock: reply)
+
+    reply.update(ok=False, code="attached", error="Another terminal is already attached")
+    with pytest.raises(live.LiveBusyError, match="already attached"):
+        live.connect({"port": 1234, "token": "secret"}, "attach")
+
+    reply.clear()
+    reply.update(ok=False, error="Forbidden")
+    with pytest.raises(live.LiveError) as rejected:
+        live.connect({"port": 1234, "token": "secret"}, "attach")
+    assert not isinstance(rejected.value, live.LiveBusyError)
 
 
 def test_kill_session_waits_for_worker_process_exit(monkeypatch, tmp_path):
@@ -559,6 +585,9 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
         def settimeout(self, _timeout):
             pass
 
+        def sendall(self, _data):
+            pass  # Heartbeat pings go nowhere in this test.
+
         def close(self):
             pass
 
@@ -607,6 +636,11 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
     terminal = FakeTerminal()
     monkeypatch.setattr("ene.live_terminal.connect", lambda *_args: FakeSocket())
     monkeypatch.setattr("ene.live_terminal.recv_frame", receive)
+    # patch_stdout needs a real console, which pytest does not provide.
+    monkeypatch.setattr(
+        "ene.live_terminal.patch_stdout",
+        lambda **_kwargs: contextlib.nullcontext(),
+    )
     monkeypatch.setattr(
         "ene.live_terminal.TerminalInput", lambda **_kwargs: terminal
     )
@@ -1035,6 +1069,222 @@ def test_live_worker_attach_restores_only_current_active_indicator():
         "label": "Executing", "started_at": 123.0
     }
     assert not serving.is_alive()
+
+
+def test_live_worker_frees_attachment_that_stops_responding(monkeypatch):
+    """A silent attachment (e.g. a force-killed shell) must not reserve the session."""
+    monkeypatch.setattr(live_worker, "TERMINAL_IDLE_TIMEOUT", 0.1)
+    left, right = socket.socketpair()
+    worker = Worker.__new__(Worker)
+    worker.events = EventHub()
+    worker.stop_event = threading.Event()
+    worker._status = lambda: {"runtime_id": "runtime"}
+    serving = threading.Thread(target=worker._serve_terminal, args=(right,))
+    serving.start()
+
+    attached = live.recv_frame(left)
+    assert attached["type"] == "attached"
+    serving.join(timeout=2)
+
+    assert not serving.is_alive()
+    left.close()
+    right.close()
+
+
+def _attached_worker(monkeypatch, sock, *, idle_timeout: float = 0.1):
+    """Run _handle on an attached connection with the idle timeout shortened."""
+    monkeypatch.setattr(live_worker, "TERMINAL_IDLE_TIMEOUT", idle_timeout)
+    worker = Worker.__new__(Worker)
+    worker.runtime_id = "runtime"
+    worker.token = "token"
+    worker.terminal_lock = threading.Lock()
+    worker.terminal_attached = False
+    worker.connections = set()
+    worker.connections_lock = threading.Lock()
+    worker.events = EventHub()
+    worker.stop_event = threading.Event()
+    worker._status = lambda: {"runtime_id": "runtime"}
+    handling = threading.Thread(target=worker._handle, args=(sock,))
+    handling.start()
+    return worker, handling
+
+
+def test_live_worker_releases_silent_attachment_without_stopping(monkeypatch):
+    """A half-open attachment must free the session, never stop the agent."""
+    left, right = socket.socketpair()
+    worker, handling = _attached_worker(monkeypatch, right)
+
+    live.send_frame(left, {"type": "attach", "token": "token"})
+    assert live.recv_frame(left)["ok"] is True
+    assert live.recv_frame(left)["type"] == "attached"
+    assert worker.terminal_attached is True
+
+    # A force-killed shell can leave the socket open with nothing ever arriving
+    # on it. The worker must release the attachment (so the session is
+    # attachable again) without setting the stop event (so the agent keeps
+    # finishing its work). Deliberately no close(): that is the whole point.
+    handling.join(timeout=2)
+
+    assert not handling.is_alive()
+    assert worker.terminal_attached is False
+    assert not worker.stop_event.is_set()
+    left.close()
+    right.close()
+
+
+def test_live_worker_abrupt_terminal_loss_detaches_without_stopping(monkeypatch):
+    """Losing the terminal mid-work must detach the session, never stop it."""
+    left, right = socket.socketpair()
+    worker, handling = _attached_worker(monkeypatch, right)
+
+    live.send_frame(left, {"type": "attach", "token": "token"})
+    assert live.recv_frame(left)["ok"] is True
+    assert live.recv_frame(left)["type"] == "attached"
+    assert worker.terminal_attached is True
+
+    # A closing shell drops its socket without sending detach.
+    left.close()
+    handling.join(timeout=2)
+
+    assert not handling.is_alive()
+    assert worker.terminal_attached is False
+    assert not worker.stop_event.is_set()
+    right.close()
+
+
+def test_live_worker_rejects_a_second_attachment_as_retryable(monkeypatch):
+    """A reserved slot is reported with the code a reattach can wait on."""
+    left, right = socket.socketpair()
+    worker, handling = _attached_worker(monkeypatch, right, idle_timeout=5.0)
+    live.send_frame(left, {"type": "attach", "token": "token"})
+    assert live.recv_frame(left)["ok"] is True
+    assert live.recv_frame(left)["type"] == "attached"
+
+    second_left, second_right = socket.socketpair()
+    rejecting = threading.Thread(target=worker._handle, args=(second_right,))
+    rejecting.start()
+    live.send_frame(second_left, {"type": "attach", "token": "token"})
+    reply = live.recv_frame(second_left)
+    rejecting.join(timeout=2)
+
+    assert reply == {
+        "ok": False,
+        "code": "attached",
+        "error": "Another terminal is already attached",
+    }
+    assert not rejecting.is_alive()
+    assert worker.terminal_attached is True
+
+    live.send_frame(left, {"type": "detach"})
+    handling.join(timeout=2)
+    assert worker.terminal_attached is False
+    for sock in (left, right, second_left, second_right):
+        sock.close()
+
+
+def test_live_worker_drops_a_connection_that_never_identifies_itself(monkeypatch):
+    """A client that dies before the handshake must not park a worker thread."""
+    monkeypatch.setattr(live_worker, "REQUEST_TIMEOUT", 0.1)
+    left, right = socket.socketpair()
+    worker = Worker.__new__(Worker)
+    worker.token = "token"
+    worker.terminal_lock = threading.Lock()
+    worker.terminal_attached = False
+    worker.connections = set()
+    worker.connections_lock = threading.Lock()
+    handling = threading.Thread(target=worker._handle, args=(right,))
+    handling.start()
+
+    # Nothing is ever sent on the connection.
+    handling.join(timeout=2)
+
+    assert not handling.is_alive()
+    assert worker.connections == set()
+    assert worker.terminal_attached is False
+    left.close()
+    right.close()
+
+
+def test_live_terminal_waits_for_a_killed_terminal_to_release_the_session(monkeypatch):
+    """Reattaching inside the previous terminal's idle window must succeed."""
+    monkeypatch.setattr("ene.live_terminal.ATTACH_RETRY_INTERVAL", 0.01)
+    attempts = []
+    attached = object()
+
+    def fake_connect(_record, _kind):
+        attempts.append(_kind)
+        if len(attempts) < 3:
+            raise live.LiveBusyError("Another terminal is already attached")
+        return attached
+
+    monkeypatch.setattr("ene.live_terminal.connect", fake_connect)
+    client = LiveTerminal({})
+    messages = []
+    client.console = SimpleNamespace(system=messages.append)
+
+    assert client._attach() is attached
+    assert attempts == ["attach"] * 3
+    assert len(messages) == 1  # announced once, not once per retry
+
+
+def test_live_terminal_gives_up_on_a_session_that_stays_attached(monkeypatch):
+    """A terminal that is genuinely attached elsewhere still reports the conflict."""
+    monkeypatch.setattr("ene.live_terminal.ATTACH_RETRY_INTERVAL", 0.01)
+    monkeypatch.setattr("ene.live_terminal.ATTACH_WAIT_TIMEOUT", 0.05)
+    monkeypatch.setattr(
+        "ene.live_terminal.connect",
+        lambda *_args: (_ for _ in ()).throw(
+            live.LiveBusyError("Another terminal is already attached")
+        ),
+    )
+    client = LiveTerminal({})
+    client.console = SimpleNamespace(system=lambda _text: None)
+
+    with pytest.raises(live.LiveBusyError, match="already attached"):
+        client._attach()
+
+
+def test_live_worker_keeps_attachment_alive_with_heartbeats(monkeypatch):
+    """Live terminals that keep pinging must never be released as stale."""
+    monkeypatch.setattr(live_worker, "TERMINAL_IDLE_TIMEOUT", 0.4)
+    left, right = socket.socketpair()
+    worker = Worker.__new__(Worker)
+    worker.events = EventHub()
+    worker.stop_event = threading.Event()
+    worker._status = lambda: {"runtime_id": "runtime"}
+    serving = threading.Thread(target=worker._serve_terminal, args=(right,))
+    serving.start()
+
+    live.recv_frame(left)  # attached
+    for _ in range(6):
+        live.send_frame(left, {"type": "ping"})
+        time.sleep(0.05)
+    assert serving.is_alive()
+
+    live.send_frame(left, {"type": "detach"})
+    serving.join(timeout=1)
+    left.close()
+    right.close()
+    assert not serving.is_alive()
+
+
+def test_live_terminal_pings_while_attached(monkeypatch):
+    monkeypatch.setattr("ene.live_terminal.TERMINAL_PING_INTERVAL", 0.05)
+    client = LiveTerminal.__new__(LiveTerminal)
+    sent = []
+    client._send = sent.append
+    client.stopped = threading.Event()
+    ping_thread = threading.Thread(target=client._ping_loop)
+    ping_thread.start()
+    deadline = time.monotonic() + 1
+    while len(sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    client.stopped.set()
+    ping_thread.join(timeout=1)
+
+    assert all(message == {"type": "ping"} for message in sent)
+    assert len(sent) >= 2
+    assert not ping_thread.is_alive()
 
 
 def test_live_worker_replays_full_history_compactly_in_original_order():

@@ -27,9 +27,25 @@ STOP_TIMEOUT = 20.0
 STOP_RECORD_GRACE = 30.0
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 
+# Attached terminals send a heartbeat ("ping") frame every
+# TERMINAL_PING_INTERVAL seconds. A force-killed shell leaves a half-open
+# loopback connection that may never signal EOF to the worker, so the worker
+# treats an attachment that stays silent for TERMINAL_IDLE_TIMEOUT seconds as
+# dead and releases the session instead of reserving it forever.
+TERMINAL_PING_INTERVAL = 5.0
+TERMINAL_IDLE_TIMEOUT = 20.0
+# A reattach that lands inside the previous terminal's idle window waits for
+# the worker to release it rather than reporting a conflict that resolves
+# itself moments later.
+ATTACH_WAIT_TIMEOUT = TERMINAL_IDLE_TIMEOUT + 5.0
+
 
 class LiveError(RuntimeError):
     pass
+
+
+class LiveBusyError(LiveError):
+    """Another terminal holds the session's single attachment slot."""
 
 
 def _ensure_live_dir() -> Path:
@@ -154,7 +170,10 @@ def connect(record: dict[str, Any], kind: str, **data: Any) -> socket.socket:
         send_frame(sock, {"type": kind, "token": record.get("token", ""), **data})
         reply = recv_frame(sock)
         if not reply.get("ok"):
-            raise LiveError(str(reply.get("error", "Live-session request rejected")))
+            error = str(reply.get("error", "Live-session request rejected"))
+            if reply.get("code") == "attached":
+                raise LiveBusyError(error)
+            raise LiveError(error)
         return sock
     except LiveError:
         if sock is not None:

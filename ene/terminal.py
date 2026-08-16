@@ -557,9 +557,9 @@ class TerminalInput:
             except Exception:
                 pass  # Terminal titles are best-effort display metadata.
 
-        app = self._session.app
+        app = getattr(self._session, "app", None)
         loop = getattr(app, "loop", None)
-        if app.is_running and loop is not None:
+        if app is not None and app.is_running and loop is not None:
             loop.call_soon_threadsafe(write)
         else:
             write()

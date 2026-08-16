@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import select
 import socket
 import sys
 import threading
@@ -17,6 +18,8 @@ from ene.config import CONFIG_PATH, conf
 from ene.hub import discover_hub
 from ene.hubclient import HubClient
 from ene.live import (
+    REQUEST_TIMEOUT,
+    TERMINAL_IDLE_TIMEOUT,
     LiveError,
     read_record,
     recv_frame,
@@ -443,6 +446,11 @@ class Worker:
             self.connections.add(sock)
         attached = False
         try:
+            # A client that connects and then dies without speaking would
+            # otherwise park this thread on recv() for the worker's lifetime.
+            ready, _, _ = select.select([sock], [], [], REQUEST_TIMEOUT)
+            if not ready:
+                return
             hello = recv_frame(sock)
             if hello.get("token") != self.token:
                 send_frame(sock, {"ok": False, "error": "Forbidden"})
@@ -462,7 +470,12 @@ class Worker:
                 return
             with self.terminal_lock:
                 if self.terminal_attached:
-                    send_frame(sock, {"ok": False, "error": "Another terminal is already attached"})
+                    # The code lets a reattach tell this apart from a fatal
+                    # rejection and wait for a dead terminal to be released.
+                    send_frame(sock, {
+                        "ok": False, "code": "attached",
+                        "error": "Another terminal is already attached",
+                    })
                     return
                 self.terminal_attached = True
                 attached = True
@@ -567,6 +580,17 @@ class Worker:
         try:
             while not self.stop_event.is_set() and not stopped.is_set():
                 try:
+                    # The attached terminal sends heartbeat pings, so silence
+                    # means the shell is gone: a killed one can leave a
+                    # half-open connection whose recv() never returns, which
+                    # would reserve the session as "attached" forever. Waiting
+                    # for readability rather than setting a socket timeout
+                    # keeps the deadline off the send path, where a terminal
+                    # that briefly stops draining must stay attached until the
+                    # bounded event queue decides otherwise.
+                    ready, _, _ = select.select([sock], [], [], TERMINAL_IDLE_TIMEOUT)
+                    if not ready:
+                        return
                     action = recv_frame(sock)
                 except (OSError, EOFError, ValueError, LiveError, json.JSONDecodeError):
                     return
@@ -609,6 +633,10 @@ class Worker:
                     self.prompts.resolve(str(action.get("id", "")), str(action.get("answer", "")), "terminal")
                 elif kind == "cancel":
                     self.cancellation.cancel(action.get("operation_id"))
+                elif kind == "ping":
+                    # Heartbeat from the attached terminal; receiving it just
+                    # proves the attachment is still alive.
+                    continue
         finally:
             stopped.set()
             self.events.remove_listener(enqueue)

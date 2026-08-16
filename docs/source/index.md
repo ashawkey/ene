@@ -124,7 +124,7 @@ Interactive sessions run in detached workers and survive closing the terminal or
 - Terminate the attached session with Ctrl+K, or use the `ene kill` (`ene k`) multi-select picker.
 - Use `/resume` to activate a stopped conversation in the current live worker.
 
-Resume, attach, and switch replay the latest 10 user turns and final assistant responses, omitting historical tool activity and warnings. Ctrl+K, double Ctrl+C at an idle prompt, and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot.
+Resume, attach, and switch replay the latest 10 user turns and final assistant responses, omitting historical tool activity and warnings. Ctrl+K, double Ctrl+C at an idle prompt, and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot. Closing a terminal never stops the session: work continues in the detached worker even when the shell is closed mid-task, and a force-closed terminal (for example a killed shell) frees the attachment automatically after about 20 seconds of silence. Reattaching inside that window waits for the release instead of failing, so `ene attach` right after a force-close simply pauses for a moment and then connects.
 
 ## Resume a session
 

@@ -13,11 +13,22 @@ from typing import Any, Callable
 
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from ene.live import REQUEST_TIMEOUT, LiveError, connect, recv_frame, send_frame
+from ene.live import (
+    ATTACH_WAIT_TIMEOUT,
+    REQUEST_TIMEOUT,
+    TERMINAL_PING_INTERVAL,
+    LiveBusyError,
+    LiveError,
+    connect,
+    recv_frame,
+    send_frame,
+)
 from ene.terminal import SessionDetach, SessionKill, SessionSwitch, TerminalInput
 from ene.ui import AgentConsole, ContextStatus, ResponseStream, ThinkingIndicator
 from ene.utils.paths import get_ene_dir
 
+
+ATTACH_RETRY_INTERVAL = 0.5
 
 LOCAL_COMMANDS = {
     "detach": "Detach this terminal without stopping the session",
@@ -98,8 +109,36 @@ class LiveTerminal:
             with self.action_lock:
                 self.action_waiters.pop(request_id, None)
 
+    def _attach(self) -> socket.socket:
+        """Attach, waiting out an attachment left behind by a killed terminal.
+
+        A force-closed terminal keeps the session reserved until the worker's
+        heartbeat deadline expires, so an immediate reattach lands inside that
+        window. Waiting turns a rejection that resolves itself into a short
+        pause, while a terminal that really is attached elsewhere still
+        reports the conflict once the wait runs out.
+        """
+        deadline = time.monotonic() + ATTACH_WAIT_TIMEOUT
+        waiting = False
+        while True:
+            try:
+                return connect(self.record, "attach")
+            except LiveBusyError as exc:
+                if time.monotonic() >= deadline:
+                    raise
+                if not waiting:
+                    waiting = True
+                    self.console.system(
+                        "Another terminal is attached; waiting for it to "
+                        "release the session (Ctrl+C to stop waiting)."
+                    )
+                try:
+                    time.sleep(ATTACH_RETRY_INTERVAL)
+                except KeyboardInterrupt:
+                    raise exc from None
+
     def run(self) -> tuple[str, str]:
-        self.sock = connect(self.record, "attach")
+        self.sock = self._attach()
         try:
             attached = recv_frame(self.sock)
             self.sock.settimeout(None)
@@ -160,9 +199,13 @@ class LiveTerminal:
             "/switch or Ctrl+S to switch; Ctrl+K to kill."
         )
         reader = threading.Thread(target=self._read_loop, name="ene-live-reader", daemon=True)
+        ping_thread = threading.Thread(
+            target=self._ping_loop, name="ene-live-ping", daemon=True
+        )
         try:
             with patch_stdout(raw=True):
                 reader.start()
+                ping_thread.start()
                 draft = ""
                 while not self.stopped.is_set():
                     self.terminal.set_busy(self.operation_id is not None)
@@ -267,6 +310,21 @@ class LiveTerminal:
         self.detaching.set()
         self._send({"type": "kill"})
         self.stopped.wait()
+
+    def _ping_loop(self) -> None:
+        """Heartbeat the attachment so a killed terminal cannot block the session.
+
+        A force-killed shell can leave a half-open connection that the worker's
+        recv() never notices. Sending periodic pings lets the worker release
+        the attachment after a silence that exceeds its idle timeout.
+        """
+        try:
+            while not self.stopped.is_set():
+                self._send({"type": "ping"})
+                self.stopped.wait(TERMINAL_PING_INTERVAL)
+        except LiveError:
+            # The reader loop reports the actual disconnect to the user.
+            pass
 
     def _detach_from_worker(self) -> None:
         """Wait until the worker releases this attachment before reconnecting."""
