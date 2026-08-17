@@ -14,7 +14,7 @@ class ModelProfile:
     """Properties of a model family that affect API behaviour."""
 
     context_length: int = 128_000
-    # "openai" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi"
+    # "openai" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
     reasoning: str | None = None
     supports_image_input: bool = False
     # Max output tokens per request. Reasoning tokens count against this budget,
@@ -40,6 +40,10 @@ MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
     ("glm", ModelProfile(context_length=1_000_000, reasoning="glm", max_output_tokens=64_000)),
     ("kimi-k3", ModelProfile(context_length=1_000_000, reasoning="kimi", supports_image_input=True, max_output_tokens=64_000)),
     ("kimi", ModelProfile(supports_image_input=True)),
+    # Qwen3.8 (hybrid-attention family): the 27B dense is multimodal and has
+    # 262K native context; the 2.4T MoE flagship is text-only.
+    ("qwen3.8-27b", ModelProfile(context_length=262_144, reasoning="qwen3.8", supports_image_input=True, max_output_tokens=64_000)),
+    ("qwen3.8", ModelProfile(context_length=262_144, reasoning="qwen3.8", max_output_tokens=64_000)),
 ]
 
 DEFAULT_PROFILE = ModelProfile()
@@ -113,4 +117,12 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
         # Kimi K3 always reasons (thinking cannot be disabled) and currently
         # only accepts reasoning_effort="max"; all effort levels map to it.
         return {"reasoning_effort": "max"}
+    if style == "qwen3.8":
+        # Qwen3.8 controls thinking via chat_template_kwargs (vLLM/Transformers
+        # convention): thinking is on by default, disabled with enable_thinking,
+        # and tuned adaptively with reasoning_effort (low | medium | xhigh).
+        if effort == "none":
+            return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+        mapped = {"minimal": "low", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh"}.get(effort, effort)
+        return {"extra_body": {"chat_template_kwargs": {"reasoning_effort": mapped}}}
     raise ValueError(f"Unknown reasoning style: {style}")

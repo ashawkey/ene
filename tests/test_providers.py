@@ -124,6 +124,34 @@ def test_catalog_resolves_versioned_reasoning_styles():
     assert resolve_model_profile("glm-4.6").reasoning == "glm"
 
 
+def test_reasoning_effort_qwen38_uses_chat_template_kwargs():
+    # Qwen3.8 gates thinking via chat_template_kwargs; adaptive depth uses
+    # reasoning_effort low | medium | xhigh (high/max collapse to xhigh).
+    assert reasoning_kwargs("qwen3.8", "none") == {
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }
+    for effort, mapped in {
+        "minimal": "low",
+        "low": "low",
+        "medium": "medium",
+        "high": "xhigh",
+        "xhigh": "xhigh",
+        "max": "xhigh",
+    }.items():
+        assert reasoning_kwargs("qwen3.8", effort) == {
+            "extra_body": {"chat_template_kwargs": {"reasoning_effort": mapped}},
+        }
+
+
+def test_catalog_resolves_qwen38():
+    profile = resolve_model_profile("Qwen/Qwen3.8-27B-FP8")
+    assert profile.reasoning == "qwen3.8"
+    assert profile.context_length == 262_144
+    assert profile.supports_image_input is True
+    assert resolve_model_profile("qwen3.8-2.4t-a95b").reasoning == "qwen3.8"
+    assert resolve_model_profile("qwen3.8-2.4t-a95b").supports_image_input is False
+
+
 def test_openai_provider_uses_only_native_effort_for_anthropic(monkeypatch):
     response = NS(
         choices=[NS(message=_message(), finish_reason="stop")],
