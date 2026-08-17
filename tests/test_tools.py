@@ -222,9 +222,9 @@ def test_process_activity_lists_all_processes_with_last_line(tmp_path):
                 break
             assert time.monotonic() < deadline, "process logs did not reach expected lines"
             time.sleep(0.02)
-        assert [item["process_id"] for item in activity] == [
-            plain["process_id"], labeled["process_id"]
-        ]
+        assert [item["process_id"] for item in activity] == ["p-1", "p-2"]
+        assert plain["process_id"] == "p-1"
+        assert labeled["process_id"] == "p-2"
         assert activity[1]["label"] == "review parser"
         assert activity[1]["status"] == "running"
         assert activity[1]["elapsed_seconds"] >= 0
@@ -253,10 +253,34 @@ def test_format_process_status_shows_one_line_per_running_process():
     ]
     assert format_process_status(2, 1, activity) == (
         "2 processes running · 1 finished\n"
-        "├ 42 [review parser] (12 s) reading src/parse.py\n"
-        "└ 43 [plan refactor] (3 s)"
+        "├ 42 [review parser] (13s) reading src/parse.py\n"
+        "└ 43 [plan refactor] (3s)"
     )
     assert format_process_status(0, 3, activity) == ""
+
+
+def test_format_process_status_converts_minutes_and_hours():
+    activity = [
+        {
+            "pid": 42,
+            "label": "minute job",
+            "status": "running",
+            "elapsed_seconds": 75,
+            "last_line": "",
+        },
+        {
+            "pid": 43,
+            "label": "hour job",
+            "status": "running",
+            "elapsed_seconds": 3661,
+            "last_line": "",
+        },
+    ]
+    assert format_process_status(2, 0, activity) == (
+        "2 processes running · 0 finished\n"
+        "├ 42 [minute job] (1m 15s)\n"
+        "└ 43 [hour job] (1h 01m 01s)"
+    )
 
 
 def test_native_tool_resource_cleanup(tmp_path):

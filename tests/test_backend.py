@@ -639,7 +639,7 @@ def test_process_status_text_includes_running_process_activity(tmp_path):
         assert statuses[-1].data["text"].startswith(
             f"1 process running · 0 finished\n└ {started['pid']} [review parser] ("
         )
-        assert statuses[-1].data["text"].endswith(" s) world")
+        assert statuses[-1].data["text"].endswith("s) world")
     finally:
         agent.tool_executor.shutdown_processes()
 
@@ -671,6 +671,7 @@ def test_ps_lists_processes_and_shows_detail_tail():
     }
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.console = Console()
+    process["process_id"] = "p-1"
     activity = [{**process, "elapsed_seconds": 75, "last_line": "ready"}]
     agent.tool_executor = NS(
         process_activity=lambda: activity,
@@ -680,12 +681,12 @@ def test_ps_lists_processes_and_shows_detail_tail():
     )
 
     agent._cmd_ps("/ps")
-    agent._cmd_ps("/ps p-12345678")
+    agent._cmd_ps("/ps p-1")
 
     assert calls == [
-        {"process_id": "p-12345678", "log_tail_chars": 8000},
+        {"process_id": "p-1", "log_tail_chars": 8000},
     ]
-    assert "p-12345678" in output[0]
+    assert "p-1" in output[0]
     assert "inspect parser failures" in output[0]
     assert any("label: inspect parser failures" in item for item in output)
     assert any("command: python worker.py --long-option value" in item for item in output)

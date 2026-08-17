@@ -37,6 +37,18 @@ from .process_util import (
 )
 
 
+def _format_process_elapsed(seconds: float) -> str:
+    """Format process runtime like the terminal status timer."""
+    total = max(0, math.ceil(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 def format_process_status(
     running: int,
     finished: int,
@@ -52,10 +64,10 @@ def format_process_status(
         marker = "└" if index == len(active) - 1 else "├"
         label = item.get("label") or " ".join(item["command"].split())
         label = _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS]
-        elapsed = max(0, int(item["elapsed_seconds"]))
+        elapsed = _format_process_elapsed(item["elapsed_seconds"])
         latest = _clean_process_line(item.get("last_line", ""))
         lines.append(
-            f"{marker} {item['pid']} [{label}] ({elapsed} s) {latest}".rstrip()
+            f"{marker} {item['pid']} [{label}] ({elapsed}) {latest}".rstrip()
         )
     return "\n".join(lines)
 
@@ -82,6 +94,7 @@ class ProcessManagerMixin:
     def _init_process_registry(self) -> None:
         self._processes: dict[str, dict[str, Any]] = {}
         self._process_lock = threading.Lock()
+        self._next_process_number = 1
         self._process_condition = threading.Condition(self._process_lock)
         self._process_notify_lock = threading.RLock()
         self._process_listeners: set[Callable[[int, int], None]] = set()
@@ -235,11 +248,15 @@ class ProcessManagerMixin:
             if not label:
                 return {"error": "label must not be empty", "success": False}
         cwd = str(self._resolve_path(cwd or "."))
-        process_id = f"p-{uuid.uuid4().hex[:8]}"
+        with self._process_lock:
+            process_id = f"p-{self._next_process_number}"
+            self._next_process_number += 1
         log_dir = self._resolve_path(".ene/processes")
         log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         log_dir.chmod(0o700)
-        log_path = log_dir / f"{process_id}.log"
+        # IDs are intentionally session-local and easy to type. Keep a random
+        # log suffix so concurrent sessions in one workspace cannot collide.
+        log_path = log_dir / f"{process_id}-{uuid.uuid4().hex[:8]}.log"
         log_file = log_path.open("xb", buffering=0)
         try:
             log_path.chmod(0o600)

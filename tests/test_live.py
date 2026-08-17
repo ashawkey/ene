@@ -384,7 +384,7 @@ def test_live_worker_status_includes_current_process_activity():
 
     assert status["process_status"] == (
         "1 process running · 0 finished\n"
-        "└ 42 [review parser] (12 s) reading src/parse.py"
+        "└ 42 [review parser] (12s) reading src/parse.py"
     )
 
 

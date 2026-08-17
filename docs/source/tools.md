@@ -30,11 +30,12 @@ the active persona's tool policy; `/ps` and live status remain available to the
 UI.
 
 While jobs are active, the terminal and Web UI show running and finished counts,
-followed by one line per running process with its PID, label, and latest log line.
-Use `/ps` to list all jobs with their latest output,
+followed by one line per running process with its PID, label, automatically
+formatted runtime, and latest log line. Managed IDs are short session-local
+numbers (`p-1`, `p-2`, ...). Use `/ps` to list all jobs with their latest output,
 `/ps <label|process-id|pid> [tail-chars]` for details and recent output, or
 `/ps stop <label|process-id|pid>` to stop one manually. Combined
-output is stored in `.ene/processes/<process-id>.log`.
+output is stored in `.ene/processes/<process-id>-<unique-suffix>.log`.
 
 Processes are live-session-scoped. They survive terminal detach and session switching, but are terminated on explicit exit or `ene kill`. The bundled `monitor` skill adds an active-monitoring workflow. For periodic monitoring, call the core `wait` tool first and put the inspection or status calls after it in the same sequential tool-call batch; do not group the wait and checks in parallel.
 
