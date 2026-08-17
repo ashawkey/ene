@@ -9,7 +9,7 @@ from rich.table import Table
 
 from ene.utils.interrupt import RequestInterrupted
 from ene.utils.io import EventHub
-from ene.utils.streaming import consume_stream
+from ene.utils.streaming import consume_stream, message_from_sdk
 from ene.ui import AgentConsole
 
 
@@ -68,6 +68,18 @@ def test_consume_stream_reassembles_tool_call_fragments():
     assert tc.name == "read_file"
     assert tc.arguments == '{"file": "a.py"}'
     assert tc.to_wire()["type"] == "function"
+
+
+def test_message_from_sdk_reads_vllm_style_reasoning():
+    # vLLM 0.27 (qwen3 reasoning parser) emits thinking in a top-level
+    # "reasoning" field, which the SDK surfaces via model_extra.
+    message = message_from_sdk(NS(
+        content="final answer",
+        tool_calls=None,
+        model_extra={"reasoning": "private thinking"},
+    ))
+    assert message.text == "final answer"
+    assert message.reasoning_content == "private thinking"
 
 
 def test_consume_stream_stops_early_on_should_stop():

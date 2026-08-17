@@ -26,8 +26,20 @@ from ene.messages import Message, ToolCall
 from .interrupt import RequestInterrupted
 
 
-# Delta attribute names that carry reasoning/thinking text, most specific first.
+# Delta/message attribute names that carry reasoning/thinking text, most specific first.
 _REASONING_KEYS = ("reasoning_content", "reasoning")
+
+
+def _first_reasoning(value: Any) -> str | None:
+    """Return reasoning text found on a delta or message under known provider keys."""
+    for key in _REASONING_KEYS:
+        found = getattr(value, key, None)
+        if found:
+            return found
+        extra = getattr(value, "model_extra", None)
+        if isinstance(extra, dict) and extra.get(key):
+            return extra[key]
+    return None
 
 
 def message_from_sdk(message: Any) -> Message:
@@ -42,24 +54,16 @@ def message_from_sdk(message: Any) -> Message:
             )
             for tc in message.tool_calls
         ]
-    reasoning = (message.model_extra or {}).get("reasoning_content")
     return Message.assistant(
         content=message.content,
         tool_calls=tool_calls,
-        reasoning_content=reasoning or None,
+        reasoning_content=_first_reasoning(message) or None,
     )
 
 
 def _extract_reasoning(delta: Any) -> str | None:
     """Return the reasoning text on *delta*, probing known provider keys."""
-    for key in _REASONING_KEYS:
-        value = getattr(delta, key, None)
-        if value:
-            return value
-        extra = getattr(delta, "model_extra", None)
-        if isinstance(extra, dict) and extra.get(key):
-            return extra[key]
-    return None
+    return _first_reasoning(delta)
 
 
 class _ToolCallAccumulator:
