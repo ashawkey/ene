@@ -528,13 +528,8 @@ class _TerminalMarkdownStream:
         "table_open",
         "thematic_break",
     }
-
-    # A partial line that already opens a fenced block (3+ backticks or tildes,
-    # up to three leading spaces, followed by an info string). CommonMark treats
-    # everything after the marker on that line as the info string, so a streamed
-    # opener must never absorb the following content.
-    _FENCE_OPENER_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})\S[^\n]*$")
-    # A complete fence-marker line (opener without info, or a closing fence).
+    # Used only to recover a closing marker emitted immediately after the last
+    # code token. Openers and info strings must otherwise follow real newlines.
     _FENCE_LINE_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})\s*$")
 
     def __init__(self, console: Console):
@@ -671,17 +666,28 @@ class _TerminalMarkdownStream:
             if reference["map"][1] <= stable_line:
                 self._references[label] = reference
 
+    def _has_unclosed_fence(self) -> bool:
+        tokens = self._parser.parse(self._buffer)
+        lines = self._buffer.splitlines()
+        return any(
+            token.type == "fence"
+            and token.map is not None
+            and not self._fence_is_closed(lines, token.map[1], token.markup)
+            for token in reversed(tokens)
+        )
+
     def feed(self, text: str) -> None:
-        if self._pending and text and not text.startswith("\n"):
+        # Chunk boundaries carry no Markdown meaning. A provider may split
+        # anywhere inside a fence marker or its info string, so don't infer an
+        # opener boundary from a partial chunk. We only repair the common case
+        # where a complete closer follows code without the expected newline;
+        # the already-parsed buffer proves that a fence is currently open.
+        if self._pending.strip() and "\n" in text:
             first_line = text.split("\n", 1)[0]
-            if self._FENCE_OPENER_RE.match(self._pending) or (
-                "\n" in text and self._FENCE_LINE_RE.match(first_line)
+            if (
+                self._FENCE_LINE_RE.match(first_line)
+                and self._has_unclosed_fence()
             ):
-                # A fenced-block opener is only complete once its trailing
-                # newline arrives, and that newline may come glued to the next
-                # line. Without a boundary, markdown-it reads the glued line as
-                # the fence's info string, swallowing the first code line (or
-                # rendering an empty block). Keep the marker line intact.
                 self._pending += "\n"
         self._pending += text
         complete = self._pending.rpartition("\n")

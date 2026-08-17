@@ -1,6 +1,7 @@
 import io
 import time
 
+import pytest
 from rich.console import Console
 
 from ene.terminal import TerminalInput
@@ -295,36 +296,30 @@ def test_response_stream_does_not_commit_unclosed_fence():
     assert "print('pending')" in output.getvalue()
 
 
-def test_response_stream_fence_opener_split_across_chunks():
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["```p", "ython\ndef foo():\n", "    return 1\n", "```\n", "After\n"],
+        ["``", "`python\ndef foo():\n", "    return 1\n", "```\n", "After\n"],
+        ["```", "python\ndef foo():\n", "    return 1\n", "```\n", "After\n"],
+        ["~~~java", "script\nconsole.log(1)\n", "~~~\n", "After\n"],
+    ],
+)
+def test_response_stream_fence_opener_split_across_chunks(chunks):
     output, stream = make_stream()
 
-    # The opener's trailing newline arrives glued to the first code line; the
-    # merged line would otherwise be parsed as the fence info string, leaving
-    # an empty block and raw code.
-    for chunk in ["```python", "def foo():\n", "    return 1\n", "```\n", "After\n"]:
+    for chunk in chunks:
         stream.on_content(chunk)
     stream.close()
 
     rendered = output.getvalue()
-    assert "def foo():" in rendered
-    assert "return 1" in rendered
+    expected = "console.log(1)" if chunks[0].startswith("~") else "def foo():"
+    assert expected in rendered
+    assert "return 1" in rendered or "console.log(1)" in rendered
     assert "After" in rendered
     assert "```" not in rendered
-    assert rendered.index("def foo():") < rendered.index("After")
-
-
-def test_response_stream_fence_opener_without_info_split_across_chunks():
-    output, stream = make_stream()
-
-    # A bare ``` opener is still waiting for its info string, so it must
-    # absorb the next word instead of being split off.
-    for chunk in ["```", "python\nprint(1)\n", "```\n"]:
-        stream.on_content(chunk)
-    stream.close()
-
-    rendered = output.getvalue()
-    assert "print(1)" in rendered
-    assert "```" not in rendered
+    assert "~~~" not in rendered
+    assert rendered.index(expected) < rendered.index("After")
 
 
 def test_response_stream_fence_closer_split_across_chunks():
