@@ -44,38 +44,24 @@ def test_bundled_personas_are_declarative():
         {
             "read_file",
             "write_file",
-            "edit_file",
-            "multi_edit",
-            "ls",
+            "remove_file",
+            "exec_command",
             "load_skill",
-            "start_process",
-            "wait_processes",
-            "inspect_processes",
-            "stop_process",
         }
     )
     assert personas["orchestrator"].bundled_skills == frozenset(
-        {"subagent", "monitor", "code-review"}
+        {"subagent", "code-review"}
     )
     assert personas["orchestrator"].local_skills is False
     assert "{{ene:autonomous-mode}}" not in personas["orchestrator"].template
-    assert "## User Interaction" in personas["orchestrator"].template
-    assert "`change`" in personas["orchestrator"].template
-    assert "`monitor`" in personas["orchestrator"].template
-    assert "call `wait_processes` once over all active process IDs" in personas["orchestrator"].template
-    assert "`wait`" not in personas["orchestrator"].template
-    assert "At most one implementation subagent may run" in personas["orchestrator"].template
-    assert "Do not maintain resource-lock metadata" in personas["orchestrator"].template
-    assert "keep prompt files as durable task artifacts" in personas["orchestrator"].template
-    assert "task-specific JSON contract" in personas["orchestrator"].template
-    assert '"version": 2' in personas["orchestrator"].template
-    assert '"request_path"' in personas["orchestrator"].template
-    assert '"implementation_reports"' not in personas["orchestrator"].template
-    assert '"review_reports"' not in personas["orchestrator"].template
-    assert '"blocking_findings"' not in personas["orchestrator"].template
-    assert '"history": []' not in personas["orchestrator"].template
-    assert "must never overwrite an existing ledger" in personas["orchestrator"].template
-    assert "ledger mutation is a hard stop" in personas["orchestrator"].template
+    assert "group related bugs or small changes" in personas["orchestrator"].template
+    assert "explicit acceptance criterion for each included issue" in personas["orchestrator"].template
+    assert "unrelated or independently deliverable work" in personas["orchestrator"].template
+    assert "Do not maintain a backlog" in personas["orchestrator"].template
+    assert "Run only one subagent at a time" in personas["orchestrator"].template
+    assert "Only an independent passing review of every acceptance criterion completes" in personas["orchestrator"].template
+    assert "three implementation-review cycles" in personas["orchestrator"].template
+    assert "related small issues may be grouped" in personas["orchestrator"].description
     assert "manifest's page-aware `content_list_path`" in personas["reviewer"].template
     assert "`write_file` is only for an output path" in personas["reviewer"].template
 

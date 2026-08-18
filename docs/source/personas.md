@@ -7,7 +7,7 @@ A persona owns the agent's identity, complete system prompt, and advertised tool
 | `coder` | all | The default coding agent (project-aware, full tool access) |
 | `chat` | `web_search`, `web_fetch` | General chatbot without file/shell access |
 | `reviewer` | selected file, shell, web, and skill tools | Evidence-grounded academic paper reviewer |
-| `orchestrator` | selected file, process, and skill tools | Durable task queue with delegated implementation and independent review |
+| `orchestrator` | selected file, process, and skill tools | One bounded work item, optionally grouping related small issues, with delegated implementation and independent review |
 
 Each persona is a directory containing `PERSONA.md`:
 
