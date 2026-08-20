@@ -55,7 +55,7 @@ The agent supports the following slash commands while chatting:
 | `/export <path/filename>` | Export the last assistant response as UTF-8 text; relative paths are resolved from the working directory |
 | `/continue` | Resume an unfinished round without adding a user message; warns if the last round is complete (output-limit, missing-terminal, and empty responses continue automatically, except a response truncated mid tool call, whose calls are answered as never executed so the history stays valid) |
 | `/usage` | Show token usage for this session |
-| `/ps [label\|process-id\|pid] [tail-chars]`; `/ps stop <label\|process-id\|pid>` | List managed background processes, inspect recent output, or stop one process |
+| `/ps [label\|process-id] [tail-chars]`; `/ps stop <label\|process-id>` | List managed background processes, inspect recent output, or stop one process |
 | `/model [name]` | Show or switch LLM model mid-session |
 | `/login [provider\|model-alias]` | Authenticate an OAuth provider; defaults to the current provider |
 | `/logout [provider\|model-alias]` | Remove stored OAuth credentials |

@@ -184,7 +184,7 @@ def test_oauth_commands_use_current_provider():
     [
         ("/usage", True),
         ("/ps", True),
-        ("/ps p-12345678", True),
+        ("/ps 1", True),
         ("/ps review parser 100", True),
         ("/context", True),
         ("/effort", True),
@@ -637,7 +637,7 @@ def test_process_status_text_includes_running_process_activity(tmp_path):
         )
         statuses = [event for event in events.after(0) if event.type == "process_status"]
         assert statuses[-1].data["text"].startswith(
-            f"1 process running · 0 finished\n└ {started['pid']} [review parser] ("
+            f"1 process running · 0 finished\n└ {started['process_id']} [review parser] ("
         )
         assert statuses[-1].data["text"].endswith("s) world")
     finally:
@@ -659,19 +659,18 @@ def test_ps_lists_processes_and_shows_detail_tail():
             output.append(str(message))
 
     process = {
-        "process_id": "p-12345678",
+        "process_id": "1",
         "pid": 42,
         "status": "running",
         "exit_code": None,
         "command": "python worker.py --long-option value",
         "label": "inspect parser failures",
         "cwd": "/tmp/work",
-        "log_path": ".ene/processes/p-12345678.log",
+        "log_path": ".ene/processes/1.log",
         "log_tail": "ready\n",
     }
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.console = Console()
-    process["process_id"] = "p-1"
     activity = [{**process, "elapsed_seconds": 75, "last_line": "ready"}]
     agent.tool_executor = NS(
         process_activity=lambda: activity,
@@ -681,19 +680,20 @@ def test_ps_lists_processes_and_shows_detail_tail():
     )
 
     agent._cmd_ps("/ps")
-    agent._cmd_ps("/ps p-1")
+    agent._cmd_ps("/ps 1")
 
     assert calls == [
-        {"process_id": "p-1", "log_tail_chars": 8000},
+        {"process_id": "1", "log_tail_chars": 8000},
     ]
-    assert "p-1" in output[0]
+    assert "1" in output[0]
+    assert "pid=" not in output[0]
     assert "inspect parser failures" in output[0]
     assert any("label: inspect parser failures" in item for item in output)
     assert any("command: python worker.py --long-option value" in item for item in output)
     assert any("Recent output" in item and "ready" in item for item in output)
 
 
-def test_ps_resolves_labels_pids_and_tail_lengths():
+def test_ps_resolves_labels_ids_and_tail_lengths():
     output = []
 
     class Console:
@@ -708,25 +708,25 @@ def test_ps_resolves_labels_pids_and_tail_lengths():
 
     activity = [
         {
-            "process_id": "p-aaaaaaaa",
+            "process_id": "1",
             "pid": 42,
             "label": "review parser",
             "command": "python review.py",
             "status": "running",
             "exit_code": None,
             "elapsed_seconds": 75,
-            "log_path": ".ene/processes/p-aaaaaaaa.log",
+            "log_path": ".ene/processes/1.log",
             "last_line": "reading src/parse.py",
         },
         {
-            "process_id": "p-bbbbbbbb",
+            "process_id": "2",
             "pid": 43,
             "label": "plan refactor",
             "command": "python plan.py",
             "status": "exited",
             "exit_code": 0,
             "elapsed_seconds": 3600,
-            "log_path": ".ene/processes/p-bbbbbbbb.log",
+            "log_path": ".ene/processes/2.log",
             "last_line": "done",
         },
     ]
@@ -740,11 +740,11 @@ def test_ps_resolves_labels_pids_and_tail_lengths():
             or {
                 "success": True,
                 "processes": [{
-                    "process_id": "p-aaaaaaaa",
+                    "process_id": "1",
                     "label": "review parser",
                     "command": "python run_subagent.py --task review",
                     "cwd": "/tmp/work",
-                    "log_path": ".ene/processes/p-aaaaaaaa.log",
+                    "log_path": ".ene/processes/1.log",
                     "log_tail": "ready\n",
                 }],
             }
@@ -754,24 +754,24 @@ def test_ps_resolves_labels_pids_and_tail_lengths():
     agent._cmd_ps("/ps")
     agent._cmd_ps("/ps review parser")
     agent._cmd_ps("/ps review parser 100")
-    agent._cmd_ps("/ps 43")
-    agent._cmd_ps("/ps p 100")
+    agent._cmd_ps("/ps 2")
+    agent._cmd_ps("/ps plan 100")
     agent._cmd_ps("/ps nosuch")
     agent._cmd_ps("/ps review -1")
 
     assert calls == [
-        {"process_id": "p-aaaaaaaa", "log_tail_chars": 8000},
-        {"process_id": "p-aaaaaaaa", "log_tail_chars": 100},
-        {"process_id": "p-bbbbbbbb", "log_tail_chars": 8000},
-        {"process_id": "p-bbbbbbbb", "log_tail_chars": 100},
+        {"process_id": "1", "log_tail_chars": 8000},
+        {"process_id": "1", "log_tail_chars": 100},
+        {"process_id": "2", "log_tail_chars": 8000},
+        {"process_id": "2", "log_tail_chars": 100},
     ]
     listing = output[0]
     assert "Background processes:" in listing
-    assert "p-aaaaaaaa" in listing
+    assert "1" in listing
     assert "review parser" in listing
     assert "running" in listing
     assert "1m 15s" in listing
-    assert "p-bbbbbbbb" in listing
+    assert "2" in listing
     assert "plan refactor" in listing
     assert "exited (0)" in listing
     assert "1h 00m" in listing
@@ -793,14 +793,14 @@ def test_ps_stop_dispatches_stop_process_tool():
             output.append(str(message))
 
     process = {
-        "process_id": "p-12345678",
+        "process_id": "1",
         "pid": 42,
         "label": "review parser",
         "command": "python worker.py",
         "status": "running",
         "exit_code": None,
         "elapsed_seconds": 1,
-        "log_path": ".ene/processes/p-12345678.log",
+        "log_path": ".ene/processes/1.log",
         "last_line": "working",
     }
     agent = type("Agent", (AgentCommandsMixin,), {})()
@@ -814,8 +814,8 @@ def test_ps_stop_dispatches_stop_process_tool():
 
     agent._cmd_ps("/ps stop review parser")
 
-    assert calls == [("stop_process", {"process_id": "p-12345678"})]
-    assert output == ["Stopped process p-12345678 (review parser)."]
+    assert calls == [("stop_process", {"process_id": "1"})]
+    assert output == ["Stopped process 1 (review parser)."]
 
 
 def test_ps_warns_on_empty_list_and_ambiguous_target():

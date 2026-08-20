@@ -222,9 +222,9 @@ def test_process_activity_lists_all_processes_with_last_line(tmp_path):
                 break
             assert time.monotonic() < deadline, "process logs did not reach expected lines"
             time.sleep(0.02)
-        assert [item["process_id"] for item in activity] == ["p-1", "p-2"]
-        assert plain["process_id"] == "p-1"
-        assert labeled["process_id"] == "p-2"
+        assert [item["process_id"] for item in activity] == ["1", "2"]
+        assert plain["process_id"] == "1"
+        assert labeled["process_id"] == "2"
         assert activity[1]["label"] == "review parser"
         assert activity[1]["status"] == "running"
         assert activity[1]["elapsed_seconds"] >= 0
@@ -236,6 +236,7 @@ def test_process_activity_lists_all_processes_with_last_line(tmp_path):
 def test_format_process_status_shows_one_line_per_running_process():
     activity = [
         {
+            "process_id": "1",
             "pid": 42,
             "label": "review parser",
             "status": "running",
@@ -243,18 +244,19 @@ def test_format_process_status_shows_one_line_per_running_process():
             "last_line": "\x1b[32mreading\x1b[0m src/parse.py\x00",
         },
         {
+            "process_id": "2",
             "pid": 43,
             "label": "plan refactor",
             "status": "running",
             "elapsed_seconds": 3,
             "last_line": "",
         },
-        {"pid": 44, "label": "done child", "status": "exited", "last_line": "stale line"},
+        {"process_id": "3", "pid": 44, "label": "done child", "status": "exited", "last_line": "stale line"},
     ]
     assert format_process_status(2, 1, activity) == (
         "2 processes running · 1 finished\n"
-        "├ 42 [review parser] (13s) reading src/parse.py\n"
-        "└ 43 [plan refactor] (3s)"
+        "├ 1 [review parser] (13s) reading src/parse.py\n"
+        "└ 2 [plan refactor] (3s)"
     )
     assert format_process_status(0, 3, activity) == ""
 
@@ -262,6 +264,7 @@ def test_format_process_status_shows_one_line_per_running_process():
 def test_format_process_status_converts_minutes_and_hours():
     activity = [
         {
+            "process_id": "1",
             "pid": 42,
             "label": "minute job",
             "status": "running",
@@ -269,6 +272,7 @@ def test_format_process_status_converts_minutes_and_hours():
             "last_line": "",
         },
         {
+            "process_id": "2",
             "pid": 43,
             "label": "hour job",
             "status": "running",
@@ -278,8 +282,8 @@ def test_format_process_status_converts_minutes_and_hours():
     ]
     assert format_process_status(2, 0, activity) == (
         "2 processes running · 0 finished\n"
-        "├ 42 [minute job] (1m 15s)\n"
-        "└ 43 [hour job] (1h 01m 01s)"
+        "├ 1 [minute job] (1m 15s)\n"
+        "└ 2 [hour job] (1h 01m 01s)"
     )
 
 
@@ -1128,11 +1132,11 @@ def test_wait_processes_is_interruptible_without_stopping_process(tmp_path):
     [
         {"process_ids": [], "timeout": 1},
         {"process_ids": ["missing"], "timeout": 1},
-        {"process_ids": ["p-1", "p-1"], "timeout": 1},
-        {"process_ids": ["p-1"], "timeout": 0},
-        {"process_ids": ["p-1"], "timeout": float("inf")},
-        {"process_ids": ["p-1"], "timeout": True},
-        {"process_ids": ["p-1"], "timeout": 1, "wake_on_output": "yes"},
+        {"process_ids": ["1", "1"], "timeout": 1},
+        {"process_ids": ["1"], "timeout": 0},
+        {"process_ids": ["1"], "timeout": float("inf")},
+        {"process_ids": ["1"], "timeout": True},
+        {"process_ids": ["1"], "timeout": 1, "wake_on_output": "yes"},
     ],
 )
 def test_wait_processes_rejects_invalid_arguments(tmp_path, arguments):
@@ -1213,7 +1217,7 @@ def test_managed_background_process_lifecycle(tmp_path):
         assert inspected["success"]
         assert inspected["processes"][0]["status"] == "running"
         by_pid = te.inspect_processes(process_id=str(started["pid"]))
-        assert by_pid["processes"][0]["process_id"] == process_id
+        assert not by_pid["success"]
 
         stopped = te.execute("stop_process", {"process_id": process_id})
         assert stopped["success"]
@@ -1470,12 +1474,12 @@ def test_read_file_output_description_only_warns_for_unintentional_truncation():
 def test_builtin_process_output_description_is_informative():
     result = {
         "processes": [{
-            "process_id": "p-1234",
+            "process_id": "1",
             "pid": 42,
             "status": "running",
             "exit_code": None,
             "command": "python worker.py",
-            "log_path": ".ene/processes/p-1234.log",
+            "log_path": ".ene/processes/1.log",
             "log_tail": "hello\n",
             "log_tail_truncated": False,
         }],
@@ -1484,8 +1488,8 @@ def test_builtin_process_output_description_is_informative():
     }
 
     assert describe_tool_output("inspect_processes", result) == (
-        "p-1234 · running · pid 42 · python worker.py\n"
-        "log tail: 6 chars · .ene/processes/p-1234.log\n"
+        "1 · running · pid 42 · python worker.py\n"
+        "log tail: 6 chars · .ene/processes/1.log\n"
         "hello"
     )
 
@@ -1500,12 +1504,12 @@ def test_monitor_skill_owns_its_tool_descriptions(tmp_path):
     te = _executor_with_monitor(tmp_path)
     te.console = console
 
-    te.execute("inspect_processes", {"process_id": "p-1", "log_tail_chars": 1000})
-    te.execute("stop_process", {"process_id": "p-1"})
+    te.execute("inspect_processes", {"process_id": "1", "log_tail_chars": 1000})
+    te.execute("stop_process", {"process_id": "1"})
 
     assert console.labels == [
-        "inspect_processes p-1 · tail 1,000 chars",
-        "stop_process p-1",
+        "inspect_processes 1 · tail 1,000 chars",
+        "stop_process 1",
     ]
 
 

@@ -56,7 +56,7 @@ class AgentCommandsMixin:
         "export": "Export the last assistant response (/export <path/filename>)",
         "continue": "Resume an unfinished round without adding a user message",
         "usage": "Show token usage for this session",
-        "ps": "List processes; /ps <label|id|pid> [tail-chars] inspects; /ps stop <label|id|pid> stops",
+        "ps": "List processes; /ps <label|id> [tail-chars] inspects; /ps stop <label|id> stops",
         "model": "Show or switch LLM model (/model <name>)",
         "login": "Log in to an OAuth provider (/login [provider|model-alias])",
         "logout": "Remove stored OAuth credentials (/logout [provider|model-alias])",
@@ -402,16 +402,14 @@ class AgentCommandsMixin:
             self.console.warn(f"Could not save continued round: {e}")
 
     def _cmd_ps(self, raw: str) -> None:
-        """List, inspect, or stop a managed process by ID, PID, or label."""
+        """List, inspect, or stop a managed process by ID or label."""
         parts = raw.split(maxsplit=1)
         activity = self.tool_executor.process_activity()
 
         def exact_matches(value: str):
             return [
                 item for item in activity
-                if item["process_id"] == value
-                or str(item["pid"]) == value
-                or item.get("label") == value
+                if item["process_id"] == value or item.get("label") == value
             ]
 
         def resolve_matches(value: str):
@@ -454,7 +452,7 @@ class AgentCommandsMixin:
                     status += f" ({item['exit_code']})"
                 lines.append(
                     f"  [cyan]{escape(item['process_id'])}[/cyan] "
-                    f"pid={item['pid']} [bold]{status}[/bold] "
+                    f"[bold]{status}[/bold] "
                     f"{_format_elapsed(item['elapsed_seconds'])}  {escape(display)}"
                 )
                 if item["last_line"]:
@@ -468,7 +466,7 @@ class AgentCommandsMixin:
         stop_parts = argument.split(maxsplit=1)
         if stop_parts[0].lower() == "stop":
             if len(stop_parts) == 1:
-                self.console.warn("Usage: /ps stop <label|process-id|pid>")
+                self.console.warn("Usage: /ps stop <label|process-id>")
                 return
             process = one_match(stop_parts[1])
             if process is None:

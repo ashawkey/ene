@@ -67,7 +67,7 @@ def format_process_status(
         elapsed = _format_process_elapsed(item["elapsed_seconds"])
         latest = _clean_process_line(item.get("last_line", ""))
         lines.append(
-            f"{marker} {item['pid']} [{label}] ({elapsed}) {latest}".rstrip()
+            f"{marker} {item['process_id']} [{label}] ({elapsed}) {latest}".rstrip()
         )
     return "\n".join(lines)
 
@@ -227,15 +227,8 @@ class ProcessManagerMixin:
         }
 
     def _find_process_record_locked(self, process_id: str) -> dict[str, Any] | None:
-        """Resolve a managed process ID or supervisor PID with the registry locked."""
-        record = self._processes.get(process_id)
-        if record is None and process_id.isdigit():
-            pid = int(process_id)
-            record = next(
-                (item for item in self._processes.values() if item["pid"] == pid),
-                None,
-            )
-        return record
+        """Resolve a session-local managed process ID with the registry locked."""
+        return self._processes.get(process_id)
 
     def _start_process(
         self, command: str, cwd: str | None = None, label: str | None = None,
@@ -249,7 +242,7 @@ class ProcessManagerMixin:
                 return {"error": "label must not be empty", "success": False}
         cwd = str(self._resolve_path(cwd or "."))
         with self._process_lock:
-            process_id = f"p-{self._next_process_number}"
+            process_id = str(self._next_process_number)
             self._next_process_number += 1
         log_dir = self._resolve_path(".ene/processes")
         log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

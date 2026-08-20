@@ -61,7 +61,7 @@ def test_exec_compaction_keeps_both_ends_of_command_output():
 def test_process_compaction_keeps_status_and_latest_log():
     process_result = {
         "processes": [{
-            "process_id": "p-1",
+            "process_id": "1",
             "status": "exited",
             "exit_code": 1,
             "log_tail": "old log line\n" * 1000 + "LATEST LOG LINE\n",
@@ -291,10 +291,10 @@ def test_superseded_read_is_cleared_and_keeps_its_recovery_pointer():
 def test_supersession_is_scoped_to_the_same_target():
     """A snapshot of one process must not stale-mark another's."""
     messages = [Message.user("start")]
-    messages += _turn("c0", "inspect_processes", {"process_id": "p-1"}, "x" * 40_000)
+    messages += _turn("c0", "inspect_processes", {"process_id": "1"}, "x" * 40_000)
     messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 30_000)
     messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 30_000)
-    messages += _turn("c3", "inspect_processes", {"process_id": "p-2"}, "x" * 40_000)
+    messages += _turn("c3", "inspect_processes", {"process_id": "2"}, "x" * 40_000)
     messages += _tail_turns()[:4]
 
     result = _prune(messages, used_tokens=60_000)

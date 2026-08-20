@@ -370,6 +370,7 @@ def test_live_worker_status_includes_current_process_activity():
         tool_executor=SimpleNamespace(
             process_counts=lambda: (1, 0),
             process_activity=lambda: [{
+                "process_id": "1",
                 "pid": 42,
                 "label": "review parser",
                 "command": "python review.py",
@@ -384,7 +385,7 @@ def test_live_worker_status_includes_current_process_activity():
 
     assert status["process_status"] == (
         "1 process running · 0 finished\n"
-        "└ 42 [review parser] (12s) reading src/parse.py"
+        "└ 1 [review parser] (12s) reading src/parse.py"
     )
 
 
