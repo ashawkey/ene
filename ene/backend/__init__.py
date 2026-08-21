@@ -750,7 +750,13 @@ class LLMAgent(
                 model=model,
                 messages=[Message.user(prompt)],
                 stream=False,
-                timeout=60,
+                # No short client timeout: this is a non-streaming round-trip
+                # that must prefill the whole summary input and then generate
+                # the handoff. On a local model that can take minutes (a 60 s
+                # cap timed out on a 27B/vLLM serving ~18K prompt tokens), and
+                # it competes for GPU time with other active sessions. The
+                # provider default (600 s) matches the main conversation calls;
+                # ESC still cancels the in-flight request.
                 max_output_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
                 reasoning_effort="low",
             ))
