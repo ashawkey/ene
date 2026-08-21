@@ -118,6 +118,8 @@ def test_reasoning_effort_three_tier_glm5():
 def test_catalog_resolves_versioned_reasoning_styles():
     assert resolve_model_profile("deepseek-v4-flash").reasoning == "deepseek-v4"
     assert resolve_model_profile("deepseek-v4-pro").reasoning == "deepseek-v4"
+    assert resolve_model_profile("deepseek-v4-flash-vision-exp").reasoning == "deepseek-v4"
+    assert resolve_model_profile("deepseek-v4-flash-vision-exp").supports_image_input is True
     assert resolve_model_profile("deepseek-chat").reasoning == "deepseek"
     assert resolve_model_profile("glm-5.3").reasoning == "glm-5"
     assert resolve_model_profile("glm-5.2").reasoning == "glm"

@@ -31,7 +31,9 @@ MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
     ("gemini", ModelProfile(context_length=1_000_000, reasoning="gemini", supports_image_input=True, max_output_tokens=64_000)),
     ("claude", ModelProfile(context_length=1_000_000, reasoning="anthropic", supports_image_input=True, max_output_tokens=64_000)),
     # deepseek-v4-flash/pro gained three-tier thinking effort (low/high/max);
+    # the -vision-exp variant is the same model family with image input;
     # older deepseek models keep the legacy two-tier mapping.
+    ("deepseek-v4-flash-vision-exp", ModelProfile(context_length=1_000_000, reasoning="deepseek-v4", supports_image_input=True, max_output_tokens=64_000)),
     ("deepseek-v4", ModelProfile(context_length=1_000_000, reasoning="deepseek-v4", max_output_tokens=64_000)),
     ("deepseek", ModelProfile(context_length=1_000_000, reasoning="deepseek", max_output_tokens=64_000)),
     # GLM-5.3 supports low/high/max; GLM-5.2 (and older) accept only max/high.
