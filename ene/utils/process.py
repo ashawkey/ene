@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import locale
 import os
+import select
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -105,6 +107,67 @@ def agent_process_env(
     if reasoning_effort:
         env["ENE_REASONING_EFFORT"] = reasoning_effort
     return env
+
+
+def process_exited(pid: int, timeout: float = 0.0) -> bool:
+    """Whether *pid* has exited, waiting up to *timeout* seconds for it to.
+
+    Uses a stable per-process handle where the platform offers one, so a reused
+    PID cannot be mistaken for the original process. ``timeout=0`` polls once.
+    An unknown or invalid PID reports not-exited: the caller cannot distinguish
+    it from a live process it simply may not query.
+    """
+    if pid <= 0:
+        return False
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER
+        try:
+            return kernel32.WaitForSingleObject(
+                handle, max(0, int(timeout * 1000))
+            ) == 0  # WAIT_OBJECT_0
+        finally:
+            kernel32.CloseHandle(handle)
+
+    pidfd_open = getattr(os, "pidfd_open", None)
+    if pidfd_open is not None:
+        try:
+            pidfd = pidfd_open(pid)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            pass
+        else:
+            try:
+                ready, _, _ = select.select([pidfd], [], [], timeout)
+                return bool(ready)
+            finally:
+                os.close(pidfd)
+
+    # Checked before the deadline test so timeout=0 still probes once.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
 
 
 def windows_hidden_process_kwargs(creationflags: int = 0) -> dict[str, Any]:

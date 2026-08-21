@@ -56,6 +56,7 @@ The agent supports the following slash commands while chatting:
 | `/continue` | Resume an unfinished round without adding a user message; warns if the last round is complete (output-limit, missing-terminal, and empty responses continue automatically, except a response truncated mid tool call, whose calls are answered as never executed so the history stays valid) |
 | `/usage` | Show token usage for this session |
 | `/ps [label\|process-id] [tail-chars]`; `/ps stop <label\|process-id>` | List managed background processes, inspect recent output, or stop one process |
+| `/agents` | List Ene agents working in this workspace, including this session |
 | `/model [name]` | Show or switch LLM model mid-session |
 | `/login [provider\|model-alias]` | Authenticate an OAuth provider; defaults to the current provider |
 | `/logout [provider\|model-alias]` | Remove stored OAuth credentials |
@@ -108,7 +109,15 @@ Prefix a command with `!` to run it directly without involving the model:
 
 ## Working while a round is active
 
-You may submit one message while Ene is working; it is shown as `pending: … · runs next` and starts after the current round. Press `Up` at an empty prompt to move it back into the editor. Commands that do not change conversation or provider state, such as `/usage`, `/context`, `/ps`, `/sa`, and `/auth`, run immediately. `/name [name]` also runs immediately because it changes only session metadata; commands that change conversation state wait for the current round.
+You may submit one message while Ene is working; it is shown as `pending: … · runs next` and starts after the current round. Press `Up` at an empty prompt to move it back into the editor. Commands that do not change conversation or provider state, such as `/usage`, `/context`, `/ps`, `/agents`, `/sa`, and `/auth`, run immediately. `/name [name]` also runs immediately because it changes only session metadata; commands that change conversation state wait for the current round.
+
+## Concurrent agents in one workspace
+
+Several Ene agents may work in the same directory at once — separate terminals, live sessions, or subagents. Each one publishes a small record under `.ene/agents/` and reads its peers' records from there, so they can tell they are not alone.
+
+The first time an agent sees a peer, it receives one short conversation message stating that other agents are working in the workspace and that unrelated edits and transient test or build failures are expected rather than worth investigating. The notice appears once per session, not once per round, and the system prompt is left untouched so the provider's prompt cache stays valid. Use `/agents` to see the current list at any time.
+
+The records are advisory: they carry no locks and grant no exclusivity, so agents that write the same files still conflict. Keep concurrent tasks on disjoint files. A record whose process is gone is removed by the next agent that notices it, so a force-killed session leaves nothing behind, and `ene clean` may delete `.ene/agents/` at any time because live agents republish their records on the next round.
 
 ## Tool execution
 

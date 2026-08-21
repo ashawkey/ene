@@ -20,6 +20,7 @@ from ene.providers import CompletionResult, ProviderError, ProviderUsage
 from ene.utils.interrupt import RequestInterrupted
 from ene.terminal import MessageValidator
 from ene.utils.io import EventHub, InputBroker, UserSubmission
+from ene.utils.presence import WorkspacePresence
 
 
 def test_reserve_session_id_is_atomic_across_agents(tmp_path):
@@ -88,6 +89,34 @@ def test_headless_agent_routes_console_prompts_through_broker(monkeypatch, tmp_p
         agent.close()
 
 
+def test_agent_publishes_and_withdraws_its_presence_record(monkeypatch, tmp_path):
+    from ene.ui import AgentConsole
+    from ene.utils.presence import WorkspacePresence
+
+    monkeypatch.setattr(
+        backend, "create_provider", lambda *_args, **_kwargs: NS(close=lambda: None)
+    )
+    agent = LLMAgent(
+        model="test-model",
+        api_key="",
+        base_url="",
+        provider_name="openai",
+        console=AgentConsole(render_terminal=False),
+        terminal_prompts=False,
+        work_dir=str(tmp_path),
+    )
+    observer = WorkspacePresence(tmp_path)
+    try:
+        agent.presence.refresh()
+        peers = observer.refresh()
+        assert [peer.agent_id for peer in peers] == [agent.presence.agent_id]
+        assert peers[0].persona == agent.persona.name
+    finally:
+        agent.close()
+
+    assert observer.refresh() == []
+
+
 def test_close_releases_resources_once():
     calls = []
     agent = LLMAgent.__new__(LLMAgent)
@@ -98,11 +127,14 @@ def test_close_releases_resources_once():
         shutdown_processes=lambda: calls.append("processes"),
         shutdown_tool_resources=lambda clear=False: calls.append(("resources", clear)),
     )
+    agent.presence = NS(close=lambda: calls.append("presence"))
 
     agent.close()
     agent.close()
 
-    assert calls == ["changes", "provider", "processes", ("resources", True)]
+    assert calls == [
+        "changes", "provider", "processes", ("resources", True), "presence",
+    ]
 
 
 class _StatusError(Exception):
@@ -893,6 +925,39 @@ def test_slash_command_catalog_includes_skills_without_shadowing_builtins():
     assert catalog["usage"] == agent.COMMAND_HELP["usage"]
 
 
+def test_agents_command_lists_this_session_and_its_peers(tmp_path):
+    from ene.utils.presence import WorkspacePresence
+
+    printed = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = NS(print=printed.append)
+    agent.work_dir = str(tmp_path)
+    agent.presence = WorkspacePresence(tmp_path, model="mine", persona="coder")
+
+    agent._cmd_agents()
+    assert agent.presence.agent_id[:8] in printed[0]
+    assert "this session" in printed[0]
+    assert "No other ene agent" in printed[1]
+
+    peer = WorkspacePresence(tmp_path, model="theirs", persona="reviewer")
+    peer.refresh()
+    printed.clear()
+
+    agent._cmd_agents()
+
+    assert peer.agent_id[:8] in printed[0]
+    assert "theirs" in printed[0] and "reviewer" in printed[0]
+    assert len(printed) == 1
+
+
+def test_agents_command_is_instant_and_advertised():
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.skills = {}
+
+    assert "agents" in agent.COMMANDS
+    assert agent.is_instant_command("/agents") is True
+
+
 def test_skill_invocation_is_not_instant_and_cannot_shadow_builtin():
     agent = type("Agent", (AgentCommandsMixin,), {})()
     agent.skills = {
@@ -1127,6 +1192,8 @@ def _skill_invocation_agent(tmp_path, name="general-skill"):
     agent._operation = lambda _label: nullcontext()
     agent.save_session = lambda *a, **k: None
     agent.get_response = lambda: None
+    agent.presence = WorkspacePresence(tmp_path)
+    agent._peers_announced = False
     return agent, body
 
 
@@ -1147,6 +1214,54 @@ def test_web_cannot_switch_conversation(query, tmp_path):
     assert dispatched == []
     assert agent.context.messages == []
     assert agent.round_id == 0
+
+
+def test_peer_notice_is_injected_once_before_the_user_prompt(tmp_path):
+    from ene.utils.presence import PEER_NOTICE
+
+    agent, _ = _skill_invocation_agent(tmp_path)
+    peer = WorkspacePresence(tmp_path, model="other")
+    peer.refresh()
+
+    agent._process_query(UserSubmission("first", "terminal", "s1"))
+    agent._process_query(UserSubmission("second", "terminal", "s2"))
+
+    notice, first, second = agent.context.messages
+    assert notice.text == PEER_NOTICE
+    assert notice.role == "user"
+    assert (first.text, second.text) == ("first", "second")
+    assert agent._peers_announced is True
+
+
+def test_no_peer_notice_when_alone_in_the_workspace(tmp_path):
+    agent, _ = _skill_invocation_agent(tmp_path)
+
+    agent._process_query(UserSubmission("solo", "terminal", "s1"))
+
+    assert [message.text for message in agent.context.messages] == ["solo"]
+    assert agent._peers_announced is False
+
+
+def test_withdrawn_round_also_withdraws_the_peer_notice(tmp_path):
+    agent, _ = _skill_invocation_agent(tmp_path)
+    WorkspacePresence(tmp_path).refresh()
+    agent.console.error = lambda *a, **k: None
+    agent._set_rewind_draft = lambda text: None
+    agent._replay_context = lambda: None
+    agent._last_error = None
+
+    def cancel():
+        agent._last_interrupted = True
+        agent._last_turn_outcome = backend.TurnOutcome.USER_INTERRUPTED
+        agent._interrupt_reverts_prompt = True
+
+    agent.get_response = cancel
+
+    agent._process_query(UserSubmission("cancelled", "terminal", "s1"))
+
+    assert agent.context.messages == []
+    # The flag must roll back with the message, or the notice is lost forever.
+    assert agent._peers_announced is False
 
 
 def test_explicit_skill_invocation_without_task_asks_model_not_to_infer(tmp_path):
@@ -1269,6 +1384,8 @@ def test_cancelled_initial_request_restores_context_and_message_draft():
     agent._last_interrupted = False
     agent.verbose = False
     agent.tool_executor = NS()
+    agent.presence = NS(refresh=lambda: [])
+    agent._peers_announced = False
     agent._operation = lambda _label: nullcontext()
     agent.save_session = lambda *args, **kwargs: saved.append(
         (list(context.messages), agent.round_id, agent._session_revision_id, kwargs)
@@ -1334,6 +1451,8 @@ def test_failed_initial_request_restores_context_and_message_draft():
     agent._last_interrupted = False
     agent.verbose = False
     agent.tool_executor = NS()
+    agent.presence = NS(refresh=lambda: [])
+    agent._peers_announced = False
     agent._operation = lambda _label: nullcontext()
     agent.save_session = lambda *args, **kwargs: saved.append(
         (list(context.messages), agent.round_id, agent._session_revision_id, kwargs)
@@ -1401,6 +1520,8 @@ def test_cancelled_exec_preserves_its_partial_result_in_round_context(tmp_path):
     agent._pending_images = []
     agent._last_interrupted = False
     agent.verbose = False
+    agent.presence = NS(refresh=lambda: [])
+    agent._peers_announced = False
     agent.stream = False
     agent.input_broker = None
     agent.cancellation = None
@@ -1482,6 +1603,7 @@ def test_name_command_shows_sets_and_persists_name():
         session_id="conversation",
         rename=lambda name: saved.append(name),
     )
+    agent.presence = NS(update=lambda **fields: None)
 
     agent._cmd_name("/name")
     agent._cmd_name("/name useful work")

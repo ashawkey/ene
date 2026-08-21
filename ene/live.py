@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import select
 import socket
 import subprocess
 import sys
@@ -16,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from filelock import FileLock
+
+from ene.utils.process import process_exited
 
 
 LIVE_DIR = Path.home() / ".ene" / "live"
@@ -355,59 +356,6 @@ def start_session(*, name: str, workspace: str, options: dict[str, Any]) -> dict
         raise
 
 
-def _wait_for_process_exit(pid: int, timeout: float) -> bool:
-    """Wait for one exact process where the platform exposes a stable handle."""
-    if pid <= 0:
-        return False
-
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel32.WaitForSingleObject.restype = wintypes.DWORD
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
-        if not handle:
-            return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER
-        try:
-            return kernel32.WaitForSingleObject(
-                handle, max(0, int(timeout * 1000))
-            ) == 0  # WAIT_OBJECT_0
-        finally:
-            kernel32.CloseHandle(handle)
-
-    pidfd_open = getattr(os, "pidfd_open", None)
-    if pidfd_open is not None:
-        try:
-            pidfd = pidfd_open(pid)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            pass
-        else:
-            try:
-                ready, _, _ = select.select([pidfd], [], [], timeout)
-                return bool(ready)
-            finally:
-                os.close(pidfd)
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            pass
-        time.sleep(0.1)
-    return False
-
-
 def kill_session(record: dict[str, Any]) -> None:
     try:
         pid = int(record.get("pid", 0))
@@ -421,7 +369,7 @@ def kill_session(record: dict[str, Any]) -> None:
     except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
         raise LiveError("Lost connection while stopping the live session") from exc
 
-    if not _wait_for_process_exit(pid, STOP_TIMEOUT):
+    if not process_exited(pid, STOP_TIMEOUT):
         raise LiveError("Session did not stop cleanly")
 
     # A watchdog exit cannot run worker cleanup. Remove only the same worker's

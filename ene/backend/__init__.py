@@ -64,6 +64,7 @@ from ene.context import (
     tool_result_char_budget,
 )
 from ene.messages import ImagePart, Message, TextPart
+from ene.utils.presence import PEER_NOTICE, WorkspacePresence
 from ene.utils.rewind import ChangeTracker
 from ene.models import (
     REASONING_EFFORTS,
@@ -249,6 +250,15 @@ class LLMAgent(
         )
         self.system_prompt = self._build_system_prompt()
 
+        self.presence = WorkspacePresence(
+            self.work_dir,
+            model=self.model_alias or self.model,
+            persona=self.persona.name,
+            session=self.session_name,
+        )
+        # Whether the one-time concurrent-agent notice is already in context.
+        self._peers_announced = False
+
         self.changes: ChangeTracker | None = None
         self.tool_executor = ToolExecutor(
             console=self.console,
@@ -339,6 +349,22 @@ class LLMAgent(
             skills=self.skills,
         )
         return self.persona.build(ctx)
+
+    def _maybe_announce_peers(self) -> None:
+        """Announce concurrent workspace agents once, as a normal message.
+
+        Kept out of the system prompt on purpose: rewriting the prompt prefix
+        would invalidate the provider's cache for the whole conversation, while
+        a single trailing message costs a few tokens once. Announced only on the
+        transition to "not alone" — repeating it every round would fill the
+        history with identical notices.
+        """
+        if self._peers_announced:
+            return
+        if not self.presence.refresh():
+            return
+        self.context.add(Message.user(PEER_NOTICE))
+        self._peers_announced = True
 
     def _accumulate_usage(self, usage: ProviderUsage) -> None:
         """Add provider-neutral token counts to session totals."""
@@ -1583,6 +1609,7 @@ class LLMAgent(
         round_before_round = self.round_id
         revision_before_round = self._session_revision_id
         compaction_floor_before_round = self._compaction_floor_tokens
+        peers_announced_before_round = self._peers_announced
         skill_state_before_round = None
         if query.startswith("/"):
             if cmd_word in self.COMMANDS:
@@ -1596,6 +1623,9 @@ class LLMAgent(
         else:
             model_query = query
 
+        # Announced before the prompt so the user's message stays last, and
+        # after the snapshot so a withdrawn round takes the notice with it.
+        self._maybe_announce_peers()
         self.context.add(Message.user(
             model_query,
             display_content=query if model_query != query else None,
@@ -1620,6 +1650,7 @@ class LLMAgent(
             self.context.compaction_state = compaction_state_before_round
             self._session_revision_id = revision_before_round
             self._compaction_floor_tokens = compaction_floor_before_round
+            self._peers_announced = peers_announced_before_round
             if skill_state_before_round is not None:
                 self.tool_executor.restore_skill_state(skill_state_before_round)
             self.round_id = round_before_round
@@ -1712,7 +1743,10 @@ class LLMAgent(
         reasoning = self.profile.reasoning or "none"
         if reasoning != "none":
             reasoning += f" · {self.reasoning_effort} effort"
-        return {
+        # Read-only: the live worker rebuilds these details on every status
+        # probe, which is far more often than a round runs.
+        peers = self.presence.peers()
+        details = {
             "model": f"{self.provider_name}/{self.model}",
             "context": f"{self.context_length:,} tokens",
             "reasoning": reasoning,
@@ -1720,6 +1754,11 @@ class LLMAgent(
             "skills": self._skills_summary(),
             "workspace": self.work_dir,
         }
+        if peers:
+            details["peers"] = (
+                f"{len(peers)} other agent(s) in this workspace · /agents"
+            )
+        return details
 
     def chat_loop(self, resumed_session_id: str | None = None):
 
@@ -1764,7 +1803,10 @@ class LLMAgent(
                 try:
                     self.tool_executor.shutdown_processes()
                 finally:
-                    self.tool_executor.shutdown_tool_resources(clear=True)
+                    try:
+                        self.tool_executor.shutdown_tool_resources(clear=True)
+                    finally:
+                        self.presence.close()
 
     def execute(self, query: str, *, manage_operation: bool = True):
         self.console.system(f"Executing query: {query}")
@@ -1785,6 +1827,7 @@ class LLMAgent(
                 self.console.warn("Usage: !<shell command>")
             return None
 
+        self._maybe_announce_peers()
         user_message = Message.user(query)
         self.context.add(user_message)
 

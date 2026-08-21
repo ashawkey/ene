@@ -1,6 +1,7 @@
 """Interactive slash commands for :class:`LLMAgent`."""
 
 import math
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -57,6 +58,7 @@ class AgentCommandsMixin:
         "continue": "Resume an unfinished round without adding a user message",
         "usage": "Show token usage for this session",
         "ps": "List processes; /ps <label|id> [tail-chars] inspects; /ps stop <label|id> stops",
+        "agents": "List ene agents working in this workspace",
         "model": "Show or switch LLM model (/model <name>)",
         "login": "Log in to an OAuth provider (/login [provider|model-alias])",
         "logout": "Remove stored OAuth credentials (/logout [provider|model-alias])",
@@ -79,7 +81,8 @@ class AgentCommandsMixin:
     # prompt, so only commands that do not mutate conversation/provider state
     # (including managed-process controls) or affect only the *next* API call qualify.
     INSTANT_COMMANDS = frozenset({
-        "help", "usage", "ps", "context", "system_prompt", "auth", "effort", "name",
+        "help", "usage", "ps", "agents", "context", "system_prompt", "auth",
+        "effort", "name",
     })
     # The same, but only in their bare inspection/listing form: given an
     # argument these mutate state used or persisted by the running round.
@@ -120,6 +123,8 @@ class AgentCommandsMixin:
             self._cmd_usage()
         elif cmd == "ps":
             self._cmd_ps(raw)
+        elif cmd == "agents":
+            self._cmd_agents()
         elif cmd == "resume":
             self._cmd_resume(raw)
         elif cmd == "name":
@@ -529,6 +534,38 @@ class AgentCommandsMixin:
         else:
             self.console.print("[dim]No output captured yet.[/dim]")
 
+    def _cmd_agents(self) -> None:
+        """List ene agents sharing this workspace, this session included."""
+        peers = self.presence.refresh()
+        now = time.time()
+
+        def describe(model: str, persona: str, session: str) -> str:
+            parts = [item for item in (model, persona, session) if item]
+            return " · ".join(escape(part) for part in parts) or "—"
+
+        presence = self.presence
+        lines = [
+            f"  [cyan]{presence.agent_id[:8]}[/cyan] "
+            f"[bold]this session[/bold] "
+            f"{_format_elapsed(now - presence.started_at)}  "
+            f"{describe(presence.model, presence.persona, presence.session)}"
+        ]
+        for peer in peers:
+            lines.append(
+                f"  [cyan]{peer.agent_id[:8]}[/cyan] "
+                f"[bold]pid {peer.pid}[/bold] "
+                f"{_format_elapsed(now - peer.started_at)}  "
+                f"{describe(peer.model, peer.persona, peer.session)}"
+            )
+        self.console.print(
+            f"[bold blue]Agents in {escape(self.work_dir)}:[/bold blue]\n"
+            + "\n".join(lines)
+        )
+        if not peers:
+            self.console.print(
+                "[dim]No other ene agent is working in this workspace.[/dim]"
+            )
+
     def _cmd_usage(self):
         ctx_tokens = self._context_tokens()
         ctx_pct = ctx_tokens / self.context_length * 100 if self.context_length else 0
@@ -638,6 +675,7 @@ class AgentCommandsMixin:
         # Save and clear while the old persona still owns the conversation.
         self._restart_session()
         self.persona = persona
+        self.presence.update(persona=persona.name)
         # self.tools follows the new persona automatically (live registry view).
         self.system_prompt = self._build_system_prompt()
         self.context.system_prompt.content = self.system_prompt
@@ -858,6 +896,7 @@ class AgentCommandsMixin:
         self.max_output_tokens = model_conf.get("max_output_tokens", self.profile.max_output_tokens)
         self.reasoning_effort = model_conf.get("reasoning_effort", self.reasoning_effort)
         self.show_thinking = self.profile.reasoning is not None
+        self.presence.update(model=self.model_alias or self.model)
 
         self.console.system(
             f"Switched to model: {self.model} via {self.provider_name} "

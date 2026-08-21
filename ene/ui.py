@@ -1054,14 +1054,18 @@ class AgentConsole:
         persona: str,
         skills: str,
         workspace: str,
+        peers: str = "",
     ) -> None:
         """Render the interactive agent's startup summary."""
-        self._agent_panel([
+        rows = [
             ("Model", f"{model} ({context}) · {reasoning}"),
             ("Persona", persona),
             ("Skills", skills),
             ("Workspace", workspace),
-        ])
+        ]
+        if peers:
+            rows.append(("Peers", peers))
+        self._agent_panel(rows)
 
     def session_end_panel(
         self,

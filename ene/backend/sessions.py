@@ -215,6 +215,7 @@ class SessionMixin:
                     pass
             self.console.error(f"Could not save session name: {exc}")
             return
+        self.presence.update(session=requested)
         if requested:
             self.console.system(f"Session named '{requested}'.")
         else:

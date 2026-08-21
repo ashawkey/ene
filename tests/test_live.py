@@ -108,7 +108,7 @@ def test_kill_session_waits_for_worker_process_exit(monkeypatch, tmp_path):
     waited = []
     monkeypatch.setattr(
         live,
-        "_wait_for_process_exit",
+        "process_exited",
         lambda pid, timeout: waited.append((pid, timeout)) or True,
     )
 
