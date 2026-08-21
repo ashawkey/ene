@@ -13,6 +13,7 @@ from rich.text import Text
 from ene.config import conf
 from ene.library import (
     LibraryError,
+    batch_session,
     install_resource,
     list_local_resources,
     list_resources,
@@ -155,9 +156,10 @@ def main(argv: list[str] | None = None) -> int:
 
         repo = _repo()
         if args.command == "install":
-            for name in args.names:
-                dest = install_resource(repo, name, args.kind)
-                console.print(f"Installed [cyan]{name}[/cyan] to {dest}")
+            with batch_session(repo):
+                for name in args.names:
+                    dest = install_resource(repo, name, args.kind)
+                    console.print(f"Installed [cyan]{name}[/cyan] to {dest}")
             return 0
 
         if args.command == "update":
@@ -169,28 +171,31 @@ def main(argv: list[str] | None = None) -> int:
                     detail = ", ".join(issue["name"] for issue in errors)
                     raise LibraryError(f"cannot update invalid local {args.kind}s: {detail}")
                 names = sorted(skills)
-            for name in names:
-                action = update_resource(repo, name, args.kind, force=args.force)
-                if action == "current":
-                    console.print(f"[cyan]{name}[/cyan] is already up to date.")
-                elif action == "pulled":
-                    console.print(f"Updated local [cyan]{name}[/cyan] from the library.")
-                else:
-                    console.print(f"Updated library [cyan]{name}[/cyan] from local.")
+            with batch_session(repo):
+                for name in names:
+                    action = update_resource(repo, name, args.kind, force=args.force)
+                    if action == "current":
+                        console.print(f"[cyan]{name}[/cyan] is already up to date.")
+                    elif action == "pulled":
+                        console.print(f"Updated local [cyan]{name}[/cyan] from the library.")
+                    else:
+                        console.print(f"Updated library [cyan]{name}[/cyan] from local.")
             return 0
 
         if args.command == "remove":
-            for name in args.names:
-                commit = remove_resource(repo, name, args.kind)
-                console.print(f"Removed [cyan]{name}[/cyan] ({commit[:12]})")
+            with batch_session(repo):
+                for name in args.names:
+                    commit = remove_resource(repo, name, args.kind)
+                    console.print(f"Removed [cyan]{name}[/cyan] ({commit[:12]})")
             return 0
 
-        for name in args.names:
-            commit = upload_resource(repo, name, args.kind, force=args.force)
-            if commit is None:
-                console.print(f"[cyan]{name}[/cyan] is already up to date.")
-            else:
-                console.print(f"Uploaded [cyan]{name}[/cyan] ({commit[:12]})")
+        with batch_session(repo):
+            for name in args.names:
+                commit = upload_resource(repo, name, args.kind, force=args.force)
+                if commit is None:
+                    console.print(f"[cyan]{name}[/cyan] is already up to date.")
+                else:
+                    console.print(f"Uploaded [cyan]{name}[/cyan] ({commit[:12]})")
         return 0
     except LibraryError as exc:
         Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")

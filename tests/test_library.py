@@ -230,6 +230,85 @@ def test_update_skill_rejects_conflicting_changes(tmp_path):
     assert list_skills(str(remote))[0]["alpha"]["description"] == "Local"
 
 
+def test_batch_session_refreshes_the_checkout_once(tmp_path, monkeypatch):
+    import ene.library as library
+
+    remote = _remote(tmp_path)
+    source = tmp_path / "source"
+    _skill(source, "alpha")
+    _skill(source, "beta")
+
+    refreshes = []
+    original = library._sync_checkout
+    monkeypatch.setattr(
+        library,
+        "_sync_checkout",
+        lambda root: (refreshes.append(root), original(root))[1],
+    )
+
+    with library.batch_session(str(remote)):
+        assert upload_skill(str(remote), "alpha", source) is not None
+        assert upload_skill(str(remote), "beta", source) is not None
+        target = tmp_path / "target"
+        install_skill(str(remote), "alpha", target)
+        assert update_skill(str(remote), "alpha", target) == "current"
+
+    assert len(refreshes) == 1
+    assert set(list_skills(str(remote))[0]) == {"alpha", "beta"}
+
+
+def test_batch_session_pushes_once_at_the_end(tmp_path, monkeypatch):
+    import ene.library as library
+
+    remote = _remote(tmp_path)
+    source = tmp_path / "source"
+    _skill(source, "alpha")
+    _skill(source, "beta")
+
+    pushes = []
+    original = library._git
+
+    def spy(*args, **kwargs):
+        if args[0] == "push":
+            pushes.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(library, "_git", spy)
+
+    with library.batch_session(str(remote)):
+        upload_skill(str(remote), "alpha", source)
+        upload_skill(str(remote), "beta", source)
+        # Commits stay local until the batch ends.
+        assert pushes == []
+
+    assert len(pushes) == 1
+    assert set(list_skills(str(remote))[0]) == {"alpha", "beta"}
+
+
+def test_batch_session_publishes_commits_made_before_a_failure(tmp_path):
+    import ene.library as library
+
+    remote = _remote(tmp_path)
+    source = tmp_path / "source"
+    _skill(source, "alpha")
+
+    with pytest.raises(LibraryError, match="local project skill not found"):
+        with library.batch_session(str(remote)):
+            upload_skill(str(remote), "alpha", source)
+            upload_skill(str(remote), "missing", source)
+
+    assert set(list_skills(str(remote))[0]) == {"alpha"}
+
+
+def test_operations_outside_a_batch_still_push_immediately(tmp_path):
+    remote = _remote(tmp_path)
+    source = tmp_path / "source"
+    _skill(source, "alpha")
+
+    upload_skill(str(remote), "alpha", source)
+    assert set(list_skills(str(remote))[0]) == {"alpha"}
+
+
 @symlink_required
 def test_library_rejects_symlinked_skills_root(tmp_path):
     remote = _remote(tmp_path)

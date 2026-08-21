@@ -90,10 +90,11 @@ def _sync_checkout(root: Path) -> None:
     logger.info("Refreshing cached checkout")
     _git("reset", "--hard", cwd=root, check=False)
     _git("clean", "-fdx", cwd=root)
-    _git("fetch", "--quiet", "origin", cwd=root)
+    _git("fetch", "--quiet", "--prune", "origin", cwd=root)
 
+    # The pruning fetch already resolved origin/main, so this stays local.
     main = _git(
-        "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/main",
+        "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main",
         cwd=root,
         check=False,
     )
@@ -109,10 +110,67 @@ def _sync_checkout(root: Path) -> None:
         raise LibraryError("repository has no main branch")
 
 
+_active_checkouts: dict[str, Path] = {}
+_pending_pushes: set[str] = set()
+
+
+def _push_main(repo: str, checkout: Path) -> None:
+    """Publish main, coalescing pushes into one round trip inside a batch."""
+    repo = _validate_repo(repo)
+    if repo in _active_checkouts:
+        _pending_pushes.add(repo)
+        return
+    _git("push", "--quiet", "origin", "main", cwd=checkout)
+
+
+@contextmanager
+def batch_session(repo: str) -> Iterator[None]:
+    """Share one locked, refreshed checkout across a batch of operations.
+
+    Commits made by the batch stay local until it ends, then publish in a
+    single push. The push also runs when an operation fails, so a partly
+    completed batch keeps the same progress it would have pushed per item.
+    """
+    repo = _validate_repo(repo)
+    if repo in _active_checkouts:
+        yield
+        return
+    with _checkout(repo) as root:
+        _active_checkouts[repo] = root
+        try:
+            yield
+        except BaseException:
+            _publish_batch(repo, root, reraising=True)
+            raise
+        else:
+            _publish_batch(repo, root, reraising=False)
+        finally:
+            _active_checkouts.pop(repo, None)
+            _pending_pushes.discard(repo)
+
+
+def _publish_batch(repo: str, root: Path, reraising: bool) -> None:
+    """Push a batch's accumulated commits, if it made any."""
+    if repo not in _pending_pushes:
+        return
+    try:
+        _git("push", "--quiet", "origin", "main", cwd=root)
+    except LibraryError:
+        # A failing operation is the more useful error to surface.
+        if not reraising:
+            raise
+        logger.warning("Could not push batched commits for %s", repo)
+
+
 @contextmanager
 def _checkout(repo: str) -> Iterator[Path]:
     """Lock and refresh a persistent checkout fixed to the main branch."""
     repo = _validate_repo(repo)
+    active = _active_checkouts.get(repo)
+    if active is not None:
+        logger.info("Reusing refreshed checkout: %s", active)
+        yield active
+        return
     library_root = Path.home() / ".ene" / "library"
     key = hashlib.sha256(repo.encode()).hexdigest()[:16]
     root = library_root / key
@@ -435,7 +493,7 @@ def update_resource(
                 _record_sync(source, local_digest)
                 _git("add", "--force", "--", f"{dirname}/{name}", cwd=checkout)
                 _git("commit", "--quiet", "-m", f"{kind}: add {name}", cwd=checkout)
-                _git("push", "--quiet", "origin", "main", cwd=checkout)
+                _push_main(repo, checkout)
                 action = "pushed"
             else:
                 _load_strict(source, kind)
@@ -444,7 +502,7 @@ def update_resource(
                     if _record_sync(source, remote_digest):
                         _git("add", "--force", "--", f"{dirname}/{name}", cwd=checkout)
                         _git("commit", "--quiet", "-m", f"{kind}: track {name}", cwd=checkout)
-                        _git("push", "--quiet", "origin", "main", cwd=checkout)
+                        _push_main(repo, checkout)
                     action = "current"
                 elif baseline == remote_digest or (
                     baseline not in (local_digest, remote_digest) and force
@@ -454,7 +512,7 @@ def update_resource(
                     _record_sync(source, local_digest)
                     _git("add", "--force", "--", f"{dirname}/{name}", cwd=checkout)
                     _git("commit", "--quiet", "-m", f"{kind}: update {name}", cwd=checkout)
-                    _git("push", "--quiet", "origin", "main", cwd=checkout)
+                    _push_main(repo, checkout)
                     action = "pushed"
                 elif baseline == local_digest:
                     if _tree_digest(dest) != local_digest:
@@ -464,7 +522,7 @@ def update_resource(
                     if _record_sync(source, remote_digest):
                         _git("add", "--force", "--", f"{dirname}/{name}", cwd=checkout)
                         _git("commit", "--quiet", "-m", f"{kind}: track {name}", cwd=checkout)
-                        _git("push", "--quiet", "origin", "main", cwd=checkout)
+                        _push_main(repo, checkout)
                     _replace_local_resource(source, dest, local_digest)
                     local_digest = remote_digest
                     action = "pulled"
@@ -607,7 +665,7 @@ def remove_resource(repo: str, name: str, kind: str = "skill") -> str:
         _git("rm", "--quiet", "-r", "--", f"{dirname}/{name}", cwd=checkout)
         _git("commit", "--quiet", "-m", f"{kind}: remove {name}", cwd=checkout)
         commit = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
-        _git("push", "--quiet", "origin", "main", cwd=checkout)
+        _push_main(repo, checkout)
         return commit
 
 
@@ -643,7 +701,7 @@ def upload_resource(
                     if remote_changed:
                         _git("add", "--force", "--", f"{dirname}/{name}", cwd=checkout)
                         _git("commit", "--quiet", "-m", f"{kind}: track {name}", cwd=checkout)
-                        _git("push", "--quiet", "origin", "main", cwd=checkout)
+                        _push_main(repo, checkout)
                     _record_sync(source, digest)
                     return None
                 if not force:
@@ -660,7 +718,7 @@ def upload_resource(
             action = "update" if updating else "add"
             _git("commit", "--quiet", "-m", f"{kind}: {action} {name}", cwd=checkout)
             commit = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
-            _git("push", "--quiet", "origin", "main", cwd=checkout)
+            _push_main(repo, checkout)
             _record_sync(source, digest)
             return commit
 
