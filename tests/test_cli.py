@@ -227,6 +227,16 @@ def test_resume_accepts_optional_session(monkeypatch):
     assert chats[1].resume == ""
 
 
+def test_r_alias_resumes_session(monkeypatch):
+    chats = []
+    monkeypatch.setattr(cli, "cmd_chat", chats.append)
+
+    assert cli.main(["r", "abc123", "--model", "test"]) == 0
+
+    assert chats[0].resume == "abc123"
+    assert chats[0].model == "test"
+
+
 def test_attach_uses_fuzzy_name_resolution(monkeypatch):
     record = {"runtime_id": "runtime", "name": "test"}
     resolved = []

@@ -46,7 +46,7 @@ It also supports codex subscription login, please check the documentation for de
 
 ```bash
 ene [NAME] # start a new, optionally named session
-ene resume # resume a previous session
+ene resume # resume a previous session (alias: r)
 
 ene models # list available models
 ene list # list live sessions (aliases: ls, l)

@@ -468,6 +468,20 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
     assert inputs.submission == queued
 
 
+def test_live_terminal_reports_resume_command_when_session_stops():
+    client = LiveTerminal({})
+    messages = []
+    client.console = SimpleNamespace(system=messages.append)
+    client.conversation_id = "conversation-123"
+
+    client._show_session_stopped()
+
+    assert messages == [
+        "Session stopped.",
+        "resume with ene resume conversation-123",
+    ]
+
+
 def test_live_terminal_updates_title_for_session_metadata():
     client = LiveTerminal({})
     names = []
@@ -480,7 +494,11 @@ def test_live_terminal_updates_title_for_session_metadata():
 
     client._event({
         "type": "session_meta",
-        "data": {"name": "renamed", "title": "renamed"},
+        "data": {
+            "name": "renamed",
+            "title": "renamed",
+            "conversation_id": "conversation-456",
+        },
     })
     client._event({
         "type": "session_meta",
@@ -488,6 +506,7 @@ def test_live_terminal_updates_title_for_session_metadata():
     })
 
     assert names == ["renamed", "workspace"]
+    assert client.conversation_id == "conversation-456"
 
 
 def test_live_terminal_renders_structured_output_with_ansi_styles():

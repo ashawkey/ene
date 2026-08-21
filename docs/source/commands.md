@@ -26,7 +26,7 @@ Session options are:
 | Command | Purpose |
 |---|---|
 | `ene [NAME] [OPTIONS]` / `ene new [NAME] [OPTIONS]` | Start a new, optionally named session. |
-| `ene resume [SESSION_ID] [OPTIONS]` | Resume a specific conversation, or omit the ID to choose interactively. |
+| `ene resume [SESSION_ID] [OPTIONS]` (`r`) | Resume a specific conversation, or omit the ID to choose interactively. |
 | `ene models` | List configured model aliases and resolved defaults. |
 | `ene list` (`ls`, `l`) | List live sessions and whether each is working or done. |
 | `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; a unique name or ID prefix is accepted, and omitting the identifier opens an interactive picker. The picker marks sessions as `● working`, `✓ done · needs review`, or `○ waiting`, with completed sessions first by newest status change. Only one terminal may attach to a session at a time. |

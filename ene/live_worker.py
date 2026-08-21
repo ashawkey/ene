@@ -406,11 +406,17 @@ class Worker:
         return name
 
     def _publish_session_name(self, name: str) -> None:
+        assert self.agent is not None
         title = name or Path(self.record["workspace"]).name
         if self.hub_client is not None:
             self.hub_client.meta["name"] = name
             self.hub_client.meta["title"] = title
-        self.events.publish("session_meta", name=name, title=title)
+        self.events.publish(
+            "session_meta",
+            name=name,
+            title=title,
+            conversation_id=self.agent._session_id,
+        )
 
     def _cleanup_record(self) -> None:
         """Remove this worker's registry entry without deleting a replacement."""

@@ -74,6 +74,7 @@ class LiveTerminal:
         self.assistant_streamed = False
         self.thinking_streamed = False
         self.force_startup_panel = False
+        self.conversation_id = ""
 
     def _show_attach_preamble(self, session: dict[str, Any]) -> None:
         """Show the logo panel for a new session or an explicit session switch."""
@@ -146,6 +147,7 @@ class LiveTerminal:
             self.sock.close()
             raise LiveError("Could not attach to the live session") from exc
         session = attached.get("session", {})
+        self.conversation_id = str(session.get("conversation_id", ""))
         operation_id = session.get("operation_id")
         self.operation_id = operation_id if isinstance(operation_id, str) else None
         pending = session.get("pending")
@@ -234,7 +236,7 @@ class LiveTerminal:
                         return "switch", ""
                     except SessionKill:
                         self._stop_worker()
-                        self.console.system("Session stopped.")
+                        self._show_session_stopped()
                         return "kill", ""
                     except (EOFError, KeyboardInterrupt):
                         if not self.stopped.is_set():
@@ -255,7 +257,7 @@ class LiveTerminal:
                         return "switch", ""
                     if command in {"/exit", "/quit"}:
                         self._stop_worker()
-                        self.console.system("Session stopped.")
+                        self._show_session_stopped()
                         return "kill", ""
                     if command == "/new":
                         if not self._start_new(argument.strip()):
@@ -304,6 +306,11 @@ class LiveTerminal:
             self.console.warn(str(exc))
             return False
         return True
+
+    def _show_session_stopped(self) -> None:
+        self.console.system("Session stopped.")
+        if self.conversation_id:
+            self.console.system(f"resume with ene resume {self.conversation_id}")
 
     def _stop_worker(self) -> None:
         """Wait for shutdown so replay rendering cannot outlive the terminal."""
@@ -454,9 +461,13 @@ class LiveTerminal:
             self.indicator = None
         elif kind == "process_status" and self.terminal is not None:
             self.terminal.set_process_status(str(data.get("text", "")))
-        elif kind == "session_meta" and self.terminal is not None:
-            name = str(data.get("name") or data.get("title") or "session")
-            self.terminal.set_title_name(name)
+        elif kind == "session_meta":
+            conversation_id = data.get("conversation_id")
+            if isinstance(conversation_id, str):
+                self.conversation_id = conversation_id
+            if self.terminal is not None:
+                name = str(data.get("name") or data.get("title") or "session")
+                self.terminal.set_title_name(name)
         elif kind == "commands":
             self.commands.clear()
             self.commands.update(data.get("commands", {}))

@@ -2,7 +2,7 @@
 
 Usage:
     ene [NAME] [OPTIONS]
-    ene {new,resume,models,list,ls,l,attach,a,kill,k,status,clean,hub,update,lib} ...
+    ene {new,resume,r,models,list,ls,l,attach,a,kill,k,status,clean,hub,update,lib} ...
 """
 
 import argparse
@@ -683,7 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
     new = commands.add_parser("new", help="start a new session")
     new.add_argument("name", nargs="?", default="", metavar="NAME")
     _add_session_options(new)
-    resume = commands.add_parser("resume", help="resume a saved session")
+    resume = commands.add_parser(
+        "resume", aliases=["r"], help="resume a saved session"
+    )
     resume.add_argument("session", nargs="?", metavar="SESSION_ID")
     _add_session_options(resume)
     commands.add_parser("models", help="list configured models")
@@ -716,7 +718,7 @@ def _normalize_invocation(raw_args: list[str]) -> list[str]:
     if not raw_args:
         return ["new"]
     if raw_args[0] in {
-        "new", "resume", "models", "list", "ls", "l", "attach", "a", "kill", "k",
+        "new", "resume", "r", "models", "list", "ls", "l", "attach", "a", "kill", "k",
         "status", "clean", "hub", "update", "lib",
     } or raw_args[0] in {"-h", "--help"}:
         return raw_args
@@ -748,10 +750,10 @@ def main(argv: list[str] | None = None) -> int:
         cmd_hub(Args(web_port=args.web_port))
     elif args.command == "update":
         return cmd_update()
-    elif args.command in {"new", "resume"}:
+    elif args.command in {"new", "resume", "r"}:
         session_id = None
         name = ""
-        if args.command == "resume":
+        if args.command in {"resume", "r"}:
             session_id = args.session or ""
         else:
             name = args.name
