@@ -49,6 +49,7 @@ from ene.providers import (
 from ene.context import (
     COMPACTION_INPUT_MAX_CHARS,
     COMPACTION_MIN_YIELD_RATIO,
+    COMPACTION_RETRY_GROWTH_RATIO,
     COMPACTION_SUMMARY_MAX_TOKENS,
     ContextManager,
     TokenEstimator,
@@ -667,7 +668,7 @@ class LLMAgent(
             self.console.system("Nothing worth compacting — context unchanged.")
             if self.context_length > 0:
                 self._compaction_floor_tokens = (
-                    before_tokens + int(self.context_length * COMPACTION_MIN_YIELD_RATIO)
+                    before_tokens + int(self.context_length * COMPACTION_RETRY_GROWTH_RATIO)
                 )
             return False
 
@@ -693,7 +694,7 @@ class LLMAgent(
         # leaving the marginal pass right behind it unguarded.
         if self.context_length > 0:
             self._compaction_floor_tokens = (
-                after_tokens + int(self.context_length * COMPACTION_MIN_YIELD_RATIO)
+                after_tokens + int(self.context_length * COMPACTION_RETRY_GROWTH_RATIO)
             )
         return before_tokens > after_tokens
 

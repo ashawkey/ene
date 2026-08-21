@@ -200,9 +200,10 @@ COMPACTION_SUMMARY_MAX_TOKENS = 8_000
 COMPACTION_KEEP_RECENT_RATIO = 0.15
 COMPACTION_KEEP_RECENT_MAX_TOKENS = 20_000
 
-# Below this yield a compaction is considered ineffective and the caller should
-# wait for real growth before paying for another one.
+# Below this yield a compaction is considered ineffective.
 COMPACTION_MIN_YIELD_RATIO = 0.05
+# Growth required before retrying after any compaction attempt.
+COMPACTION_RETRY_GROWTH_RATIO = 0.10
 
 PRUNABLE_TOOLS = frozenset({
     "read_file", "exec_command", "web_fetch", "inspect_processes", "wait_processes",
@@ -1392,11 +1393,13 @@ def compact_context(
         summary = summarize(prompt).strip()
     except RequestInterrupted:
         raise  # the user cancelled; the caller unwinds, nothing failed
-    except Exception:
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        warning = f"Context compaction LLM call failed ({error}); preserving context"
         if console is not None:
-            console.warn("Context compaction LLM call failed; preserving context", exc_info=True)
+            console.warn(warning, exc_info=True)
         else:
-            print("[WARNING] Context compaction LLM call failed; preserving context", file=sys.stderr)
+            print(f"[WARNING] {warning}", file=sys.stderr)
         return messages, state
 
     state = state.absorb(to_compact)

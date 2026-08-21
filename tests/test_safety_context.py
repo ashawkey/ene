@@ -111,12 +111,19 @@ def test_failed_compaction_is_reported_as_no_compaction():
         Message.assistant("second"),
         Message.user("third"),
     ]
+    warnings = []
+    console = _Console()
+    console.warn = lambda msg, **kwargs: warnings.append(msg)
+
     def fail(_prompt):
         raise RuntimeError("offline")
 
-    result, _ = compact_context(messages, fail)
+    result, _ = compact_context(messages, fail, console=console)
 
     assert result is messages
+    assert warnings == [
+        "Context compaction LLM call failed (RuntimeError: offline); preserving context"
+    ]
 
 
 def test_cancelling_a_compaction_is_not_reported_as_a_failure():
@@ -797,22 +804,22 @@ def test_ineffective_compaction_sets_a_floor_against_repeating():
     agent = _compaction_agent([90_000, 89_000])
 
     assert LLMAgent._run_compaction(agent, "pressure") is True
-    # Freed 1k of a 100k window, under the 5% yield bar: hold off until the
+    # Freed 1k of a 100k window, under the 10% yield bar: hold off until the
     # context has actually grown again.
-    assert agent._compaction_floor_tokens == 94_000
+    assert agent._compaction_floor_tokens == 99_000
     assert agent.compaction_totals["count"] == 1
 
 
 def test_effective_compaction_still_holds_off_the_next_one():
     """Even a good pass must not leave the marginal pass behind it unguarded."""
     agent = _compaction_agent([90_000, 40_000])
-    agent._compaction_floor_tokens = 94_000
+    agent._compaction_floor_tokens = 99_000
 
     assert LLMAgent._run_compaction(agent, "pressure") is True
     # Freed 50k, well past the yield bar — but the floor still moves to where
-    # this pass landed, so the next one waits for 5% of real growth instead of
+    # this pass landed, so the next one waits for 10% of real growth instead of
     # firing again on the very next tool result.
-    assert agent._compaction_floor_tokens == 45_000
+    assert agent._compaction_floor_tokens == 50_000
 
 
 def test_compaction_is_skipped_while_the_floor_holds():
