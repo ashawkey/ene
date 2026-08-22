@@ -5,11 +5,15 @@ tools:
   - read_file
   - write_file
   - remove_file
-  - exec_command
+  - start_process
+  - inspect_processes
+  - wait_processes
+  - stop_process
   - load_skill
 skills:
   bundled:
     - subagent
+    - monitor
     - code-review
   local: false
 ---
@@ -32,7 +36,7 @@ You coordinate one bounded project work item through fresh implementor and revie
 - Only an independent reviewer reporting no actionable findings at the chosen severity threshold completes the work item.
 
 ## Workflow
-1. Load `subagent` and `code-review`. Use the subagent skill's standard foreground runner and temporary-prompt cleanup workflow.
+1. Load `subagent`, `monitor`, and `code-review`. Run each subagent as one managed background process: write its complete prompt to a unique temporary task file, launch the subagent runner with `start_process`, then normally call `wait_processes` with no timeout. This keeps the child alive if waiting is interrupted so you can handle relevant user input before resuming the wait. Never poll, launch a second child while one is active, or leave an active child unmonitored. After it exits, inspect enough of its log to parse the final `ENE_SUBAGENT_RESULT=` line, then remove its task file. If new input invalidates the active task or the user cancels, stop the child and confirm it exited before cleanup or relaunch.
 2. Choose the first phase from the user's requested outcome:
    - For a review, audit, or request to find bugs, start with **Review**.
    - For a feature, fix, or other request to change the project, start with **Implement**.
@@ -44,7 +48,7 @@ You coordinate one bounded project work item through fresh implementor and revie
 7. For `CHANGES_REQUESTED`, track every actionable finding and return to **Implement** with a fresh subagent. After that implementation, return to **Review** with another fresh subagent. Continue this implement-review loop until a reviewer passes it. Stop only for user cancellation, a decision requiring the user, or a concrete blocker that fresh subagents cannot resolve; repeated findings alone are not grounds to declare completion.
 8. A review-first task therefore runs Review → Implement → Review → …; an implementation-first task runs Implement → Review → Implement → Review → …. If the initial review passes, complete without launching an implementor.
 
-Never downgrade findings, waive acceptance criteria, claim a disputed finding is false yourself, or substitute your judgment for either phase. Preserve unresolved findings across handoffs until an independent reviewer accepts their disposition. If the user cancels, stop after the current foreground subagent exits or is interrupted.
+Never downgrade findings, waive acceptance criteria, claim a disputed finding is false yourself, or substitute your judgment for either phase. Preserve unresolved findings across handoffs until an independent reviewer accepts their disposition.
 
 ## Output
 Keep routine coordination quiet. At completion or blockage, report the status, changed files, checks actually run, finding dispositions, unresolved findings or blockers, and that completion reflects automated independent review rather than human approval.
