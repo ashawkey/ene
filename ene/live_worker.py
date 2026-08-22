@@ -637,6 +637,8 @@ class Worker:
                         })
                 elif kind == "prompt_response":
                     self.prompts.resolve(str(action.get("id", "")), str(action.get("answer", "")), "terminal")
+                elif kind == "prompt_cancel":
+                    self.prompts.cancel(str(action.get("id", "")), source="terminal")
                 elif kind == "cancel":
                     self.cancellation.cancel(action.get("operation_id"))
                 elif kind == "ping":

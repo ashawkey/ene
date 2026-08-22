@@ -492,6 +492,11 @@ class LiveTerminal:
                 str(data.get("message", "")), default=str(data.get("default", ""))
             )
         if answer is None:
+            # The user cancelled the local picker (e.g. Ctrl+C). Tell the
+            # worker to close the prompt; otherwise its round waits forever
+            # and this loop re-asks the same prompt on every iteration.
+            self._send({"type": "prompt_cancel", "id": data.get("id")})
+            self.prompt = None
             return
         self._send({"type": "prompt_response", "id": data.get("id"), "answer": answer})
         if self.prompt is data or (

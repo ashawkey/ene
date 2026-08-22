@@ -468,6 +468,52 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
     assert inputs.submission == queued
 
 
+def test_live_worker_terminal_prompt_cancel_resolves_open_prompt():
+    """A terminal that aborts its picker closes the worker's open prompt."""
+    events = EventHub()
+    worker = Worker.__new__(Worker)
+    worker.runtime_id = "runtime"
+    worker.record = {"workspace": "/tmp", "created_at": 0}
+    worker.stop_event = threading.Event()
+    worker.terminal_attached = False
+    worker.events = events
+    worker.inputs = SimpleNamespace(submission=None)
+    worker.prompts = PromptBroker(events)
+    worker.cancellation = SimpleNamespace(operation_id=None)
+    worker.agent = None
+
+    result = []
+    ask_thread = threading.Thread(
+        target=lambda: result.append(
+            worker.prompts.ask("select", "Pick one", choices=["a", "b"])
+        )
+    )
+    ask_thread.start()
+    deadline = time.monotonic() + 1
+    while worker.prompts.active is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert worker.prompts.active is not None
+    prompt_id = worker.prompts.active.id
+
+    left, right = socket.socketpair()
+    server = threading.Thread(
+        target=lambda: worker._serve_terminal(right, replay_history=False),
+        daemon=True,
+    )
+    server.start()
+    try:
+        assert live.recv_frame(left)["type"] == "attached"
+        live.send_frame(left, {"type": "prompt_cancel", "id": prompt_id})
+        ask_thread.join(timeout=1)
+
+        assert result == [None]
+        assert worker.prompts.active is None
+    finally:
+        left.close()
+        right.close()
+        server.join(timeout=2)
+
+
 def test_live_terminal_reports_resume_command_when_session_stops():
     client = LiveTerminal({})
     messages = []
@@ -545,23 +591,24 @@ def test_live_terminal_classifies_instant_commands_from_worker_metadata():
     assert not client._is_instant_command("follow up")
 
 
-def test_live_terminal_keeps_cancelled_remote_prompt_open():
+def test_live_terminal_cancelled_remote_prompt_cancels_worker_prompt():
     client = LiveTerminal({})
     prompt = {
         "id": "prompt-1",
-        "kind": "text",
-        "message": "Continue?",
+        "kind": "select",
+        "message": "Pick a session to resume",
+        "choices": ["a", "b"],
         "default": "",
     }
     client.prompt = prompt
-    client.console = SimpleNamespace(ask_text_terminal=lambda *_args, **_kwargs: None)
+    client.console = SimpleNamespace(select_terminal=lambda *_args, **_kwargs: None)
     sent = []
     client._send = sent.append
 
     client._answer_prompt(prompt)
 
-    assert client.prompt is prompt
-    assert sent == []
+    assert sent == [{"type": "prompt_cancel", "id": "prompt-1"}]
+    assert client.prompt is None
 
 
 def test_live_terminal_answers_prompt_replayed_before_editor_starts():
