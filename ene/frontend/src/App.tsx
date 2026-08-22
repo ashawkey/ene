@@ -100,9 +100,26 @@ function SessionPane({
       setOperationId(state.operation_id)
       setProcessStatus(state.process_status)
       setContextStatus(state.context_status ? parseContextStatus(state.context_status) : null)
-      // State frames are authoritative after reconnect. A fresh stream cannot
-      // inherit an old indicator; an idle operation cannot keep one visible.
-      if (streamChanged || state.operation_id === null) setThinkingStatus(null)
+      // State frames are authoritative after reconnect.
+      if (state.operation_id === null || state.active_indicator === null) {
+        setThinkingStatus(null)
+      } else {
+        const active = state.active_indicator
+        const context = parseContextStatus(active)
+        setThinkingStatus({
+          suffix: context === null && typeof active.suffix === 'string' ? active.suffix : '',
+          contextTokens: typeof active.context_tokens === 'number' ? active.context_tokens : 0,
+          contextLimit: typeof active.context_limit === 'number' ? active.context_limit : 0,
+          inputTokens: typeof active.input_tokens === 'number' ? active.input_tokens : 0,
+          outputTokens: typeof active.output_tokens === 'number' ? active.output_tokens : 0,
+          cachedTokens: typeof active.cached_tokens === 'number' ? active.cached_tokens : 0,
+          label: typeof active.label === 'string' ? active.label : 'Working',
+          startedAt: typeof active.started_at === 'number' ? active.started_at * 1000 : Date.now(),
+          progress: active.progress === true,
+          countdown: typeof active.countdown === 'number' ? active.countdown : undefined,
+          roundElapsed: typeof active.round_elapsed === 'number' ? active.round_elapsed : undefined,
+        })
+      }
       setPrompt(state.prompt)
       setPending(state.pending)
       const submitId = submitActionRef.current
@@ -219,6 +236,12 @@ function SessionPane({
         })
         break
       }
+      case 'thinking_update':
+        setThinkingStatus((current) => current === null ? null : {
+          ...current,
+          suffix: typeof data.suffix === 'string' ? data.suffix : current.suffix,
+        })
+        break
       case 'thinking_stop':
         setThinkingStatus(null)
         break

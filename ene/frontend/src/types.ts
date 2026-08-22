@@ -47,6 +47,7 @@ export type StateMessage = {
   operation_id: string | null
   process_status: string
   context_status: Record<string, unknown> | null
+  active_indicator: EventData | null
   prompt: Prompt | null
   pending: PendingMessage | null
 }

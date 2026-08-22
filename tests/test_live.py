@@ -1462,6 +1462,14 @@ def test_live_worker_replay_hydrates_active_stream_deltas():
     ]
 
 
+def test_active_indicator_uses_latest_suffix_update():
+    assert _active_indicator([
+        {"type": "thinking_start", "data": {"label": "Batch", "suffix": "0/3"}},
+        {"type": "thinking_update", "data": {"suffix": "1/3"}},
+        {"type": "thinking_update", "data": {"suffix": "2/3"}},
+    ]) == {"label": "Batch", "suffix": "2/3"}
+
+
 def test_active_indicator_ignores_completed_historical_status():
     active = {"label": "Executing", "started_at": 123.0}
     assert _active_indicator([

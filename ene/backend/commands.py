@@ -892,6 +892,7 @@ class AgentCommandsMixin:
         self.provider = provider
         old_provider.close()
         # self.tools reflects the new model's image support via the live property.
+        self.tool_executor.supports_image_input = self.profile.supports_image_input
         self.context_length = model_conf.get("context_length", self.profile.context_length)
         self.max_output_tokens = model_conf.get("max_output_tokens", self.profile.max_output_tokens)
         self.reasoning_effort = model_conf.get("reasoning_effort", self.reasoning_effort)

@@ -53,6 +53,8 @@ class CompletionRequest:
     reasoning_effort: ReasoningEffort | None = None
     session_id: str | None = None
     timeout: float | None = None
+    # Optional JSON Schema for a provider-enforced structured response.
+    response_schema: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

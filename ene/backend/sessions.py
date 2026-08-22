@@ -366,7 +366,6 @@ class SessionMixin:
         self._session_store = target_store
         self._session_revision_id = target_store.head_id
         self._pending_images.clear()
-        self._isolated_turn_active = False
         self.tool_executor.shutdown_processes(clear=True)
         self._install_change_tracker()
         self._set_rewind_draft(candidate["prompt"])

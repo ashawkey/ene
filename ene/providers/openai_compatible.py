@@ -129,6 +129,15 @@ class OpenAICompatibleProvider(LLMProvider):
             kwargs["stream_options"] = {"include_usage": True}
         if request.tools:
             kwargs["tools"] = request.tools
+        if request.response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "batch_item",
+                    "strict": True,
+                    "schema": request.response_schema,
+                },
+            }
         if request.reasoning_effort is not None:
             kwargs.update(reasoning_kwargs(self._reasoning_style, request.reasoning_effort))
         if request.timeout is not None:

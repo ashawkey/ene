@@ -12,7 +12,7 @@ from typing import Any
 
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from ene.backend.batch import IsolatedTurnMixin
+from ene.backend.batch import BatchCompletionMixin
 from ene.backend.commands import AgentCommandsMixin
 from ene.personas import (
     DEFAULT_PERSONA,
@@ -151,7 +151,7 @@ def _is_local_query(query: str) -> bool:
 
 
 class LLMAgent(
-    AgentCommandsMixin, IsolatedTurnMixin, SkillCommandsMixin, SessionMixin
+    BatchCompletionMixin, AgentCommandsMixin, SkillCommandsMixin, SessionMixin
 ):
     INITIAL_BACKOFF = 1.0   # seconds
     MAX_BACKOFF = 64.0      # seconds
@@ -192,6 +192,9 @@ class LLMAgent(
         )
         self.provider = create_provider(provider_name, self._provider_settings)
         self._active_compaction_provider = None
+        self._batch_provider_lock = threading.Lock()
+        self._batch_providers = set()
+        self._usage_lock = threading.Lock()
         self.verbose = verbose
         self.stream = stream
         self.show_thinking = self.profile.reasoning is not None
@@ -266,7 +269,9 @@ class LLMAgent(
             work_dir=self.work_dir,
             skills=self.skills,
             cancellation=cancellation,
-            isolated_turn=self.run_isolated_turn,
+            batch_completion=self.run_batch_completion,
+            cancel_batch_completions=self.cancel_batch_completions,
+            supports_image_input=self.profile.supports_image_input,
             model_alias=self.model_alias or None,
             reasoning_effort=self.reasoning_effort,
         )
@@ -274,9 +279,6 @@ class LLMAgent(
         self.tool_executor.set_process_status_callback(self._process_status_changed)
         self.context = ContextManager(self.system_prompt)
         self._pending_images: list[dict[str, str]] = []
-        # Whether a context-isolated turn owns the conversation right now; see
-        # IsolatedTurnMixin.
-        self._isolated_turn_active: bool = False
 
         self.round_id = 0
         self._session_id: str | None = None  # set by chat_loop
@@ -369,11 +371,13 @@ class LLMAgent(
 
     def _accumulate_usage(self, usage: ProviderUsage) -> None:
         """Add provider-neutral token counts to session totals."""
-        self.token_totals["total"] += usage.total_tokens
-        self.token_totals["prompt"] += usage.prompt_tokens
-        self.token_totals["completion"] += usage.completion_tokens
-        self.token_totals["cached_prompt"] += usage.cached_prompt_tokens
-        self.token_totals["reasoning"] += usage.reasoning_tokens
+        lock = getattr(self, "_usage_lock", None)
+        with lock or nullcontext():
+            self.token_totals["total"] += usage.total_tokens
+            self.token_totals["prompt"] += usage.prompt_tokens
+            self.token_totals["completion"] += usage.completion_tokens
+            self.token_totals["cached_prompt"] += usage.cached_prompt_tokens
+            self.token_totals["reasoning"] += usage.reasoning_tokens
 
     def _context_tokens(self) -> int:
         """Live prompt-token estimate for the next request.
@@ -520,15 +524,7 @@ class LLMAgent(
                 stream=self.stream,
                 max_output_tokens=self.max_output_tokens,
                 reasoning_effort=self.reasoning_effort,
-                # Providers use this to key their prompt cache. Isolated turns
-                # share a prefix with each other but not with the conversation,
-                # so they get their own key rather than repeatedly displacing
-                # the cached prefix of the round they run inside.
-                session_id=(
-                    f"{self._session_id}-isolated"
-                    if self._isolated_turn_active and self._session_id
-                    else self._session_id
-                ),
+                session_id=self._session_id,
             )
 
         messages, request = build_request()
@@ -611,12 +607,6 @@ class LLMAgent(
     def _snapshot_before_compaction(self) -> None:
         """Save a revision so /rewind can undo a compaction that lost too much."""
         if not self._session_id or self._session_store is None:
-            return
-        if self._isolated_turn_active:
-            # An isolated turn's messages are not the conversation, so
-            # committing them would move the durable head onto a revision that
-            # a later resume would restore instead of the real session. There is
-            # nothing to rewind to either: the context is discarded regardless.
             return
         try:
             self.save_session(self._session_id, reason="pre-compaction")
@@ -1043,12 +1033,6 @@ class LLMAgent(
         """Add pending conversational input before the next agentic iteration."""
         if self.input_broker is None:
             return False
-        if self._isolated_turn_active:
-            # An isolated turn's context is discarded when it ends, so steering
-            # into it would consume the user's message and then throw it away.
-            # Leaving it pending lets the enclosing round pick it up instead.
-            return False
-
         submission = self.input_broker.submission
         if submission is None or not submission.steer:
             return False
@@ -1249,7 +1233,6 @@ class LLMAgent(
         self.context.replace_messages([])
         self.context.compaction_state = CompactionState()
         self._pending_images.clear()
-        self._isolated_turn_active = False
         self.round_id = 0
         self.token_totals = {key: 0 for key in self.token_totals}
         self.tool_compaction_totals = {key: 0 for key in self.tool_compaction_totals}
@@ -1805,6 +1788,8 @@ class LLMAgent(
                 self.changes.close()
         finally:
             try:
+                if hasattr(self, "_batch_provider_lock"):
+                    self.cancel_batch_completions()
                 self.provider.close()
             finally:
                 try:

@@ -106,12 +106,19 @@ def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _active_indicator(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the latest indicator only when it has not subsequently stopped."""
-    for event in reversed(events):
+    for index in range(len(events) - 1, -1, -1):
+        event = events[index]
         kind = event.get("type")
         if kind == "thinking_stop":
             return None
         if kind == "thinking_start":
-            return dict(event.get("data") or {})
+            active = dict(event.get("data") or {})
+            for later in events[index + 1:]:
+                if later.get("type") == "thinking_update":
+                    suffix = (later.get("data") or {}).get("suffix")
+                    if isinstance(suffix, str):
+                        active["suffix"] = suffix
+            return active
     return None
 
 

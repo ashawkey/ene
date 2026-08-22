@@ -48,11 +48,13 @@ call and result semantics beside its tools while the shared UI owns rendering.
 The full result still goes to the model, while the concise output is persisted
 for consistent live and replay display. A skill's tools are registered on its first load and remain available for that session. `/skills reload` removes tools only when their skill is no longer discovered; use `/clear` or restart Ene to reload an edited `tools.py`. A schema collision or broken `tools.py` fails the skill load instead of partially registering its tools.
 
-The bundled **batch** skill follows the same split: the agent owns the
-context-isolated turn, while the skill owns everything around it. See its
+The bundled **batch** skill uses the agent's already configured provider to
+run direct, tool-free model requests without exposing credentials to the skill.
+It adds bounded parallelism, structured output, durable JSONL results, and
+resume support. See its
 [batch instructions](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/batch/SKILL.md)
 for the workflow.
 
 | Tool | Description |
 |------|-------------|
-| `run_batch` | Run one task per item in a fresh context, appending per-item results to a JSONL file |
+| `run_batch` | Map one direct LLM transformation over independent text or image items, appending results to a resumable JSONL file |

@@ -271,6 +271,13 @@ class ThinkingIndicator:
         per-item loop would multiply into a flood.
         """
         self._status_suffix = status_suffix
+        if self._events is not None and self._running:
+            suffix = (
+                status_suffix.plain()
+                if isinstance(status_suffix, ContextStatus)
+                else status_suffix
+            )
+            self._events.publish("thinking_update", suffix=suffix)
 
     def __exit__(self, *args) -> None:
         self._running = False

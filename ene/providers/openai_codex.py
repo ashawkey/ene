@@ -151,7 +151,19 @@ def _build_body(request: CompletionRequest) -> dict[str, Any]:
         "stream": True,
         "instructions": instructions,
         "input": items,
-        "text": {"verbosity": "low"},
+        "text": (
+            {
+                "verbosity": "low",
+                "format": {
+                    "type": "json_schema",
+                    "name": "batch_item",
+                    "strict": True,
+                    "schema": request.response_schema,
+                },
+            }
+            if request.response_schema is not None
+            else {"verbosity": "low"}
+        ),
         "include": ["reasoning.encrypted_content"],
         "tool_choice": "auto",
         "parallel_tool_calls": True,

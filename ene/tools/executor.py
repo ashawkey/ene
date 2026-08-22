@@ -43,16 +43,19 @@ class ToolExecutor(
         get_round_id=None,
         skills: dict | None = None,
         cancellation: CancellationToken | None = None,
-        isolated_turn=None,
+        batch_completion=None,
+        cancel_batch_completions=None,
+        supports_image_input: bool = False,
         model_alias: str | None = None,
         reasoning_effort: str | None = None,
     ):
         self.console = console or AgentConsole()
         self.cancellation = cancellation
-        # LLMAgent.run_isolated_turn: run one turn and discard its context.
-        # Skill tools that drive repetitive work (the `batch` skill) call it;
-        # None when no agent owns this executor.
-        self.isolated_turn = isolated_turn
+        # Direct, credential-bearing model service injected by LLMAgent. Native
+        # skills can run batch completions without reading user configuration.
+        self.batch_completion = batch_completion
+        self.cancel_batch_completions = cancel_batch_completions
+        self.supports_image_input = supports_image_input
         # Identity of the model this session runs on, injected into the
         # environment of spawned subprocesses (ENE_MODEL_ALIAS /
         # ENE_REASONING_EFFORT) so delegated subagents inherit the same model
@@ -137,12 +140,6 @@ class ToolExecutor(
 
     def skill_state(self) -> dict[str, Any]:
         """Snapshot which skills are loaded and what tools they contributed.
-
-        Skill state lives on the executor rather than in the conversation, so a
-        caller that discards a turn's context (see
-        ``LLMAgent.run_isolated_turn``) must restore it explicitly: otherwise a
-        skill loaded inside that turn stays loaded and leaves its contributed
-        tools registered in the enclosing conversation.
 
         Session-scoped tool *resources* are deliberately not part of the
         snapshot: they are external (a browser, a process) and their owning

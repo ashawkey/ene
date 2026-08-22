@@ -118,6 +118,7 @@ class RemoteSession:
         self.operation_id: str | None = None
         self.process_status = ""
         self.context_status: dict | None = None
+        self.active_indicator: dict | None = None
         self.agent_ws = None             # starlette WebSocket to the agent
         self.agent_send_lock = asyncio.Lock()
         # Async wakeup for browser readers. Events are published on the event
@@ -134,6 +135,7 @@ class RemoteSession:
         self.operation_id = None
         self.process_status = ""
         self.context_status = None
+        self.active_indicator = None
 
     def touch(self) -> None:
         """Wake browser readers (safe to call from any thread)."""
@@ -192,7 +194,15 @@ class RemoteSession:
         elif etype == "process_status":
             text = data.get("text", "")
             self.process_status = text if isinstance(text, str) else ""
-        elif etype in {"context_status", "thinking_start"} and isinstance(
+        elif etype == "thinking_start":
+            self.active_indicator = dict(data)
+        elif etype == "thinking_update" and self.active_indicator is not None:
+            suffix = data.get("suffix")
+            if isinstance(suffix, str):
+                self.active_indicator["suffix"] = suffix
+        elif etype == "thinking_stop":
+            self.active_indicator = None
+        if etype in {"context_status", "thinking_start"} and isinstance(
             data.get("context_tokens"), (int, float)
         ):
             self.context_status = {
@@ -688,6 +698,7 @@ class Hub:
                 "operation_id": s.operation_id,
                 "process_status": s.process_status,
                 "context_status": s.context_status,
+                "active_indicator": s.active_indicator,
                 "prompt": s.prompt,
                 "pending": s.pending,
                 "oldest_seq": s.events.oldest_seq,

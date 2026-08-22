@@ -1,112 +1,98 @@
-"""Context-isolated turns: run a prompt, keep the result, discard the context.
+"""Direct, context-free model completions used by the bundled batch skill."""
 
-A repetitive workload (caption these 1000 images, classify these 5000 rows) is
-a sequence of *independent* tasks. Running them as ordinary turns makes every
-item pay for every earlier item — quadratic prompt cost — and eventually forces
-compaction to summarize the very results the user asked for.
+from __future__ import annotations
 
-:meth:`IsolatedTurnMixin.run_isolated_turn` is the mechanism that breaks that
-coupling: one turn runs against an empty message history, and the enclosing
-conversation is restored byte-for-byte afterwards. Repeated calls therefore
-cost a constant system/tool prefix rather than a growing one, and nothing an
-item did can leak into the next one.
+import json
+from typing import Any
 
-The mechanism lives here because it needs the agent's context and agentic loop.
-The *policy* built on it — how items are enumerated, where results are written,
-when to give up — belongs to the ``batch`` skill, which drives this through
-``ToolExecutor.isolated_turn``.
-"""
-
-from ene.context import CompactionState
-from ene.messages import Message
-from ene.utils.interrupt import TurnOutcome
+from ene.messages import ImagePart, Message, TextPart
+from ene.models import REASONING_EFFORTS, ReasoningEffort
+from ene.providers import CompletionRequest, ProviderUsage, create_provider
+from ene.utils.interrupt import RequestInterrupted
 
 
-class IsolatedTurnMixin:
-    """Run agentic turns that leave no trace in the conversation."""
+class BatchCompletionMixin:
+    """Run tool-free model calls without exposing provider credentials to skills."""
 
-    def run_isolated_turn(self, prompt: str) -> tuple[str | None, TurnOutcome]:
-        """Run one full agentic turn for *prompt*, then discard its context.
-
-        Returns ``(response, outcome)``. *response* is the assistant's final
-        text, or ``None`` when the turn produced none. A user-interrupt outcome
-        tells a caller to stop rather than record an ordinary failure.
-
-        The caller keeps the returned value; conversational state is rolled
-        back: messages, compaction state, the compaction floor, enclosing turn
-        flags, images queued for the next request, and which skills are loaded.
-        That restoration is unconditional, so a failing turn cannot poison the
-        conversation the caller resumes with. Usage accounting and external tool
-        effects remain.
-
-        Skill state is part of the rollback because it lives on the executor,
-        not in the message history: a skill loaded by one item must not remain
-        loaded or keep its contributed tools registered in later items or the
-        enclosing conversation. Already-loaded skills may be loaded again, so
-        an item can still obtain instructions that are absent from its isolated
-        message history.
-
-        Isolation covers the two things a discarded turn must not touch on its
-        way past: it is never rendered or published (see
-        :meth:`AgentConsole.suppressed`), and it never commits a session
-        revision — a compaction inside an item would otherwise move the durable
-        head onto that item's context.
-
-        Isolated turns must not nest: an inner restore would resurrect the outer
-        turn's discarded context as if it were the conversation.
-        """
-        if self._isolated_turn_active:
-            raise RuntimeError("Isolated turns cannot nest.")
+    def run_batch_completion(
+        self,
+        instruction: str,
+        item: str,
+        *,
+        image_url: str | None = None,
+        output_schema: dict[str, Any] | None = None,
+        max_output_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort = "low",
+    ) -> dict[str, Any]:
+        """Complete one independent item with a fresh provider instance."""
+        if reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError(f"Invalid reasoning_effort: {reasoning_effort}")
+        if image_url is not None and not self.profile.supports_image_input:
+            raise ValueError(f"Model '{self.model}' does not support image input")
         if self.cancellation is not None and self.cancellation.cancelled:
-            return None, TurnOutcome.USER_INTERRUPTED
+            raise RequestInterrupted()
 
-        snapshot = list(self.context.messages)
-        compaction_state = self.context.compaction_state
-        compaction_floor = self._compaction_floor_tokens
-        pending_images = list(self._pending_images)
-        skill_state = self.tool_executor.skill_state()
-        outer_interrupted = self._last_interrupted
-        outer_interrupt_reverts_prompt = self._interrupt_reverts_prompt
-        outer_failure_reverts_prompt = getattr(
-            self, "_failure_reverts_prompt", False
+        content: str | list[TextPart | ImagePart]
+        if image_url is None:
+            content = item
+        else:
+            content = [TextPart(f"Item: {item}"), ImagePart({"url": image_url})]
+        request = CompletionRequest(
+            model=self.model,
+            messages=[Message.system(instruction), Message.user(content)],
+            stream=False,
+            max_output_tokens=max_output_tokens or self.max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            response_schema=output_schema,
+            session_id=f"{self._session_id}-batch" if self._session_id else None,
         )
-        outer_finish_reason = self._last_finish_reason
-        outer_turn_outcome = self._last_turn_outcome
-
-        self._isolated_turn_active = True
+        provider = create_provider(self.provider_name, self._provider_settings)
+        with self._batch_provider_lock:
+            self._batch_providers.add(provider)
         try:
-            # The enclosing assistant message still has the run_batch tool call
-            # open, so it is not a valid prefix for another provider request.
-            # Starting from an empty history also gives every item the promised
-            # independent context: only the shared system prompt and tools remain.
-            self.context.replace_messages([])
-            self.context.compaction_state = CompactionState()
-            self._compaction_floor_tokens = None
-            self._pending_images.clear()
-            self.context.add(Message.user(prompt))
-            # The turn is not part of the conversation, so it is not rendered or
-            # published either: streaming hundreds of discarded item turns would
-            # bury the transcript and evict the real timeline from the bounded
-            # event history that reconnecting web clients replay.
-            with self.console.suppressed():
-                response = self.get_response()
-            return response, self._last_turn_outcome
+            result = provider.complete(request)
         finally:
-            self._isolated_turn_active = False
-            # replace_messages copies, so the snapshot stays reusable even
-            # though eviction and compaction may have rewritten the live list.
-            self.context.replace_messages(snapshot)
-            self.context.compaction_state = compaction_state
-            self._compaction_floor_tokens = compaction_floor
-            self._pending_images.clear()
-            self._pending_images.extend(pending_images)
-            self.tool_executor.restore_skill_state(skill_state)
-            # get_response uses these fields to decide whether the enclosing
-            # prompt may be withdrawn after cancellation. An isolated item must
-            # report its status through the return value without overwriting the
-            # enclosing turn's rollback state.
-            self._last_interrupted = outer_interrupted
-            self._last_turn_outcome = outer_turn_outcome
-            self._interrupt_reverts_prompt = outer_interrupt_reverts_prompt
-            self._failure_reverts_prompt = outer_failure_reverts_prompt
-            self._last_finish_reason = outer_finish_reason
+            with self._batch_provider_lock:
+                self._batch_providers.discard(provider)
+            provider.close()
+
+        if self.cancellation is not None and self.cancellation.cancelled:
+            raise RequestInterrupted()
+        text = result.message.text
+        if not text:
+            raise RuntimeError("The model returned no text")
+        value: Any = text
+        if output_schema is not None:
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"The model returned invalid JSON: {e}") from e
+        usage = result.usage
+        if usage is not None:
+            self._accumulate_usage(usage)
+        return {
+            "result": value,
+            "usage": _usage_dict(usage),
+        }
+
+    def cancel_batch_completions(self) -> None:
+        """Cancel every direct completion currently owned by a batch."""
+        with self._batch_provider_lock:
+            providers = list(self._batch_providers)
+        for provider in providers:
+            try:
+                provider.cancel()
+            except Exception:
+                pass
+
+
+def _usage_dict(usage: ProviderUsage | None) -> dict[str, int] | None:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "cached_prompt_tokens": usage.cached_prompt_tokens,
+        "reasoning_tokens": usage.reasoning_tokens,
+    }

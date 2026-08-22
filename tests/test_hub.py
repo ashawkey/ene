@@ -162,6 +162,24 @@ def test_remote_session_tracks_context_status_for_authoritative_state():
     }
 
 
+def test_remote_session_tracks_latest_indicator_for_authoritative_state():
+    session = RemoteSession("s1", {})
+    session.ingest({
+        "type": "thinking_start",
+        "data": {"label": "Batch", "suffix": "0/4 completed"},
+    })
+    session.ingest({
+        "type": "thinking_update",
+        "data": {"suffix": "2/4 completed\n├ 3 · c\n└ 4 · d"},
+    })
+    assert session.active_indicator == {
+        "label": "Batch", "suffix": "2/4 completed\n├ 3 · c\n└ 4 · d"
+    }
+
+    session.ingest({"type": "thinking_stop", "data": {}})
+    assert session.active_indicator is None
+
+
 def test_remote_session_tracks_process_status_for_authoritative_state():
     session = RemoteSession("s1", {})
     session.ingest({

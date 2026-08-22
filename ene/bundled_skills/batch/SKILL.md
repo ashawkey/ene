@@ -1,82 +1,85 @@
 ---
 name: batch
-description: Process many independent items with the same agentic task in isolated contexts.
+description: Apply one direct LLM transformation to many independent text or image items with parallelism, structured output, durable results, and resume support.
 ---
 
-# Batch Processing over Independent Items
+# Batch Direct LLM Processing
 
-Loading this skill enables `run_batch`: it runs one task per item, each in a fresh
-context, and appends per-item results to `.ene/batch/<name>.jsonl`. The reply
-carries only counts, the output path, and a few sample failures — never the
-results.
+Loading this skill enables `run_batch`. It maps one **single, tool-free model
+request** over each item with bounded concurrency and appends durable results to
+`.ene/batch/<name>.jsonl`.
 
-Use it when the items are **independent**: nothing an item produces should change
-how the next one is handled.
+Use it for homogeneous transformations such as captioning images, classifying
+rows, extracting fields, translating strings, scoring examples, or rewriting
+snippets. Each item sees only the shared instruction and that item; it does not
+see this conversation, other items, skills, or tools.
 
-## Choose the cheapest mechanism first
+Do not use it when an item needs commands, file search, browsing, iterative tool
+use, or judgment about how to investigate. Handle a small task directly or use
+the `subagent` skill for substantial agentic work.
 
-1. **One model call per item, no tools needed** (plain captioning or classification
-   at scale) — do **not** use `run_batch`. Write a script that calls the API
-   directly with a thread pool, start it with the `monitor` skill, and read only
-   its summary. That is parallel, resumable, and has no agentic overhead.
-2. **A few tool calls per item, same shape every time** — `run_batch`.
-3. **Items differ in structure, or need judgment about which tools to use** —
-   do not use `run_batch`. For a small number of substantial, self-contained tasks,
-   use the `subagent` skill; otherwise handle them in the normal conversation.
-4. **Fewer than roughly 20 short items, or items that build on each other** — just
-   do them in the normal conversation. Isolation is not worth its overhead.
+## Build the item list
 
-## Build the item list without paying for it
+Prefer an existing manifest or create one with a command, then pass
+`items_file`. It contains one item per line; blank lines and lines beginning
+with `#` are skipped.
 
-Anything you type into a tool call stays in the conversation for the rest of the
-session, so never write the list out yourself:
+Use inline `items` only for a short list already present in context (maximum
+100). Items are resume keys, so duplicate text is treated as the same item on a
+later run; de-duplicate the manifest when occurrences must be distinct.
 
-- **Do:** build it with a command — `exec_command("ls images/*.png > items.txt")`
-  — or use a manifest that already exists, then pass `items_file`.
-- **Do not:** paste a long `items` array, `write_file` a long literal list, or
-  enumerate with `glob_files` first. All three cost the same as typing it.
+## Write the request
 
-Items are identified by their text, so duplicate lines resume as a single item.
-Pipe the list through `sort -u` when that matters.
+- Put the operation in `instruction`. For text, use `{item}` where the item must
+  appear; without it, the instruction is sent as the system instruction and the
+  item as the user message.
+- Set `item_type="image"` when each item is a local PNG, JPEG, GIF, or WebP path.
+  The current model must support image input. The instruction should describe
+  the desired caption, classification, or extraction; no `read_image` tool is
+  involved.
+- Use `output_schema` when results must be machine-readable. It is a JSON Schema
+  object passed to the provider's structured-output facility, and successful
+  responses are stored as parsed JSON. Without it, results are plain text.
+- Keep `reasoning_effort="low"` for routine transformations. Increase it only
+  when item-level reasoning warrants the extra latency and cost.
+- Keep outputs small; set `max_output_tokens` when a tighter bound is useful.
 
-Use `items` only for a short list you already know (max 100).
+Example shape:
 
-## Write the task
-
-Each item runs against its own prompt alone, and its turn is discarded
-afterwards. So:
-
-- Make `task` **self-contained**. It sees your system prompt and can call every
-  tool you can — but not this conversation, not any earlier item, and not the
-  instructions of a skill you loaded. If an item needs a skill, tell the task to
-  `load_skill` it itself; each item loads it fresh.
-- Put `{item}` where the item belongs. Without it the item is appended on its own
-  line.
-- State the expected output shape explicitly. The final assistant text of the
-  turn becomes the item's `result`.
-- If items write files, have the task write them itself and keep the returned
-  text short — a per-item path or status, not the content.
+```json
+{
+  "instruction": "Describe this product image in one concise sentence.",
+  "items_file": "images.txt",
+  "item_type": "image",
+  "output_schema": {
+    "type": "object",
+    "properties": {"caption": {"type": "string"}},
+    "required": ["caption"],
+    "additionalProperties": false
+  },
+  "name": "product-captions",
+  "concurrency": 4,
+  "label": "Captioning products"
+}
+```
 
 ## Run and report
 
-1. Call `run_batch(task, items_file|items, name, label)`. `name` identifies the
-   run and is also its resume key, so pick something descriptive and specific
-   (`caption-product-photos`, not `run`) — reusing a name continues that run.
-   Results go to `.ene/batch/<name>.jsonl`.
-2. Read the returned counts. Per-item results are only in the output file — reach
-   for it with `grep_files` or `read_file` when you need them.
-3. To retry after an interruption or partial failure, re-issue the **identical**
-   call. Successful items are skipped; failed and unattempted ones are retried.
-   Only pass `resume=false` when every item must genuinely be redone; it starts
-   the run over, keeping the old results as `<name>.jsonl.bak`.
-4. Report the counts and the output path. Do not restate per-item results unless
-   the user asks for specific ones.
-5. If the user wants the results elsewhere or in another format, convert the
-   JSONL with a command afterwards.
+1. Call `run_batch(instruction, items_file|items, name, ...)`. Choose a specific
+   `name`; it is both the output filename and resume key.
+2. Use bounded parallelism. The default is 4 and the maximum is 16. Set
+   `concurrency=1` only for strict rate limits or when independent requests must
+   be serialized.
+3. Watch the live status for completed, succeeded, failed, and active items.
+   Completion advances only after the corresponding JSONL record is flushed.
+4. Reissue the same call to resume after interruption. Successful items are
+   skipped and failed or unfinished items are retried. Use `resume=false` only
+   to intentionally restart every item; the old file is retained as
+   `<name>.jsonl.bak`.
+5. Report summary counts and the output path. Do not repeat all item results
+   unless the user asks. Convert the JSONL afterwards when another format is
+   required.
 
-If the run aborts early after consecutive failures with no successes, the task
-instructions or a required tool are wrong. Fix the task and re-run — do not
-retry the same call unchanged.
-
-Items run sequentially, so warn the user before starting a run large enough to
-take a long time.
+The tool uses the current Ene model and already-resolved credentials. Never read
+`~/.ene.yaml`, expose API keys, or write a custom provider script merely to run
+the batch.

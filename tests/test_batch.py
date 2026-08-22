@@ -1,40 +1,36 @@
-"""Tests for context-isolated turns and the bundled batch skill."""
+"""Tests for direct model completions and the bundled batch skill."""
+
+from __future__ import annotations
 
 import json
-from contextlib import contextmanager, nullcontext
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
 
-from ene.backend import LLMAgent
-from ene.context import CompactionState, ContextManager
-from ene.messages import Message, ToolCall
+from ene.backend.batch import BatchCompletionMixin
+from ene.messages import Message
+from ene.providers import CompletionResult, ProviderUsage
 from ene.skills import BUNDLED_SKILLS_DIR, load_skill_tools
-from ene.utils.interrupt import TurnOutcome
 from ene.tools import ToolExecutor
-from ene.tools.registry import ToolRegistry
-from ene.ui import AgentConsole
-from ene.utils.io import EventHub
-from ene.utils.storage import clean_storage
 
 BATCH_SKILL_DIR = BUNDLED_SKILLS_DIR / "batch"
 
 
-def _load_batch_tools():
+def _load_batch_tool():
     entries = load_skill_tools(BATCH_SKILL_DIR)
     assert len(entries) == 1
     return entries[0]
 
 
 class _Indicator:
-    """Records the suffixes a run-level indicator is updated with."""
+    def __init__(self, suffix=""):
+        self.suffixes = [suffix]
 
-    def __init__(self, status_suffix=""):
-        self.suffixes = [status_suffix]
-
-    def set_status_suffix(self, status_suffix):
-        self.suffixes.append(status_suffix)
+    def set_status_suffix(self, suffix):
+        self.suffixes.append(suffix)
 
     def __enter__(self):
         return self
@@ -45,447 +41,62 @@ class _Indicator:
 
 class _Console:
     def __init__(self):
-        self.thinking_calls = []
         self.indicators = []
-        self.quiet_depth = 0
+        self.calls = []
 
     def thinking(self, **kwargs):
-        self.thinking_calls.append(kwargs)
+        self.calls.append(kwargs)
         indicator = _Indicator(kwargs.get("status_suffix", ""))
         self.indicators.append(indicator)
         return indicator
-
-    @contextmanager
-    def suppressed(self):
-        self.quiet_depth += 1
-        try:
-            yield
-        finally:
-            self.quiet_depth -= 1
-
-    def system(self, *args, **kwargs):
-        pass
-
-    def warn(self, *args, **kwargs):
-        pass
 
     def tool(self, *args, **kwargs):
         pass
 
 
-def _agent(responses=None, system="system prompt", console=None, executor=None):
-    """An agent double exposing exactly what run_isolated_turn touches."""
-    context = ContextManager(system)
-    agent = NS(
-        context=context,
+class _Cancellation:
+    cancelled = False
+    watch_keyboard = False
+
+
+class _Completer:
+    def __init__(self, responses=None, delay=0):
+        self.responses = responses or {}
+        self.delay = delay
+        self.calls = []
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def __call__(self, instruction, item, **kwargs):
+        with self.lock:
+            self.calls.append((instruction, item, kwargs))
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            if self.delay:
+                time.sleep(self.delay)
+            value = self.responses.get(item, f"result:{item}")
+            if isinstance(value, Exception):
+                raise value
+            return {"result": value, "usage": {"total_tokens": 3}}
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+def _executor(tmp_path, completer=None, *, image=True, console=None):
+    return ToolExecutor(
         console=console or _Console(),
-        # Skill state lives on the executor and is part of the rollback.
-        tool_executor=executor if executor is not None else ToolExecutor(),
-        cancellation=None,
-        _pending_images=[],
-        _isolated_turn_active=False,
-        _last_interrupted=False,
-        _last_turn_outcome=TurnOutcome.COMPLETED,
-        _interrupt_reverts_prompt=False,
-        _last_finish_reason="stop",
-        _compaction_floor_tokens=None,
-        seen=[],
-    )
-
-    queue = list(responses or [])
-
-    def get_response():
-        # Record what this turn actually sees, then behave like a real turn:
-        # append an assistant message to the live context.
-        agent.seen.append(list(context.messages))
-        outcome = queue.pop(0) if queue else "ok"
-        if isinstance(outcome, Exception):
-            raise outcome
-        agent._last_interrupted = bool(getattr(outcome, "interrupted", False))
-        agent._last_turn_outcome = (
-            TurnOutcome.USER_INTERRUPTED
-            if agent._last_interrupted else TurnOutcome.COMPLETED
-        )
-        text = outcome.text if hasattr(outcome, "text") else outcome
-        context.add(Message.assistant(text or ""))
-        return text
-
-    agent.get_response = get_response
-    agent.run_isolated_turn = lambda prompt: LLMAgent.run_isolated_turn(agent, prompt)
-    return agent
-
-
-def _interrupted(text=None):
-    return NS(text=text, interrupted=True)
-
-
-# ----- core primitive: run_isolated_turn ------------------------------------
-
-def test_isolated_turn_restores_context_exactly():
-    agent = _agent(["first", "second", "third"])
-    agent.context.add(Message.user("prior conversation"))
-    agent.context.add(Message.assistant("prior reply"))
-    before = list(agent.context.messages)
-    before_chars = agent.context.total_chars
-
-    for i in range(3):
-        response, outcome = agent.run_isolated_turn(f"item {i}")
-        assert outcome == TurnOutcome.COMPLETED
-        assert response == ["first", "second", "third"][i]
-
-    assert agent.context.messages == before
-    # The cached char total must be restored too, not just the message list.
-    assert agent.context.total_chars == before_chars
-
-
-def test_isolated_turns_do_not_see_enclosing_context_or_each_other():
-    agent = _agent(["a", "b", "c"])
-    agent.context.add(Message.user("prior"))
-    agent.context.add(Message.assistant(None, tool_calls=[
-        ToolCall(id="batch-call", name="run_batch", arguments="{}"),
-    ]))
-
-    for i in range(3):
-        agent.run_isolated_turn(f"item {i}")
-
-    # Every turn saw only its own prompt. The enclosing context may end in an
-    # unresolved run_batch tool call, so it cannot be sent as a provider prefix.
-    for i, seen in enumerate(agent.seen):
-        assert seen == [Message.user(f"item {i}")]
-
-
-def test_isolated_turn_restores_compaction_state_and_images():
-    agent = _agent(["only"])
-    state = CompactionState(original_request="the original ask")
-    agent.context.compaction_state = state
-    agent._compaction_floor_tokens = 4321
-    queued = {"file": "outer.png", "url": "data:outer"}
-    agent._pending_images.append(queued)
-
-    def get_response():
-        # Stand in for a turn that reads an image and triggers compaction.
-        agent._pending_images.append({"file": "x.png", "url": "data:..."})
-        agent.context.compaction_state = CompactionState(original_request="leaked")
-        agent._compaction_floor_tokens = 99
-        return "done"
-
-    agent.get_response = get_response
-
-    agent.run_isolated_turn("item")
-
-    assert agent.context.compaction_state is state
-    assert agent._compaction_floor_tokens == 4321
-    assert agent._pending_images == [queued]
-
-
-def test_isolated_turn_restores_context_after_failure():
-    agent = _agent([RuntimeError("provider exploded")])
-    agent.context.add(Message.user("prior"))
-    before = list(agent.context.messages)
-
-    with pytest.raises(RuntimeError):
-        agent.run_isolated_turn("item")
-
-    assert agent.context.messages == before
-    assert agent._isolated_turn_active is False
-
-
-def test_isolated_turn_reports_interruption_without_overwriting_outer_state():
-    agent = _agent([_interrupted()])
-    agent._last_interrupted = False
-    agent._interrupt_reverts_prompt = False
-    agent._last_finish_reason = "tool_calls"
-
-    def get_response():
-        agent._last_interrupted = True
-        agent._last_turn_outcome = TurnOutcome.USER_INTERRUPTED
-        agent._interrupt_reverts_prompt = True
-        agent._last_finish_reason = "cancelled"
-        return None
-
-    agent.get_response = get_response
-    response, outcome = agent.run_isolated_turn("item")
-
-    assert response is None
-    assert outcome == TurnOutcome.USER_INTERRUPTED
-    assert agent._last_interrupted is False
-    assert agent._interrupt_reverts_prompt is False
-    assert agent._last_finish_reason == "tool_calls"
-
-
-def test_isolated_turn_skipped_when_already_cancelled():
-    agent = _agent(["unused"])
-    agent.cancellation = NS(cancelled=True)
-
-    response, outcome = agent.run_isolated_turn("item")
-
-    assert (response, outcome) == (None, TurnOutcome.USER_INTERRUPTED)
-    assert agent.seen == []  # the turn never ran
-
-
-def test_isolated_turns_cannot_nest():
-    agent = _agent()
-
-    def get_response():
-        return agent.run_isolated_turn("inner")
-
-    agent.get_response = get_response
-
-    with pytest.raises(RuntimeError, match="cannot nest"):
-        agent.run_isolated_turn("outer")
-    assert agent._isolated_turn_active is False
-
-
-def test_isolated_turn_never_commits_a_session_revision():
-    """A compaction inside an item must not move the durable head onto it."""
-    saved = []
-    agent = _agent()
-    agent.context.add(Message.user("the real conversation"))
-    agent._session_id = "s1"
-    agent._session_store = object()
-    agent._session_revision_id = "outer-revision"
-
-    def save_session(name, *, reason="autosave"):
-        saved.append((reason, list(agent.context.messages)))
-        agent._session_revision_id = "revision-from-item"
-
-    agent.save_session = save_session
-
-    def get_response():
-        agent.context.add(Message.assistant("item work"))
-        LLMAgent._snapshot_before_compaction(agent)
-        return "done"
-
-    agent.get_response = get_response
-
-    agent.run_isolated_turn("caption a.png")
-
-    assert saved == []
-    assert agent._session_revision_id == "outer-revision"
-
-    # The same agent still snapshots normally once the turn is over.
-    LLMAgent._snapshot_before_compaction(agent)
-    assert [reason for reason, _ in saved] == ["pre-compaction"]
-
-
-def test_isolated_turn_output_is_neither_rendered_nor_published(capsys):
-    events = EventHub()
-    console = AgentConsole(events)
-    agent = _agent(console=console)
-    agent.get_response = lambda: (
-        console.response("per-item result nobody asked to see"),
-        console.tool_result("12 lines read"),
-        "done",
-    )[-1]
-
-    console.system("before the batch")
-    baseline = events.latest_seq
-    capsys.readouterr()
-
-    response, _ = agent.run_isolated_turn("item")
-
-    assert response == "done"
-    assert events.after(baseline) == []
-    assert capsys.readouterr().out == ""
-    # Suppression is scoped to the turn, not sticky.
-    console.system("after the batch")
-    assert [event.type for event in events.after(baseline)] == ["system"]
-    assert "after the batch" in capsys.readouterr().out
-
-
-def _skill_dir(tmp_path, name="demo", body="DEMO INSTRUCTIONS", tools=None):
-    directory = tmp_path / "skills" / name
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: d\n---\n\n{body}\n", encoding="utf-8"
-    )
-    if tools is not None:
-        (directory / "tools.py").write_text(tools, encoding="utf-8")
-    return {name: {"body": body, "dir": str(directory), "description": "d"}}
-
-
-def test_isolated_turn_restores_loaded_skills(tmp_path):
-    """A skill loaded by one item must not silently un-instruct the next one."""
-    skills = _skill_dir(tmp_path)
-    agent = _agent()
-    executor = _executor(agent, tmp_path, skills=skills)
-
-    agent.get_response = lambda: executor.execute("load_skill", {"name": "demo"})
-
-    first = agent.run_isolated_turn("item 1")[0]
-    second = agent.run_isolated_turn("item 2")[0]
-
-    # Every item gets the instructions even though the executor tracks loads.
-    assert "DEMO INSTRUCTIONS" in first["content"]
-    assert "DEMO INSTRUCTIONS" in second["content"]
-    # And the enclosing conversation can still obtain them itself.
-    assert executor._loaded_skills == set()
-    assert "DEMO INSTRUCTIONS" in executor.execute("load_skill", {"name": "demo"})["content"]
-
-
-def test_isolated_turn_restores_skill_tools_and_load_counts(tmp_path):
-    """Rollback covers the registry too, not just the loaded-skill names."""
-    skills = _skill_dir(
-        tmp_path,
-        tools=(
-            "TOOLS = [{\n"
-            "    'run': lambda executor: {'success': True},\n"
-            "    'schema': {'type': 'function', 'function': {\n"
-            "        'name': 'demo_tool', 'description': 'd',\n"
-            "        'parameters': {'type': 'object', 'properties': {}},\n"
-            "    }},\n"
-            "}]\n"
-        ),
-    )
-    agent = _agent()
-    executor = _executor(agent, tmp_path, skills=skills)
-    agent.get_response = lambda: executor.execute("load_skill", {"name": "demo"})
-
-    agent.run_isolated_turn("item")
-
-    # An item's skill must not keep advertising its tools to the conversation.
-    assert executor.registry.get("demo_tool") is None
-    assert executor.skill_tool_schemas() == []
-    # Nor inflate the session's usage telemetry with per-item loads.
-    assert executor._skill_loads == {}
-
-
-def test_isolated_turn_keeps_skills_the_conversation_loaded(tmp_path):
-    """Rollback restores the enclosing state — it does not reset to empty."""
-    skills = _skill_dir(tmp_path)
-    agent = _agent()
-    executor = _executor(agent, tmp_path, skills=skills)
-    executor.execute("load_skill", {"name": "demo"})
-
-    agent.get_response = lambda: "done"
-    agent.run_isolated_turn("item")
-
-    assert executor._loaded_skills == {"demo"}
-    assert executor._skill_loads == {"demo": 1}
-
-
-def test_isolated_turn_can_load_a_skill_the_conversation_already_loaded(tmp_path):
-    """An item starts from an empty history, so it must get real instructions."""
-    skills = _skill_dir(tmp_path)
-    agent = _agent()
-    executor = _executor(agent, tmp_path, skills=skills)
-    executor.execute("load_skill", {"name": "demo"})
-
-    agent.get_response = lambda: executor.execute("load_skill", {"name": "demo"})
-
-    result = agent.run_isolated_turn("item")[0]
-
-    # Reloading returns the body because this isolated item has no prior history.
-    assert "DEMO INSTRUCTIONS" in result["content"]
-
-
-def test_isolated_turn_restores_skills_after_a_failing_item(tmp_path):
-    skills = _skill_dir(tmp_path)
-    agent = _agent()
-    executor = _executor(agent, tmp_path, skills=skills)
-
-    def get_response():
-        executor.execute("load_skill", {"name": "demo"})
-        raise RuntimeError("item blew up")
-
-    agent.get_response = get_response
-
-    with pytest.raises(RuntimeError):
-        agent.run_isolated_turn("item")
-
-    assert executor._loaded_skills == set()
-
-
-def test_isolated_turn_still_reports_errors(capsys):
-    """An item reports only "no response"; the error is the sole diagnosis."""
-    events = EventHub()
-    console = AgentConsole(events)
-    agent = _agent(console=console)
-    agent.get_response = lambda: console.error("API call failed: quota exhausted")
-
-    baseline = events.latest_seq
-    capsys.readouterr()
-
-    response, _ = agent.run_isolated_turn("item")
-
-    assert response is None
-    assert "quota exhausted" in capsys.readouterr().out
-    assert [event.type for event in events.after(baseline)] == ["error"]
-
-
-def test_isolated_turns_do_not_share_a_prompt_cache_key_with_the_conversation():
-    requests = []
-    agent = NS(
-        context_length=0,
-        model="test-model",
-        max_output_tokens=100,
-        INITIAL_BACKOFF=0.01,
-        MAX_BACKOFF=0.02,
-        verbose=False,
-        round_id=1,
-        _session_id="20240101_000000",
-        _isolated_turn_active=False,
-        _pending_images=[],
-        _messages_with_pending_images=lambda: [],
-        stream=False,
-        tools=[],
-        profile=NS(reasoning=None),
-        reasoning_effort="high",
-        cancellation=None,
-        _accumulate_usage=lambda usage: None,
-        token_estimator=NS(observe=lambda *args: None),
-        context=NS(add=lambda message: None),
-        _blocking_completion=lambda request: (
-            requests.append(request),
-            NS(message=Message.assistant("ok"), usage=None, finish_reason="stop"),
-        )[-1],
-        _estimate_usage=lambda message: NS(
-            prompt_tokens=1, completion_tokens=1, total_tokens=2,
-            reasoning_tokens=None, cached_prompt_tokens=None,
-        ),
-    )
-
-    LLMAgent.call_api(agent)
-    agent._isolated_turn_active = True
-    LLMAgent.call_api(agent)
-
-    outer, isolated = (request.session_id for request in requests)
-    assert outer == "20240101_000000"
-    assert isolated != outer
-
-
-def test_steering_is_suppressed_during_an_isolated_turn():
-    submission = NS(text="a steering message", steer=True, id="s1", source="web")
-    consumed = []
-    agent = NS(
-        _isolated_turn_active=True,
-        input_broker=NS(
-            submission=submission,
-            get_nowait=lambda sid=None: consumed.append(sid),
-        ),
-    )
-
-    assert LLMAgent._inject_pending_steer(agent) is False
-    assert consumed == []  # the message stays pending for the enclosing round
-
-
-# ----- batch skill ----------------------------------------------------------
-
-def _executor(agent, tmp_path, console=None, skills=None):
-    executor = ToolExecutor(
-        console=console or agent.console,
         work_dir=str(tmp_path),
-        skills=skills,
-        isolated_turn=agent.run_isolated_turn,
+        cancellation=_Cancellation(),
+        batch_completion=completer or _Completer(),
+        cancel_batch_completions=lambda: None,
+        supports_image_input=image,
     )
-    # One agent owns one executor, as LLMAgent does: the isolated turn must roll
-    # back skill state on the very executor its items call tools through.
-    agent.tool_executor = executor
-    return executor
 
 
 def _output(tmp_path, name="run"):
-    """Where the skill writes results for *name* (protected .ene/batch entry)."""
     return tmp_path / ".ene" / "batch" / f"{name}.jsonl"
 
 
@@ -493,346 +104,226 @@ def _records(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def test_batch_returns_only_a_summary(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent([f"caption {i}" for i in range(3)])
-    executor = _executor(agent, tmp_path)
+def test_batch_runs_direct_completions_in_parallel_and_returns_only_summary(tmp_path):
+    entry = _load_batch_tool()
+    completer = _Completer(delay=0.04)
+    console = _Console()
+    executor = _executor(tmp_path, completer, console=console)
 
     result = entry["run"](
         executor,
-        task="Describe {item}",
-        items=["a.png", "b.png", "c.png"],
+        instruction="Classify {item}",
+        items=["a", "b", "c", "d"],
+        name="classes",
+        concurrency=3,
+        label="Classifying",
+    )
+
+    assert result["success"] and result["succeeded"] == 4
+    assert completer.max_active >= 2
+    assert "result:a" not in json.dumps(result)
+    records = _records(_output(tmp_path, "classes"))
+    assert {record["result"] for record in records} == {
+        "result:Classify a", "result:Classify b", "result:Classify c", "result:Classify d"
+    }
+    assert all(record["usage"] == {"total_tokens": 3} for record in records)
+    assert console.calls[0]["label"] == "Classifying"
+    assert any("4/4 completed" in suffix for suffix in console.indicators[0].suffixes)
+
+
+def test_batch_without_placeholder_sends_shared_instruction_and_item(tmp_path):
+    entry = _load_batch_tool()
+    completer = _Completer()
+    executor = _executor(tmp_path, completer)
+
+    entry["run"](
+        executor, instruction="Translate to French", items=["hello"], name="translation"
+    )
+
+    assert completer.calls[0][0:2] == ("Translate to French", "hello")
+
+
+def test_batch_passes_schema_and_reasoning_controls(tmp_path):
+    entry = _load_batch_tool()
+    completer = _Completer(responses={"x": {"label": "yes"}})
+    executor = _executor(tmp_path, completer)
+    schema = {
+        "type": "object",
+        "properties": {"label": {"type": "string"}},
+        "required": ["label"],
+        "additionalProperties": False,
+    }
+
+    entry["run"](
+        executor,
+        instruction="Classify",
+        items=["x"],
+        name="structured",
+        output_schema=schema,
+        max_output_tokens=40,
+        reasoning_effort="minimal",
+    )
+
+    kwargs = completer.calls[0][2]
+    assert kwargs["output_schema"] == schema
+    assert kwargs["max_output_tokens"] == 40
+    assert kwargs["reasoning_effort"] == "minimal"
+    assert _records(_output(tmp_path, "structured"))[0]["result"] == {"label": "yes"}
+
+
+def test_batch_reads_local_images_without_an_agent_tool_round(tmp_path):
+    entry = _load_batch_tool()
+    completer = _Completer()
+    executor = _executor(tmp_path, completer)
+    # Minimal valid GIF header accepted by the image loader.
+    (tmp_path / "one.gif").write_bytes(b"GIF89a" + b"\x00" * 20)
+
+    result = entry["run"](
+        executor,
+        instruction="Caption this image",
+        items=["one.gif"],
+        item_type="image",
         name="captions",
     )
 
-    assert result["success"]
-    assert (result["succeeded"], result["failed"], result["total"]) == (3, 0, 3)
-    # The whole point: no per-item result reaches the conversation.
-    blob = json.dumps(result)
-    assert "caption 0" not in blob and "caption 2" not in blob
-    assert "captions.jsonl" in result["message"]
-
-    records = _records(_output(tmp_path, "captions"))
-    assert [r["item"] for r in records] == ["a.png", "b.png", "c.png"]
-    assert [r["result"] for r in records] == ["caption 0", "caption 1", "caption 2"]
-    assert all(r["ok"] for r in records)
+    assert result["succeeded"] == 1
+    call = completer.calls[0]
+    assert call[0:2] == ("Caption this image", "one.gif")
+    assert call[2]["image_url"].startswith("data:image/gif;base64,")
 
 
-def test_batch_leaves_the_conversation_untouched(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["x", "y"])
-    agent.context.add(Message.user("prior"))
-    before = list(agent.context.messages)
-    executor = _executor(agent, tmp_path)
-
-    entry["run"](executor, task="Do {item}", items=["1", "2"], name="run")
-
-    assert agent.context.messages == before
-    for seen in agent.seen:
-        assert len(seen) == 1
-
-
-def test_batch_substitutes_item_and_appends_when_no_placeholder(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["ok", "ok"])
-    executor = _executor(agent, tmp_path)
-
-    entry["run"](
-        executor, task="Caption {item} as JSON {\"a\": 1}", items=["p.png"], name="a"
+def test_batch_rejects_image_mode_for_text_only_model(tmp_path):
+    result = _load_batch_tool()["run"](
+        _executor(tmp_path, image=False),
+        instruction="Caption",
+        items=["a.png"],
+        item_type="image",
+        name="captions",
     )
-    entry["run"](executor, task="Summarize", items=["doc.txt"], name="b")
-
-    assert agent.seen[0][-1].text == 'Caption p.png as JSON {"a": 1}'
-    assert agent.seen[1][-1].text == "Summarize\n\nItem: doc.txt"
-
-
-def test_batch_reads_items_file_skipping_blanks_and_comments(tmp_path):
-    entry = _load_batch_tools()
-    (tmp_path / "items.txt").write_text("a\n\n# skip me\nb\n", encoding="utf-8")
-    agent = _agent(["1", "2"])
-    executor = _executor(agent, tmp_path)
-
-    result = entry["run"](
-        executor, task="Do {item}", items_file="items.txt", name="run"
-    )
-
-    assert result["total"] == 2
-    assert [r["item"] for r in _records(_output(tmp_path))] == ["a", "b"]
+    assert result["success"] is False
+    assert "does not support image" in result["error"]
 
 
 def test_batch_resume_skips_successes_and_retries_failures(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent([None, "recovered", "fresh"])
-    executor = _executor(agent, tmp_path)
+    entry = _load_batch_tool()
     output = _output(tmp_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True)
     output.write_text(
         json.dumps({"item": "a", "index": 1, "ok": True, "result": "kept"}) + "\n"
-        + json.dumps({"item": "b", "index": 2, "ok": False, "error": "boom"}) + "\n"
-        + '{"item": "c", "ok": tru',  # torn final line from a crash
+        + json.dumps({"item": "b", "index": 2, "ok": False, "error": "old"}) + "\n"
+        + '{"item":"c","ok":tru',
         encoding="utf-8",
     )
+    completer = _Completer()
 
     result = entry["run"](
-        executor, task="Do {item}", items=["a", "b", "c"], name="run"
-    )
-
-    assert result["skipped"] == 1
-    # 'b' is retried (it failed) and 'c' is attempted (its record was torn).
-    assert [seen[-1].text for seen in agent.seen] == ["Do b", "Do c"]
-    assert result["succeeded"] == 1 and result["failed"] == 1
-
-
-def test_batch_resume_disabled_reprocesses_everything(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["again"])
-    executor = _executor(agent, tmp_path)
-    output = _output(tmp_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps({"item": "a", "ok": True, "result": "kept"}) + "\n", encoding="utf-8"
-    )
-
-    result = entry["run"](
-        executor, task="Do {item}", items=["a"], name="run", resume=False
-    )
-
-    assert result["skipped"] == 0 and result["succeeded"] == 1
-    records = _records(output)
-    assert len(records) == 1
-    assert records[0]["result"] == "again"
-
-
-def test_batch_restart_keeps_the_previous_results(tmp_path):
-    """resume=False must not be able to destroy a finished run's deliverable."""
-    entry = _load_batch_tools()
-    agent = _agent([RuntimeError("bad task")])
-    executor = _executor(agent, tmp_path)
-    output = _output(tmp_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    previous = json.dumps({"item": "a", "ok": True, "result": "kept"}) + "\n"
-    output.write_text(previous, encoding="utf-8")
-
-    result = entry["run"](
-        executor, task="Do {item}", items=["a"], name="run", resume=False
-    )
-
-    backup = output.with_name(output.name + ".bak")
-    assert backup.read_text(encoding="utf-8") == previous
-    assert result["output"] in result["message"] and str(backup.name) in result["message"]
-    assert [record["ok"] for record in _records(output)] == [False]
-
-
-def test_batch_record_index_is_the_item_position_across_resumes(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["one", None, "three", "two"])
-    executor = _executor(agent, tmp_path)
-
-    entry["run"](executor, task="Do {item}", items=["a", "b", "c"], name="run")
-    entry["run"](executor, task="Do {item}", items=["a", "b", "c"], name="run")
-
-    records = _records(_output(tmp_path))
-    # 'b' failed first time and is retried; its index still names its position.
-    assert [(r["item"], r["index"]) for r in records] == [
-        ("a", 1), ("b", 2), ("c", 3), ("b", 2)
-    ]
-
-
-def test_batch_fresh_failure_is_not_masked_by_an_old_success(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent([None, "recovered"])
-    executor = _executor(agent, tmp_path)
-    output = _output(tmp_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps({"item": "a", "ok": True, "result": "old"}) + "\n",
-        encoding="utf-8",
-    )
-
-    fresh = entry["run"](
-        executor, task="Do {item}", items=["a"], name="run", resume=False
-    )
-    resumed = entry["run"](
-        executor, task="Do {item}", items=["a"], name="run"
-    )
-
-    assert fresh["failed"] == 1
-    assert resumed["skipped"] == 0 and resumed["succeeded"] == 1
-    assert [record["result"] for record in _records(output)] == [None, "recovered"]
-
-
-def test_batch_all_items_already_done_is_a_no_op(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["unused"])
-    executor = _executor(agent, tmp_path)
-    output = _output(tmp_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps({"item": "a", "ok": True, "result": "kept"}) + "\n", encoding="utf-8"
-    )
-
-    result = entry["run"](executor, task="Do {item}", items=["a"], name="run")
-
-    assert result["success"] and result["skipped"] == 1
-    assert agent.seen == []
-
-
-def test_batch_survives_a_failing_item(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["fine", RuntimeError("bad item"), "fine again"])
-    executor = _executor(agent, tmp_path)
-
-    result = entry["run"](
-        executor, task="Do {item}", items=["a", "b", "c"], name="run"
-    )
-
-    assert (result["succeeded"], result["failed"]) == (2, 1)
-    assert result["failures"] == [{"item": "b", "error": "RuntimeError: bad item"}]
-    records = _records(_output(tmp_path))
-    assert [r["ok"] for r in records] == [True, False, True]
-
-
-def test_batch_aborts_early_when_nothing_succeeds(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent([RuntimeError("broken template")] * 10)
-    executor = _executor(agent, tmp_path)
-
-    result = entry["run"](
-        executor,
-        task="Do {item}",
-        items=[str(i) for i in range(10)],
+        _executor(tmp_path, completer),
+        instruction="Do",
+        items=["a", "b", "c"],
         name="run",
     )
 
-    assert result["failed"] == 3
-    assert len(agent.seen) == 3
-    assert "aborted" in result["message"]
+    assert result["skipped"] == 1 and result["succeeded"] == 2
+    assert {call[1] for call in completer.calls} == {"b", "c"}
 
 
-def test_batch_interruption_stops_and_reports_partial_progress(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["one", _interrupted(), "never runs"])
-    executor = _executor(agent, tmp_path)
+def test_batch_restart_preserves_old_results(tmp_path):
+    entry = _load_batch_tool()
+    output = _output(tmp_path)
+    output.parent.mkdir(parents=True)
+    old = json.dumps({"item": "a", "ok": True, "result": "old"}) + "\n"
+    output.write_text(old, encoding="utf-8")
 
     result = entry["run"](
-        executor, task="Do {item}", items=["a", "b", "c"], name="run"
+        _executor(tmp_path), instruction="Redo", items=["a"], name="run", resume=False
     )
 
-    assert result["success"] is True and result["interrupted"] is True
-    assert result["succeeded"] == 1
-    assert "interrupted" in result["message"]
-    # The interrupted item is left unrecorded so a resumed run retries it.
-    assert [r["item"] for r in _records(_output(tmp_path))] == ["a"]
+    assert output.with_name("run.jsonl.bak").read_text() == old
+    assert "run.jsonl.bak" in result["message"]
 
 
-def test_batch_shows_progress_per_item(tmp_path):
-    entry = _load_batch_tools()
-    console = _Console()
-    agent = _agent(["a", "b"])
-    executor = _executor(agent, tmp_path, console=console)
-
-    entry["run"](
-        executor, task="Do {item}", items=["1", "2"], name="run", label="Captioning"
+def test_batch_records_failures_and_keeps_other_results(tmp_path):
+    completer = _Completer({"bad": RuntimeError("rejected")})
+    result = _load_batch_tool()["run"](
+        _executor(tmp_path, completer),
+        instruction="Do",
+        items=["good", "bad", "also-good"],
+        name="run",
     )
 
-    # One indicator for the whole run, updated per item: an indicator per item
-    # would publish a start/stop event pair each time and evict the real
-    # timeline from the bounded reconnect history.
-    assert len(console.indicators) == 1
-    assert console.indicators[0].suffixes == ["0/2", "1/2", "2/2"]
-    assert [c["label"] for c in console.thinking_calls] == ["Captioning"]
+    assert (result["succeeded"], result["failed"]) == (2, 1)
+    assert result["failures"][0]["item"] == "bad"
+    assert {record["ok"] for record in _records(_output(tmp_path))} == {True, False}
 
 
 @pytest.mark.parametrize(
     "kwargs, message",
     [
-        ({"task": "", "items": ["a"], "name": "run"}, "task is required"),
-        ({"task": "t", "items": ["a"]}, "name is required"),
-        # A name is a run identifier, never a path: traversal and separators
-        # must not be able to steer results outside the managed directory.
-        ({"task": "t", "items": ["a"], "name": "../escape"}, "name is required"),
-        ({"task": "t", "items": ["a"], "name": "sub/dir"}, "name is required"),
-        ({"task": "t", "items": ["a"], "name": ".hidden"}, "name is required"),
-        ({"task": "t", "items": ["a"], "name": "x" * 65}, "name is required"),
-        ({"task": "t", "name": "run"}, "exactly one of items or items_file"),
-        (
-            {"task": "t", "items": ["a"], "items_file": "f.txt", "name": "run"},
-            "exactly one of items or items_file",
-        ),
-        (
-            {"task": "t", "items_file": "missing.txt", "name": "run"},
-            "items_file not found",
-        ),
-        (
-            {"task": "t", "items": [str(i) for i in range(101)], "name": "run"},
-            "limited to 100 entries",
-        ),
+        ({"instruction": "", "items": ["a"], "name": "run"}, "instruction is required"),
+        ({"instruction": "x", "items": ["a"], "name": "../bad"}, "name is required"),
+        ({"instruction": "x", "name": "run"}, "exactly one"),
+        ({"instruction": "x", "items": ["a"], "name": "run", "concurrency": 0}, "concurrency"),
+        ({"instruction": "x", "items": ["a"], "name": "run", "item_type": "file"}, "item_type"),
+        ({"instruction": "x", "items": ["a"], "name": "run", "output_schema": []}, "output_schema"),
     ],
 )
-def test_batch_rejects_bad_arguments_before_running(tmp_path, kwargs, message):
-    entry = _load_batch_tools()
-    agent = _agent()
-    executor = _executor(agent, tmp_path)
-
-    result = entry["run"](executor, **kwargs)
-
+def test_batch_rejects_invalid_arguments(tmp_path, kwargs, message):
+    result = _load_batch_tool()["run"](_executor(tmp_path), **kwargs)
     assert result["success"] is False
     assert message in result["error"]
-    assert agent.seen == []
 
 
-def test_batch_requires_an_agent_backed_executor(tmp_path):
-    entry = _load_batch_tools()
+def test_batch_requires_agent_backed_completion_service(tmp_path):
     executor = ToolExecutor(console=_Console(), work_dir=str(tmp_path))
-
-    result = entry["run"](executor, task="Do {item}", items=["a"], name="run")
-
+    result = _load_batch_tool()["run"](
+        executor, instruction="Do", items=["a"], name="run"
+    )
     assert result["success"] is False
     assert "not available" in result["error"]
 
 
-def test_batch_results_land_in_the_managed_directory(tmp_path):
-    entry = _load_batch_tools()
-    agent = _agent(["done"])
-    executor = _executor(agent, tmp_path)
+def test_direct_completion_uses_fresh_context_provider_and_parses_json(monkeypatch):
+    requests = []
 
-    result = entry["run"](executor, task="Do {item}", items=["a"], name="my.run-1")
+    class Provider:
+        def complete(self, request):
+            requests.append(request)
+            return CompletionResult(
+                Message.assistant('{"label":"yes"}'),
+                ProviderUsage(10, 2, 12),
+                "stop",
+            )
 
-    expected = tmp_path / ".ene" / "batch" / "my.run-1.jsonl"
-    assert expected.is_file()
-    # The reported path is relative to the working directory, so the model can
-    # hand it straight to read_file / grep_files.
-    assert result["output"] == str(Path(".ene") / "batch" / "my.run-1.jsonl")
-    assert executor._resolve_path(result["output"]) == expected
+        def close(self):
+            pass
 
+        def cancel(self):
+            pass
 
-def test_batch_results_survive_a_default_storage_clean(tmp_path):
-    """`ene --clean` must not destroy results a run is still working from."""
-    entry = _load_batch_tools()
-    agent = _agent(["done"])
-    executor = _executor(agent, tmp_path)
-    entry["run"](executor, task="Do {item}", items=["a"], name="keep")
-    # Something a clean is genuinely meant to reclaim.
-    (tmp_path / ".ene" / "tool-results").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".ene" / "tool-results" / "old.txt").write_text("junk")
+    monkeypatch.setattr("ene.backend.batch.create_provider", lambda *args: Provider())
+    usage = []
+    agent = NS(
+        profile=NS(supports_image_input=True),
+        cancellation=_Cancellation(),
+        model="demo",
+        max_output_tokens=100,
+        reasoning_effort="high",
+        provider_name="openai",
+        _provider_settings=object(),
+        _batch_provider_lock=threading.Lock(),
+        _batch_providers=set(),
+        _session_id="session",
+        _accumulate_usage=usage.append,
+    )
+    schema = {"type": "object"}
 
-    clean_storage(tmp_path)
+    result = BatchCompletionMixin.run_batch_completion(
+        agent, "Classify", "item", output_schema=schema, reasoning_effort="low"
+    )
 
-    assert _output(tmp_path, "keep").is_file()
-    assert not (tmp_path / ".ene" / "tool-results").exists()
-
-
-def test_batch_tool_registers_without_colliding(tmp_path):
-    entry = _load_batch_tools()
-    registry = ToolRegistry()
-
-    registry.register_skill("batch", [entry])
-
-    spec = registry.get("run_batch")
-    assert spec is not None
-    description = spec.describe({
-        "task": "Describe the image",
-        "items_file": "items.txt",
-        "name": "captions",
-    })
-    assert "items.txt" in description.text and "captions" in description.text
+    assert result["result"] == {"label": "yes"}
+    request = requests[0]
+    assert request.messages == [Message.system("Classify"), Message.user("item")]
+    assert request.tools == [] and request.stream is False
+    assert request.response_schema == schema and request.reasoning_effort == "low"
+    assert usage[0].total_tokens == 12

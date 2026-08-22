@@ -105,6 +105,25 @@ def test_terminal_keeps_context_status_when_activity_stops(monkeypatch):
     assert lines[2] and set(lines[2]) == {"─"}
 
 
+def test_thinking_indicator_publishes_running_suffix_updates():
+    events = []
+
+    class Hub:
+        def publish(self, kind, **data):
+            events.append((kind, data))
+
+    indicator = ThinkingIndicator(
+        Console(file=io.StringIO(), no_color=True),
+        events=Hub(),
+        render_terminal=False,
+    )
+    indicator.__enter__()
+    indicator.set_status_suffix("1/3 completed\n└ 2 · image.png")
+    indicator.__exit__(None, None, None)
+
+    assert ("thinking_update", {"suffix": "1/3 completed\n└ 2 · image.png"}) in events
+
+
 def test_thinking_indicator_can_render_a_countdown():
     output = io.StringIO()
     console = Console(file=output, width=80, no_color=True)

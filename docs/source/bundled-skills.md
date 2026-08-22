@@ -6,7 +6,7 @@ The source `SKILL.md` is the authoritative introduction and usage guide for each
 
 | Skill | Use it for | Instructions |
 |---|---|---|
-| `batch` | Apply one repeated agentic task to many independent items without growing conversation context. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/batch/SKILL.md) |
+| `batch` | Apply one direct LLM transformation to many independent text or image items with parallelism, structured output, and resume support. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/batch/SKILL.md) |
 | `browser` | Control an existing Chrome or Chromium browser through CDP. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/browser/SKILL.md) |
 | `code-review` | Review code, diffs, commits, pull requests, or designs for actionable risks. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/code-review/SKILL.md) |
 | `lean` | Request terse answers and minimal, YAGNI implementations. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/lean/SKILL.md) |
