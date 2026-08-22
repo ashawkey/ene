@@ -59,9 +59,13 @@ def test_bundled_personas_are_declarative():
     assert "unrelated or independently deliverable work" in personas["orchestrator"].template
     assert "Do not maintain a backlog" in personas["orchestrator"].template
     assert "Run only one subagent at a time" in personas["orchestrator"].template
-    assert "Only an independent passing review of every acceptance criterion completes" in personas["orchestrator"].template
-    assert "three implementation-review cycles" in personas["orchestrator"].template
-    assert "related small issues may be grouped" in personas["orchestrator"].description
+    assert "Only an independent reviewer reporting no actionable findings" in personas["orchestrator"].template
+    assert "Review → Implement → Review" in personas["orchestrator"].template
+    assert "Implement → Review → Implement → Review" in personas["orchestrator"].template
+    assert "independently determine whether it is valid" in personas["orchestrator"].template
+    assert "review the entire requested scope for missed issues and regressions" in personas["orchestrator"].template
+    assert "Continue this implement-review loop until a reviewer passes it" in personas["orchestrator"].template
+    assert "implementation or code-review work item" in personas["orchestrator"].description
     assert "manifest's page-aware `content_list_path`" in personas["reviewer"].template
     assert "`write_file` is only for an output path" in personas["reviewer"].template
 
