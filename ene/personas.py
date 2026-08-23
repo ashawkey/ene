@@ -228,11 +228,21 @@ def get_persona(
     name: str,
     work_dir: str | Path | None = None,
     personas: dict[str, PersonaInfo] | None = None,
+    *,
+    allow_prefix: bool = True,
 ) -> PersonaInfo:
     available = personas if personas is not None else discover_personas(work_dir)
-    if name not in available:
+    if name in available:
+        return available[name]
+    if not allow_prefix:
         raise ValueError(f"Unknown persona '{name}'. Available: {', '.join(available)}")
-    return available[name]
+
+    matches = sorted(candidate for candidate in available if name and candidate.startswith(name))
+    if len(matches) == 1:
+        return available[matches[0]]
+    if matches:
+        raise ValueError(f"Ambiguous persona prefix '{name}'. Matches: {', '.join(matches)}")
+    raise ValueError(f"Unknown persona '{name}'. Available: {', '.join(available)}")
 
 
 def render_persona(persona: PersonaInfo, ctx: PersonaContext) -> str:

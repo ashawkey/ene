@@ -665,7 +665,7 @@ def cmd_kill(identifier: str | None) -> None:
 
 def _add_session_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default="", help="model alias from ~/.ene.yaml")
-    parser.add_argument("--persona", default="", help="persona to run as")
+    parser.add_argument("--persona", default="", help="persona name or unique prefix to run as")
     parser.add_argument("--verbose", action="store_true", help="show detailed output")
     stream = parser.add_mutually_exclusive_group()
     stream.add_argument("--stream", dest="stream", action="store_true", help="stream responses (default)")

@@ -35,14 +35,16 @@ Supported whole-line markers are `autonomous-mode`, `skills`, `project-instructi
 Project instructions normally come from `./AGENTS.md`. If `./.ene/AGENTS.md` exists, it replaces that file; a line containing exactly `@AGENTS.md` imports the root file at that position, allowing local instructions to extend it. No other import paths are supported.
 
 ```bash
-ene --persona reviewer
+ene --persona o
 ```
 
 | Command | Effect |
 |---------|--------|
 | `/persona` | List discovered personas, sources, and tool surfaces |
-| `/persona <name>` | Switch persona and restart the conversation |
+| `/persona <name-or-prefix>` | Switch persona and restart the conversation; a unique prefix such as `o` selects `orchestrator` |
 | `/persona reload` | Re-scan persona directories; restart if the active persona changed |
+
+`--persona` accepts the same unique prefixes, so `ene --persona o` starts with `orchestrator`. Exact names take precedence; ambiguous prefixes report their matches.
 
 The active persona name and content digest are saved with the session. Resume warns if its content changed and fails clearly if it is no longer installed. Tool whitelists enforce which built-in tools are advertised to the model; interactive slash commands remain available.
 

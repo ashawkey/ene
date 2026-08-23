@@ -65,7 +65,7 @@ class AgentCommandsMixin:
         "auth": "Show authentication status (/auth [provider|model-alias])",
         "effort": "Show or set reasoning effort (/effort <level>)",
         "skills": "List skills; /skills <name> to load one, /skills reload to re-scan",
-        "persona": "List/switch personas; /persona reload to re-scan",
+        "persona": "List/switch personas by name or prefix; /persona reload to re-scan",
         "wait": "Send a prompt after a delay (/wait <30s|5m|1h> <prompt>)",
         "rewind": "Return to before a user prompt, edit it, then branch",
         "fork": "Fork from before a user prompt into a new session (/fork [name])",
@@ -593,7 +593,7 @@ class AgentCommandsMixin:
     def _cmd_persona(self, raw: str = "/persona"):
         """List personas, or switch to one (switching restarts the conversation).
 
-        Usage: ``/persona`` (list) | ``/persona reload`` | ``/persona <name>``.
+        Usage: ``/persona`` (list) | ``/persona reload`` | ``/persona <name-or-prefix>``.
         """
         parts = raw.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
@@ -616,7 +616,7 @@ class AgentCommandsMixin:
                     f"    [dim]{tools} · {bundled} · {local} · {info.source} · {info.path}[/dim]"
                 )
             self.console.print(
-                "\n[dim]/persona <name> to switch · /persona reload to re-scan[/dim]"
+                "\n[dim]/persona <name-or-prefix> to switch · /persona reload to re-scan[/dim]"
             )
             return
 
@@ -624,13 +624,13 @@ class AgentCommandsMixin:
         if target.lower() == "reload":
             self._reload_personas()
             return
-        if target == self.persona.name:
-            self.console.system(f"Already using persona '{target}'.")
-            return
         try:
             persona = get_persona(target, personas=self.personas)
         except ValueError as e:
             self.console.error(str(e))
+            return
+        if persona.name == self.persona.name:
+            self.console.system(f"Already using persona '{persona.name}'.")
             return
 
         self._switch_persona(persona)

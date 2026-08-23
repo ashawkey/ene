@@ -621,7 +621,7 @@ class SessionMixin:
 
         saved_persona = data.get("persona")
         if saved_persona:
-            persona = get_persona(saved_persona, personas=self.personas)
+            persona = get_persona(saved_persona, personas=self.personas, allow_prefix=False)
             saved_digest = data.get("persona_digest")
             if saved_digest and saved_digest != persona.digest:
                 self.console.warn(

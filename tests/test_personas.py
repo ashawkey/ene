@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ene import personas as personas_module
-from ene.personas import PersonaContext, discover_personas, read_persona
+from ene.personas import PersonaContext, discover_personas, get_persona, read_persona
 
 
 def _write_persona(
@@ -74,6 +74,26 @@ def test_bundled_personas_are_declarative():
     assert "implementation or code-review work item" in personas["orchestrator"].description
     assert "manifest's page-aware `content_list_path`" in personas["reviewer"].template
     assert "`write_file` is only for an output path" in personas["reviewer"].template
+
+
+def test_get_persona_accepts_unique_prefix_and_prefers_exact_name():
+    personas = discover_personas()
+
+    assert get_persona("o", personas=personas).name == "orchestrator"
+    assert get_persona("coder", personas=personas).name == "coder"
+
+
+def test_get_persona_rejects_ambiguous_or_unknown_prefix():
+    personas = discover_personas()
+
+    with pytest.raises(ValueError, match="Ambiguous persona prefix 'c'.*chat, coder"):
+        get_persona("c", personas=personas)
+    with pytest.raises(ValueError, match="Unknown persona 'missing'"):
+        get_persona("missing", personas=personas)
+    with pytest.raises(ValueError, match="Unknown persona ''"):
+        get_persona("", personas=personas)
+    with pytest.raises(ValueError, match="Unknown persona 'o'"):
+        get_persona("o", personas=personas, allow_prefix=False)
 
 
 def test_read_persona_validates_skill_policy(tmp_path):
