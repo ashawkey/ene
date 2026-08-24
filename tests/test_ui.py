@@ -341,20 +341,39 @@ def test_response_stream_fence_opener_split_across_chunks(chunks):
     assert rendered.index(expected) < rendered.index("After")
 
 
-def test_response_stream_fence_closer_split_across_chunks():
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["```text\nvalue```\nafter\n"],
+        ["```text\nvalue", "```\nafter\n"],
+        ["```text\nvalue`", "``\nafter\n"],
+    ],
+)
+def test_response_stream_chunk_boundaries_do_not_create_fence_newlines(chunks):
     output, stream = make_stream()
 
-    # The closing fence may arrive glued to the last code line.
-    for chunk in ["```python\n", "def foo():\n", "    return 1", "```\n", "After\n"]:
+    for chunk in chunks:
         stream.on_content(chunk)
     stream.close()
 
     rendered = output.getvalue()
-    assert "def foo():" in rendered
-    assert "return 1" in rendered
-    assert "After" in rendered
-    assert "```" not in rendered
-    assert rendered.index("return 1") < rendered.index("After")
+    assert "value```" in rendered
+    assert "after" in rendered
+
+
+@pytest.mark.parametrize("indent", ["    ", "\t"])
+def test_response_stream_does_not_close_fence_at_indented_marker(indent):
+    output, stream = make_stream()
+
+    stream.on_content(f"```text\nvalue\n{indent}```\nstill code\n")
+    assert output.getvalue() == ""
+
+    stream.on_content("```\nafter\n")
+    rendered = output.getvalue()
+    assert "value" in rendered
+    assert "```" in rendered
+    assert "still code" in rendered
+    assert "after" not in rendered
 
 
 def test_response_stream_keeps_backticks_inside_fence_content():

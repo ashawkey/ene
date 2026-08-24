@@ -535,10 +535,6 @@ class _TerminalMarkdownStream:
         "table_open",
         "thematic_break",
     }
-    # Used only to recover a closing marker emitted immediately after the last
-    # code token. Openers and info strings must otherwise follow real newlines.
-    _FENCE_LINE_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})\s*$")
-
     def __init__(self, console: Console):
         self._console = console
         self._parser = MarkdownIt().enable("strikethrough").enable("table")
@@ -603,7 +599,11 @@ class _TerminalMarkdownStream:
     def _fence_is_closed(lines: list[str], end: int, markup: str) -> bool:
         if not markup or end < 2:
             return False
-        closing = lines[end - 1].strip()
+        line = lines[end - 1]
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > 3:
+            return False
+        closing = line[indent:].rstrip(" \t")
         return (
             len(closing) >= len(markup)
             and not closing.strip(markup[0])
@@ -673,29 +673,9 @@ class _TerminalMarkdownStream:
             if reference["map"][1] <= stable_line:
                 self._references[label] = reference
 
-    def _has_unclosed_fence(self) -> bool:
-        tokens = self._parser.parse(self._buffer)
-        lines = self._buffer.splitlines()
-        return any(
-            token.type == "fence"
-            and token.map is not None
-            and not self._fence_is_closed(lines, token.map[1], token.markup)
-            for token in reversed(tokens)
-        )
-
     def feed(self, text: str) -> None:
-        # Chunk boundaries carry no Markdown meaning. A provider may split
-        # anywhere inside a fence marker or its info string, so don't infer an
-        # opener boundary from a partial chunk. We only repair the common case
-        # where a complete closer follows code without the expected newline;
-        # the already-parsed buffer proves that a fence is currently open.
-        if self._pending.strip() and "\n" in text:
-            first_line = text.split("\n", 1)[0]
-            if (
-                self._FENCE_LINE_RE.match(first_line)
-                and self._has_unclosed_fence()
-            ):
-                self._pending += "\n"
+        # Chunk boundaries carry no Markdown meaning. Preserve the provider's
+        # text exactly and wait for real newlines before parsing complete lines.
         self._pending += text
         complete = self._pending.rpartition("\n")
         if not complete[1]:

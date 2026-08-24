@@ -553,7 +553,10 @@ def test_context_detail_shows_untruncated_message_content():
 
     class Console:
         def print(self, message, **kwargs):
-            output.append((str(message), kwargs))
+            output.append(("print", str(message), kwargs))
+
+        def response(self, message):
+            output.append(("response", str(message), {}))
 
         def warn(self, message):
             warnings.append(str(message))
@@ -572,9 +575,9 @@ def test_context_detail_shows_untruncated_message_content():
 
     agent._handle_command("/context 0")
 
-    assert ("full [literal] response\nsecond line", {"markup": False}) in output
-    assert ("private [reasoning]", {"markup": False}) in output
-    assert ('{"content":"complete"}', {"markup": False}) in output
+    assert ("response", "full [literal] response\nsecond line", {}) in output
+    assert ("print", "private [reasoning]", {"markup": False}) in output
+    assert ("print", '{"content":"complete"}', {"markup": False}) in output
     assert not warnings
 
 
@@ -606,6 +609,46 @@ def test_context_list_highlights_conversation_and_dims_tools():
     assert "[bright_black](?)  noisy \\[output][/bright_black]" in rendered
 
 
+def test_context_list_filters_user_and_assistant_messages():
+    output = []
+
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = NS(print=lambda message: output.append(str(message)))
+    agent.context = NS(messages=[
+        Message.user("first prompt"),
+        Message.assistant("first answer"),
+        Message.tool("call-1", "tool output"),
+        Message.user("second prompt"),
+    ])
+    agent.token_estimator = NS(chars_to_tokens=lambda chars: chars // 4)
+    agent.context_length = 1000
+
+    agent._cmd_context("/context user")
+    agent._cmd_context("/context assistant")
+
+    user_output, assistant_output = output
+    assert "Context log (2 user messages)" in user_output
+    assert "#0" in user_output and "first prompt" in user_output
+    assert "#3" in user_output and "second prompt" in user_output
+    assert "first answer" not in user_output
+    assert "tool output" not in user_output
+    assert "Context log (1 assistant message)" in assistant_output
+    assert "#1" in assistant_output and "first answer" in assistant_output
+    assert "first prompt" not in assistant_output
+    assert "tool output" not in assistant_output
+
+
+def test_context_filter_reports_when_role_has_no_messages():
+    messages = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = NS(system=messages.append, warn=pytest.fail)
+    agent.context = NS(messages=[Message.user("hello")])
+
+    agent._cmd_context("/context assistant")
+
+    assert messages == ["Context has no assistant messages."]
+
+
 def test_context_detail_validates_message_id():
     warnings = []
     agent = type("Agent", (AgentCommandsMixin,), {})()
@@ -617,9 +660,9 @@ def test_context_detail_validates_message_id():
     agent._cmd_context("/context 0 extra")
 
     assert warnings == [
-        "Usage: /context [id]",
+        "Usage: /context [user|assistant|id]",
         "Context message #2 does not exist.",
-        "Usage: /context [id]",
+        "Usage: /context [user|assistant|id]",
     ]
 
 

@@ -50,7 +50,7 @@ class AgentCommandsMixin:
     # Drives dispatch (COMMANDS), /help output, and terminal auto-completion.
     COMMAND_HELP = {
         "help": "Show this help message",
-        "context": "List context messages; /context <id> shows one in full",
+        "context": "List context; user|assistant filters; <id> shows one in full",
         "system_prompt": "Print the current full system prompt",
         "compact": "Force context compaction via LLM summarization",
         "recap": "Summarize the conversation's task in one sentence",
@@ -690,32 +690,51 @@ class AgentCommandsMixin:
     def _cmd_context(self, raw: str = "/context"):
         msgs = self.context.messages
         parts = raw.split()
+        usage = "Usage: /context [user|assistant|id]"
         if len(parts) > 2:
-            self.console.warn("Usage: /context [id]")
+            self.console.warn(usage)
             return
 
+        role_filter = None
         if len(parts) == 2:
-            message_id = parts[1].removeprefix("#")
-            if not message_id.isdigit():
-                self.console.warn("Usage: /context [id]")
+            argument = parts[1].lower()
+            if argument in ("user", "assistant"):
+                role_filter = argument
+            else:
+                message_id = argument.removeprefix("#")
+                if not message_id.isdigit():
+                    self.console.warn(usage)
+                    return
+                idx = int(message_id)
+                if idx >= len(msgs):
+                    self.console.warn(f"Context message #{idx} does not exist.")
+                    return
+                self._print_context_message(idx, msgs[idx])
                 return
-            idx = int(message_id)
-            if idx >= len(msgs):
-                self.console.warn(f"Context message #{idx} does not exist.")
-                return
-            self._print_context_message(idx, msgs[idx])
-            return
 
-        if not msgs:
-            self.console.system("Context is empty (no messages).")
+        indexed_msgs = [
+            (idx, message) for idx, message in enumerate(msgs)
+            if role_filter is None or message.role == role_filter
+        ]
+        if not indexed_msgs:
+            if role_filter is not None:
+                self.console.system(f"Context has no {role_filter} messages.")
+            else:
+                self.console.system("Context is empty (no messages).")
             return
 
         total_chars = 0
-        lines = [f"[bold blue]Context log ({len(msgs)} messages):[/bold blue]"]
+        message_label = "message" if len(indexed_msgs) == 1 else "messages"
+        count_label = (
+            f"{len(indexed_msgs)} {role_filter} {message_label}"
+            if role_filter is not None else
+            f"{len(indexed_msgs)} {message_label}"
+        )
+        lines = [f"[bold blue]Context log ({count_label}):[/bold blue]"]
 
         tc_id_to_name = build_tool_name_index(msgs)
 
-        for idx, m in enumerate(msgs):
+        for idx, m in indexed_msgs:
             role = m.role
             text = m.display if m.is_user else m.text
             chars = m.chars
@@ -772,11 +791,14 @@ class AgentCommandsMixin:
         ctx_pct = est_tokens / self.context_length * 100 if self.context_length else 0
         lines.append(f"\n  [bold]Total:[/bold] ~{est_tokens:,} tokens / {self.context_length:,} [{ctx_pct:.0f}%]")
 
-        lines.append("  [dim]Use /context <id> to show a message in full.[/dim]")
+        lines.append(
+            "  [dim]Use /context user|assistant to filter or /context <id> "
+            "to show a message in full.[/dim]"
+        )
         self.console.print("\n".join(lines))
 
     def _print_context_message(self, idx: int, message: Message) -> None:
-        """Print one context message without truncating or interpreting its text."""
+        """Print one context message in full, rendering assistant text as Markdown."""
         role = message.role
         chars = message.chars
         self.console.print(
@@ -793,7 +815,10 @@ class AgentCommandsMixin:
             shown = True
         if content or message.content is not None:
             self.console.print("[bold]Content:[/bold]")
-            self.console.print(content, markup=False)
+            if message.is_assistant and content:
+                self.console.response(content)
+            else:
+                self.console.print(content, markup=False)
             shown = True
 
         reasoning = message.reasoning_content
