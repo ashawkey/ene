@@ -154,9 +154,11 @@ def ws_header_kwargs(websockets, headers):
 
 # -- static / auth (browser surface) ---------------------------------------
 
-def test_hub_is_loopback_only():
+def test_hub_binds_all_interfaces_and_uses_hostname_in_browser_url(monkeypatch):
+    monkeypatch.setattr(socket, "gethostname", lambda: "ene-box")
     hub = make_hub()
-    assert hub.host == "127.0.0.1"
+    assert hub.host == "0.0.0.0"
+    assert hub.url == "http://ene-box:8765"
 
 
 def test_login_rejects_bad_tokens():

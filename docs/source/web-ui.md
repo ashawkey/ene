@@ -11,7 +11,7 @@ The Web UI uses a **hub + live worker** design:
 - The hub attaches to a worker the same way a terminal does. A session has **one owner at a time**: either a terminal or the hub, never both.
 - Every attached session appears as a separate browser tab. Sessions owned by a terminal, or not attached at all, are listed separately in the sidebar.
 
-The hub binds to `127.0.0.1`, so it is local-only unless you explicitly add a tunnel or proxy.
+The hub binds to `0.0.0.0`, so devices on the same network can reach it using the machine's hostname or IP address.
 
 ## Start the hub
 
@@ -29,7 +29,7 @@ ene hub --web-port 8765
 
 The command prints the URL and access token. If `ene_web_token` is absent, Ene generates a temporary token for that hub process. Starting a second hub on a port that already has one is refused.
 
-Open the printed URL—normally <http://127.0.0.1:8765>—and enter the token. A successful login creates an httponly browser session cookie; signing out invalidates it. Keep the hub terminal running while using the Web UI.
+Open the printed URL—normally `http://<hostname>:8765`—and enter the token. Devices on the same network can use that URL or substitute the machine's LAN IP address. A successful login creates an httponly browser session cookie; signing out invalidates it. Keep the hub terminal running while using the Web UI.
 
 ## Create a session
 
@@ -64,11 +64,11 @@ Typing `/` at the start of an empty composer opens slash-command suggestions, in
 
 If the browser loses its hub connection, it shows a reconnecting state, preserves draft input, and disables actions until the connection recovers. Reloading the page or closing the tab does not detach a session—only **×** does. Stopping the hub releases its attachments, leaving every session running and available to a terminal.
 
-## Remote access
+## Network and remote access
 
-Because the hub listens only on loopback, use a tunnel or reverse proxy rather than exposing it directly. Browser access still requires the Ene token; protect the tunnel or proxy as well.
+The hub listens on all network interfaces for access from trusted devices on the same network. Browser access requires the Ene token, but a signed-in browser can browse the filesystem and start agents in any directory, so treat the token as equivalent to shell access. Use a long random token and only run the hub on trusted networks.
 
-Note that a signed-in browser can browse the filesystem and start agents in any directory, so treat the token as equivalent to shell access.
+For access beyond the local network, use a tunnel or reverse proxy and protect it as well.
 
 For example, with Cloudflare Tunnel:
 

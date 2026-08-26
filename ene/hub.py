@@ -59,6 +59,7 @@ PREVIEW_LIMIT = 160             # longest last-user-message preview sent to brow
 MAX_BODY_BYTES = 4096
 MAX_ANSWER_BYTES = 128 * 1024
 LOOPBACK_HOST = "127.0.0.1"
+HUB_BIND_HOST = "0.0.0.0"
 DEFAULT_HUB_PORT = 8765
 REGISTRY_POLL_INTERVAL = 2.0    # live-session registry refresh period
 MAX_CREATE_BODY_BYTES = 8192
@@ -380,7 +381,8 @@ class Hub:
         token: str | None = None,
         console=None,
     ):
-        self.host = LOOPBACK_HOST
+        self.host = HUB_BIND_HOST
+        self.browser_host = socket.gethostname()
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.console = console
@@ -418,7 +420,7 @@ class Hub:
 
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return f"http://{self.browser_host}:{self.port}"
 
     # -- logging ------------------------------------------------------------
 
@@ -1278,7 +1280,9 @@ class Hub:
         HUB_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
         HUB_INFO_PATH.write_text(
             json.dumps({
-                "host": self.host,
+                # Discovery is local, so record a concrete connectable address
+                # rather than the all-interfaces bind address.
+                "host": LOOPBACK_HOST,
                 "port": self.port,
                 "token": self.token,
                 "pid": os.getpid(),
