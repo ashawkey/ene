@@ -48,6 +48,7 @@ export type StateMessage = {
   process_status: string
   context_status: Record<string, unknown> | null
   active_indicator: EventData | null
+  commands: Record<string, string>
   prompt: Prompt | null
   pending: PendingMessage | null
 }
@@ -59,6 +60,49 @@ export type SessionSummary = {
   cwd: string
   model: string
   host: string
+  conversation_id: string
+  /** Last user message, shown when the session has no name. */
+  preview: string
+  /** 'web' when this hub owns the session, 'terminal' when a terminal does, '' when free. */
+  attached_by: string
+  state: string
+}
+
+export type FsEntry = {
+  name: string
+  path: string
+  hidden: boolean
+}
+
+export type FsListing = {
+  path: string
+  parent: string
+  entries: FsEntry[]
+}
+
+export type SessionOptions = {
+  models: string[]
+  default_model: string
+  personas: string[]
+  reasoning_efforts: string[]
+}
+
+export type ConversationSummary = {
+  id: string
+  name: string
+  message_count: number | string
+  round_id: number | string
+  last_user_message: string
+  live: boolean
+}
+
+export type NewSessionRequest = {
+  cwd: string
+  name: string
+  model: string
+  persona: string
+  reasoning_effort: string
+  resume: string
 }
 
 export type SessionsMessage = {

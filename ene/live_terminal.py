@@ -118,13 +118,22 @@ class LiveTerminal:
         window. Waiting turns a rejection that resolves itself into a short
         pause, while a terminal that really is attached elsewhere still
         reports the conflict once the wait runs out.
+
+        A web attachment is held deliberately until the user detaches it in the
+        browser, so that conflict is reported immediately instead of stalling.
         """
         deadline = time.monotonic() + ATTACH_WAIT_TIMEOUT
         waiting = False
         while True:
             try:
-                return connect(self.record, "attach")
+                return connect(self.record, "attach", client="terminal")
             except LiveBusyError as exc:
+                if exc.owner == "web":
+                    raise LiveBusyError(
+                        "This session is attached in the web UI; "
+                        "detach it there before attaching a terminal.",
+                        "web",
+                    ) from None
                 if time.monotonic() >= deadline:
                     raise
                 if not waiting:

@@ -744,3 +744,43 @@ class SessionStore:
         self.head_id = None
         self.session_name = ""
         self._load()
+
+
+def saved_session_summaries(work_dir: str | Path | None = None) -> list[dict[str, Any]]:
+    """List saved conversations for a workspace, newest first.
+
+    Reads ``<work_dir>/.ene/sessions`` directly instead of going through
+    ``get_ene_dir``, which creates directories as a side effect — unacceptable
+    when browsing an arbitrary path chosen in the Web UI. An unreadable session
+    is reported with placeholder metadata rather than omitted, so a corrupt
+    directory stays visible and selectable.
+    """
+    base = Path(work_dir) if work_dir else Path.cwd()
+    sessions_dir = base / ".ene" / "sessions"
+    try:
+        paths = [
+            path for path in sessions_dir.iterdir()
+            if path.is_dir() and (path / "history.jsonl").exists()
+        ]
+    except OSError:
+        return []
+    summaries: list[dict[str, Any]] = []
+    for path in sorted(paths, key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            meta = SessionStore.load_summary(sessions_dir, path.name)
+            summaries.append({
+                "id": path.name,
+                "name": meta.get("session_name", ""),
+                "message_count": meta.get("message_count", 0),
+                "round_id": meta.get("round_id", 0),
+                "last_user_message": meta.get("last_user_message", ""),
+            })
+        except Exception:
+            summaries.append({
+                "id": path.name,
+                "name": "",
+                "message_count": "?",
+                "round_id": "?",
+                "last_user_message": "unreadable",
+            })
+    return summaries

@@ -46,7 +46,16 @@ class LiveError(RuntimeError):
 
 
 class LiveBusyError(LiveError):
-    """Another terminal holds the session's single attachment slot."""
+    """Another client holds the session's single attachment slot.
+
+    ``owner`` is the client kind holding it (``"terminal"`` or ``"web"``). Only
+    a terminal slot can self-release after its heartbeat deadline, so waiting
+    out the conflict is worthwhile only for that owner.
+    """
+
+    def __init__(self, message: str, owner: str = "terminal"):
+        super().__init__(message)
+        self.owner = owner
 
 
 def _ensure_live_dir() -> Path:
@@ -173,7 +182,10 @@ def connect(record: dict[str, Any], kind: str, **data: Any) -> socket.socket:
         if not reply.get("ok"):
             error = str(reply.get("error", "Live-session request rejected"))
             if reply.get("code") == "attached":
-                raise LiveBusyError(error)
+                owner = reply.get("owner")
+                raise LiveBusyError(
+                    error, owner if owner in {"terminal", "web"} else "terminal"
+                )
             raise LiveError(error)
         return sock
     except LiveError:
@@ -389,4 +401,5 @@ class LiveStatus:
     workspace: str
     model: str
     attached: bool
+    attached_by: str
     busy: bool

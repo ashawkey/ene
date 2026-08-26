@@ -8,11 +8,9 @@ Usage:
 import argparse
 import json
 import os
-import socket
 import subprocess
 import sys
 import time
-import uuid
 from importlib.metadata import PackageNotFoundError, distribution
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,13 +24,9 @@ from rich.table import Table
 from ene.backend import LLMAgent
 from ene.backend.sessions import _session_choice_labels
 from ene.config import CONFIG_PATH, conf
-from ene.hub import discover_hub
-from ene.hubclient import HubClient
 from ene.models import REASONING_EFFORTS, ReasoningEffort, resolve_model_profile
 from ene.providers import provider_names
-from ene.tools.process_manager import format_process_status
 from ene.ui import AgentConsole
-from ene.utils.io import CancellationToken, EventHub, InputBroker, PromptBroker
 
 
 # ---------------------------------------------------------------------------
@@ -57,12 +51,8 @@ class Args:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def get_agent(args: Args) -> "tuple[LLMAgent | None, HubClient | None]":
-    """Create an LLMAgent (and its optional hub link) from parsed arguments.
-
-    Returns ``(None, None)`` if the model is not found. If a reachable hub is
-    running, the agent links to it automatically; otherwise it runs terminal-only.
-    """
+def get_agent(args: Args) -> "LLMAgent | None":
+    """Create an LLMAgent from parsed arguments, or ``None`` if misconfigured."""
     console = AgentConsole()
     openai_conf = conf.get("openai", {})
     available_providers = provider_names()
@@ -102,39 +92,9 @@ def get_agent(args: Args) -> "tuple[LLMAgent | None, HubClient | None]":
             model_config(alias.strip(), purpose)
     except ValueError as e:
         console.error(str(e))
-        return None, None
+        return None
 
     provider_name = model_conf.get("provider", "openai")
-    events = inputs = prompts = cancellation = hub_client = None
-
-    info = discover_hub(args.web_port)
-    if info:
-        events = EventHub()
-        inputs = InputBroker(events)
-        prompts = PromptBroker(events)
-        cancellation = CancellationToken(events, prompts)
-        console = AgentConsole(events=events)
-
-        cwd = os.getcwd()
-        meta = {
-            "title": f"{Path(cwd).name} · {args.model}",
-            "cwd": cwd,
-            "model": args.model,
-            "provider": provider_name,
-            "pid": os.getpid(),
-            "host": socket.gethostname(),
-        }
-        hub_client = HubClient(
-            events,
-            inputs,
-            prompts,
-            cancellation,
-            host=info.get("host", "127.0.0.1"),
-            port=int(info.get("port", args.web_port)),
-            token=info.get("token", ""),
-            session_id=uuid.uuid4().hex,
-            meta=meta,
-        )
 
     try:
         agent = LLMAgent(
@@ -150,58 +110,34 @@ def get_agent(args: Args) -> "tuple[LLMAgent | None, HubClient | None]":
             max_output_tokens=model_conf.get("max_output_tokens"),
             persona=args.persona,
             console=console,
-            events=events,
-            input_broker=inputs,
-            prompt_broker=prompts,
-            cancellation=cancellation,
         )
     except ValueError as e:
         console.error(f"Invalid provider configuration for '{args.model}': {e}")
-        return None, None
-    if hub_client is not None:
-        hub_client.get_process_status = lambda: format_process_status(
-            *agent.tool_executor.process_counts(),
-            agent.tool_executor.process_activity(),
-        )
-    return agent, hub_client
+        return None
+    return agent
 
 
 def _pick_session(console: AgentConsole) -> str | None:
     """List saved sessions and let the user pick one interactively."""
-    from ene.session_store import SessionStore
+    from ene.session_store import saved_session_summaries
     from ene.utils import get_ene_dir
 
     sessions_dir = get_ene_dir() / "sessions"
-    if not sessions_dir.exists():
-        console.error(f"No sessions directory found: {sessions_dir}")
-        return None
-
-    files = sorted(
-        (path for path in sessions_dir.iterdir() if path.is_dir() and (path / "history.jsonl").exists()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if not files:
+    summaries = saved_session_summaries()
+    if not summaries:
         console.system(f"No saved sessions in {sessions_dir}")
         return None
 
-    rows: list[tuple[str, object, object, str]] = []
-    for path in files:
-        name = path.name
-        try:
-            meta = SessionStore.load_summary(sessions_dir, name)
-            display_name = f"{meta['session_name']} ({name})" if meta.get("session_name") else name
-            row = (
-                display_name,
-                meta["message_count"],
-                meta["round_id"],
-                meta["last_user_message"],
-            )
-        except Exception:
-            row = (name, "?", "?", "unreadable")
-        rows.append(row)
-
-    entries = [path.name for path in files]
+    rows: list[tuple[str, object, object, str]] = [
+        (
+            f"{summary['name']} ({summary['id']})" if summary["name"] else summary["id"],
+            summary["message_count"],
+            summary["round_id"],
+            summary["last_user_message"],
+        )
+        for summary in summaries
+    ]
+    entries = [summary["id"] for summary in summaries]
     choice_labels = _session_choice_labels(rows, max(1, console.width - 4))
     picked = console.select(
         message="Pick a session to resume",
@@ -402,9 +338,17 @@ def cmd_update() -> int:
 
 
 def cmd_hub(args: Args):
-    """Run the shared web hub daemon (owns the public port)."""
+    """Run the standalone web hub (owns the public port)."""
     console = AgentConsole()
-    from ene.hub import Hub
+    from ene.hub import Hub, discover_hub
+
+    running = discover_hub(args.web_port)
+    if running and int(running.get("port", 0)) == args.web_port:
+        console.error(
+            f"A hub is already running at "
+            f"http://{running.get('host', '127.0.0.1')}:{running.get('port')}"
+        )
+        return
 
     try:
         hub = Hub(port=args.web_port, token=conf.get("ene_web_token"), console=console)
@@ -415,7 +359,7 @@ def cmd_hub(args: Args):
 
     console.system(f"ene hub running at {hub.url}")
     console.local(f"[bold yellow]Web access token:[/bold yellow] {hub.token}")
-    console.system("Agents started with `ene` will auto-link while this hub is running.")
+    console.system("Create, attach, and detach sessions from the browser.")
     console.system("Press Ctrl+C to stop the hub.")
     try:
         while True:
@@ -588,7 +532,9 @@ def cmd_live_list() -> None:
         if record.get("status", "ready") != "ready":
             state = f"… {record.get('status', 'starting')}"
         elif record.get("attached"):
-            state = "● working · attached" if record.get("busy") else "○ waiting · attached"
+            owner = record.get("attached_by") or "terminal"
+            activity = "● working" if record.get("busy") else "○ waiting"
+            state = f"{activity} · attached ({owner})"
         else:
             state = _live_status_label(record)
         table.add_row(

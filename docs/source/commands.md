@@ -29,11 +29,11 @@ Session options are:
 | `ene resume [SESSION_ID] [OPTIONS]` (`r`) | Resume a specific conversation, or omit the ID to choose interactively. |
 | `ene models` | List configured model aliases and resolved defaults. |
 | `ene list` (`ls`, `l`) | List live sessions and whether each is working or done. |
-| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; a unique name or ID prefix is accepted, and omitting the identifier opens an interactive picker. The picker marks sessions as `● working`, `✓ done · needs review`, or `○ waiting`, with completed sessions first by newest status change. Only one terminal may attach to a session at a time. |
+| `ene attach [NAME_OR_ID]` (`a`) | Attach to a live session and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions; a unique name or ID prefix is accepted, and omitting the identifier opens an interactive picker. The picker marks sessions as `● working`, `✓ done · needs review`, or `○ waiting`, with completed sessions first by newest status change. A session has one owner at a time: attaching to one held by another terminal waits briefly for it to be released, while one held by the Web UI is refused immediately. |
 | `ene kill [NAME_OR_ID]` (`k`) | Terminate one live session, or omit the identifier to select multiple sessions interactively. |
 | `ene status` | Show disk usage for entries under the current project's `.ene/`. |
 | `ene clean [--history] [ENTRY ...]` | Remove disposable project state or selected entries; `--history` also removes sessions. |
-| `ene hub --web-port PORT` | Run the shared Web UI hub; the default port is `8765`. |
+| `ene hub --web-port PORT` | Run the standalone Web UI hub; the default port is `8765`. Sessions are created, attached, and detached from the browser. See [Web UI](web-ui.md). |
 | `ene update` | Update Ene from its editable checkout or reinstall the latest GitHub source. |
 | `ene lib --help` | Manage the Git-backed library of skills and personas. |
 

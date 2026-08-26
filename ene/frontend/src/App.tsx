@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { ActivityStatus, Composer, ConnectionBanner, Login, PromptDialog, ScrollTopButton, SessionSidebar, ThemeToggle } from './components'
+import { ApiError, attachSession, createSession, detachSession } from './api'
+import { ActivityStatus, Composer, ConnectionBanner, Login, NewSessionButton, PromptDialog, ScrollTopButton, SessionSidebar, SidebarToggle, ThemeToggle } from './components'
 import type { ContextStatusProps, ThinkingProps } from './components'
 import { useConnectionSocket } from './connection'
+import { NewSessionDialog } from './NewSessionDialog'
 import { EventCard } from './renderers'
 import { applyTheme, hasStoredTheme, resolveInitialTheme, storeTheme } from './theme'
 import type { Theme } from './theme'
-import type { AgentEvent, ClientAction, DisplayEvent, PendingMessage, Prompt, SessionSummary, StateMessage } from './types'
+import type { AgentEvent, ClientAction, DisplayEvent, NewSessionRequest, PendingMessage, Prompt, SessionSummary, StateMessage } from './types'
 import { displayTypes, isPrompt } from './types'
 import { appendDelta, finalizeStream } from './streaming'
 
@@ -65,6 +67,7 @@ function SessionPane({
   const [thinkingStatus, setThinkingStatus] = useState<ThinkingProps | null>(null)
   const [contextStatus, setContextStatus] = useState<ContextStatusProps | null>(null)
   const [processStatus, setProcessStatus] = useState('')
+  const [commands, setCommands] = useState<Record<string, string>>({})
   const lastSeq = useRef(0)
   const streamKey = useRef('')
   const localKey = useRef(0)
@@ -99,6 +102,7 @@ function SessionPane({
       streamKey.current = key
       setOperationId(state.operation_id)
       setProcessStatus(state.process_status)
+      setCommands(state.commands ?? {})
       setContextStatus(state.context_status ? parseContextStatus(state.context_status) : null)
       // State frames are authoritative after reconnect.
       if (state.operation_id === null || state.active_indicator === null) {
@@ -248,6 +252,15 @@ function SessionPane({
       case 'process_status':
         setProcessStatus(typeof data.text === 'string' ? data.text : '')
         break
+      case 'commands':
+        if (data.commands && typeof data.commands === 'object') {
+          setCommands(Object.fromEntries(
+            Object.entries(data.commands).filter(
+              (entry): entry is [string, string] => typeof entry[1] === 'string',
+            ),
+          ))
+        }
+        break
       case 'context_status': {
         const context = parseContextStatus(data)
         if (context) setContextStatus(context)
@@ -361,6 +374,7 @@ function SessionPane({
           busy={submitAction !== null || withdrawAction !== null}
           connected={connection.status === 'connected'}
           draft={draft}
+          commands={commands}
           onDraftChange={onDraftChange}
           onSend={(text) => {
             if (pending || submitAction) return
@@ -393,6 +407,11 @@ export default function App() {
   // Per-session composer drafts. Panes unmount their Composer when inactive, so
   // the in-progress text lives here to survive tab switches.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [dialogOpen, setDialogOpen] = useState(false)
+  // Drawer state for narrow screens; the rail is always visible when wide.
+  const [railOpen, setRailOpen] = useState(false)
+  const [busySession, setBusySession] = useState<string | null>(null)
+  const [actionError, setActionError] = useState('')
   const csrf = useRef('')
   const scrollPositions = useRef(new Map<string, number>())
 
@@ -410,9 +429,11 @@ export default function App() {
       setAuthenticated(true)
       const list = message.sessions ?? []
       setSessions(list)
+      // Only sessions this hub has attached get a pane to focus.
+      const attached = list.filter((session) => session.attached_by === 'web')
       setActiveSession((current) => {
-        if (current && list.some((s) => s.id === current)) return current
-        return list[0]?.id ?? null
+        if (current && attached.some((s) => s.id === current)) return current
+        return attached[0]?.id ?? null
       })
     },
     shouldReconnect: (event) => event.code !== 4403,
@@ -445,7 +466,66 @@ export default function App() {
   const selectSession = useCallback((sessionId: string) => {
     if (activeSession) scrollPositions.current.set(activeSession, window.scrollY)
     setActiveSession(sessionId)
+    setRailOpen(false)
   }, [activeSession])
+
+  const forgetSession = useCallback((sessionId: string) => {
+    scrollPositions.current.delete(sessionId)
+    setDrafts((current) => {
+      const { [sessionId]: _removed, ...rest } = current
+      return rest
+    })
+  }, [])
+
+  // Optimistically mark ownership so the pane mounts (or unmounts) at once; the
+  // control channel confirms with the authoritative list moments later.
+  const markAttachment = useCallback((session: SessionSummary) => {
+    setSessions((current) => {
+      const known = current.some((item) => item.id === session.id)
+      return known
+        ? current.map((item) => (item.id === session.id ? { ...item, ...session } : item))
+        : [...current, session]
+    })
+  }, [])
+
+  const runSessionAction = useCallback(async (sessionId: string, action: () => Promise<void>) => {
+    setBusySession(sessionId)
+    setActionError('')
+    try {
+      await action()
+    } catch (exc) {
+      setActionError(exc instanceof ApiError ? exc.message : 'The action failed.')
+    } finally {
+      setBusySession(null)
+    }
+  }, [])
+
+  const attach = useCallback((sessionId: string) => {
+    void runSessionAction(sessionId, async () => {
+      const session = await attachSession(csrf.current, sessionId)
+      markAttachment(session)
+      selectSession(sessionId)
+    })
+  }, [markAttachment, runSessionAction, selectSession])
+
+  const detach = useCallback((sessionId: string) => {
+    void runSessionAction(sessionId, async () => {
+      await detachSession(csrf.current, sessionId)
+      setSessions((current) =>
+        current.map((item) => (item.id === sessionId ? { ...item, attached_by: '' } : item)),
+      )
+      forgetSession(sessionId)
+      setActiveSession((current) => (current === sessionId ? null : current))
+    })
+  }, [forgetSession, runSessionAction])
+
+  const create = useCallback(async (request: NewSessionRequest) => {
+    const session = await createSession(csrf.current, request)
+    markAttachment(session)
+    setDialogOpen(false)
+    setActionError('')
+    selectSession(session.id)
+  }, [markAttachment, selectSession])
 
   const scrollToTop = useCallback(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -469,6 +549,9 @@ export default function App() {
     setAuthenticated(false)
   }, [controlConnection.close])
 
+  // Panes exist only for sessions this hub owns; the rest are attach targets.
+  const attachedSessions = sessions.filter((session) => session.attached_by === 'web')
+
   if (authenticated === false) {
     return <Login onSuccess={() => setAuthenticated(null)} />
   }
@@ -483,20 +566,40 @@ export default function App() {
   return (
     <main className="app-shell">
       <ConnectionBanner status={controlConnection.status} onRetry={controlConnection.retry} />
-      <div className="top-controls">
-        <ScrollTopButton onClick={scrollToTop} />
-        <ThemeToggle theme={theme} onToggle={toggleTheme} />
-        <button className="logout" type="button" onClick={logout} aria-label="Sign out" title="Sign out">⏻</button>
-      </div>
+      <header className="top-bar">
+        <SidebarToggle onClick={() => setRailOpen(true)} />
+        <img className="brand-logo" src="/favicon.svg" alt="ene" />
+        <NewSessionButton onClick={() => {
+          setDialogOpen(true)
+          setRailOpen(false)
+        }} />
+        <div className="top-controls">
+          <ScrollTopButton onClick={scrollToTop} />
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <button className="logout" type="button" onClick={logout} aria-label="Sign out" title="Sign out">⏻</button>
+        </div>
+      </header>
       <div className="layout">
-        <SessionSidebar sessions={sessions} activeId={activeSession} onSelect={selectSession} />
+        <SessionSidebar
+          sessions={sessions}
+          activeId={activeSession}
+          busyId={busySession}
+          open={railOpen}
+          onSelect={selectSession}
+          onAttach={attach}
+          onDetach={detach}
+          onClose={() => setRailOpen(false)}
+        />
         <div className="panes">
-          {sessions.length === 0 ? (
+          {actionError ? <p className="action-error" role="alert">{actionError}</p> : null}
+          {attachedSessions.length === 0 ? (
             <section className="workspace">
-              <p className="sidebar-empty">Waiting for an agent to connect…</p>
+              <p className="sidebar-empty">
+                Create a session, or attach to a detached one from the sidebar.
+              </p>
             </section>
           ) : null}
-          {sessions.map((session) => (
+          {attachedSessions.map((session) => (
             <SessionPane
               key={session.id}
               sessionId={session.id}
@@ -509,6 +612,9 @@ export default function App() {
           ))}
         </div>
       </div>
+      {dialogOpen ? (
+        <NewSessionDialog onCreate={create} onClose={() => setDialogOpen(false)} />
+      ) : null}
     </main>
   )
 }

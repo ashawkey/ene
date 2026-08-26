@@ -49,12 +49,10 @@ def test_get_agent_passes_token_limits(monkeypatch):
         }
     })
     monkeypatch.setattr("ene.cli.LLMAgent", FakeAgent)
-    monkeypatch.setattr("ene.cli.discover_hub", lambda port: None)
 
-    agent, hub_client = get_agent(Args(model="test"))
+    agent = get_agent(Args(model="test"))
 
     assert agent is not None
-    assert hub_client is None
     assert created[0]["provider_name"] == "openai"
     assert created[0]["context_length"] == 200_000
     assert created[0]["max_output_tokens"] == 16_000
@@ -74,12 +72,10 @@ def test_get_agent_accepts_configured_recap_alias(monkeypatch):
     })
     monkeypatch.setitem(conf, "recap_model", "fast")
     monkeypatch.setattr("ene.cli.LLMAgent", FakeAgent)
-    monkeypatch.setattr("ene.cli.discover_hub", lambda port: None)
 
-    agent, hub_client = get_agent(Args(model="main"))
+    agent = get_agent(Args(model="main"))
 
     assert agent is not None
-    assert hub_client is None
     assert created[0]["model"] == "main-model"
 
 
@@ -87,10 +83,7 @@ def test_get_agent_rejects_invalid_recap_alias(monkeypatch):
     monkeypatch.setitem(conf, "openai", {"main": {"model": "main-model"}})
     monkeypatch.setitem(conf, "recap_model", "missing")
 
-    agent, hub_client = get_agent(Args(model="main"))
-
-    assert agent is None
-    assert hub_client is None
+    assert get_agent(Args(model="main")) is None
 
 
 def test_get_agent_accepts_configured_summary_alias(monkeypatch):
@@ -107,12 +100,10 @@ def test_get_agent_accepts_configured_summary_alias(monkeypatch):
     })
     monkeypatch.setitem(conf, "summary_model", "fast")
     monkeypatch.setattr("ene.cli.LLMAgent", FakeAgent)
-    monkeypatch.setattr("ene.cli.discover_hub", lambda port: None)
 
-    agent, hub_client = get_agent(Args(model="main"))
+    agent = get_agent(Args(model="main"))
 
     assert agent is not None
-    assert hub_client is None
     assert created[0]["model"] == "main-model"
 
 
@@ -121,10 +112,7 @@ def test_get_agent_rejects_invalid_summary_alias(monkeypatch):
     monkeypatch.setitem(conf, "openai", {"main": {"model": "main-model"}})
     monkeypatch.setitem(conf, "summary_model", "missing")
 
-    agent, hub_client = get_agent(Args(model="main"))
-
-    assert agent is None
-    assert hub_client is None
+    assert get_agent(Args(model="main")) is None
 
 
 def test_clean_accepts_entry_names(monkeypatch):

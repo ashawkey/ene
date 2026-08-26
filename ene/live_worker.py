@@ -15,8 +15,6 @@ from typing import Any
 
 from ene.backend import LLMAgent
 from ene.config import CONFIG_PATH, conf
-from ene.hub import discover_hub
-from ene.hubclient import HubClient
 from ene.live import (
     REQUEST_TIMEOUT,
     TERMINAL_IDLE_TIMEOUT,
@@ -37,6 +35,8 @@ from ene.utils.io import AgentEvent, CancellationToken, EventHub, InputBroker, P
 
 
 ATTACH_EVENT_QUEUE_SIZE = 1000
+# Longest last-user-message preview reported to session pickers.
+PREVIEW_LIMIT = 160
 
 
 def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -130,6 +130,9 @@ class Worker:
         self.stop_event = threading.Event()
         self.terminal_lock = threading.Lock()
         self.terminal_attached = False
+        # Which client kind owns the single attachment slot ("terminal" or
+        # "web"), so a rejected attach can name the current owner.
+        self.attachment_owner = ""
         self.connections: set[socket.socket] = set()
         self.connections_lock = threading.Lock()
         self.events = EventHub(max_events=10000)
@@ -144,9 +147,9 @@ class Worker:
         )
         self._state_busy = False
         self._state_pending = False
+        self._last_user_message = ""
         self.events.add_listener(self._track_state)
         self.agent: LLMAgent | None = None
-        self.hub_client: HubClient | None = None
         self.server: socket.socket | None = None
         self._shutdown_lock = threading.Lock()
         self._shutdown_started = False
@@ -209,8 +212,30 @@ class Worker:
         time.sleep(15)
         os._exit(1)
 
+    def _seed_last_user_message(self) -> None:
+        """Show a resumed conversation's last request before any new one runs."""
+        agent = self.agent
+        if agent is None:
+            return
+        try:
+            messages = agent.context.get(include_system=False)
+        except Exception:
+            return
+        for message in reversed(messages):
+            if message.is_user:
+                text = " ".join(message.display.split())
+                with self._state_lock:
+                    self._last_user_message = text[:PREVIEW_LIMIT]
+                return
+
     def _track_state(self, event: AgentEvent) -> None:
         """Record exact working/waiting/done transition times for discovery."""
+        if event.type == "user_message":
+            # Kept for session pickers, which show it when a session is unnamed.
+            text = str((event.data or {}).get("text", ""))
+            with self._state_lock:
+                self._last_user_message = " ".join(text.split())[:PREVIEW_LIMIT]
+            return
         with self._state_lock:
             if event.type == "operation_start":
                 self._state_busy = True
@@ -260,6 +285,8 @@ class Worker:
             "workspace": self.record["workspace"],
             "model": self.record.get("model", ""),
             "attached": self.terminal_attached,
+            "attached_by": self.attachment_owner,
+            "last_user_message": getattr(self, "_last_user_message", ""),
             "busy": operation_id is not None,
             "operation_id": operation_id,
             "needs_attention": state == "done",
@@ -344,6 +371,7 @@ class Worker:
                 raise LiveError(f"Could not resume session: {resume}")
         self.agent._initialize_chat_session(resume)
         self.agent._refresh_slash_commands()
+        self._seed_last_user_message()
         self.agent._session_changed = self._session_changed
         self.agent._session_name_changed = self._session_name_changed
         self.record = update_identity(
@@ -356,7 +384,6 @@ class Worker:
             self.runtime_id,
             model=self.agent.model_alias,
         )
-        self._start_hub()
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("127.0.0.1", 0))
@@ -387,8 +414,6 @@ class Worker:
                 except Exception:
                     pass
             self.agent.close()
-            if self.hub_client is not None:
-                self.hub_client.stop()
             self._cleanup_record()
 
     def _session_changed(self, conversation_id: str, name: str) -> None:
@@ -415,9 +440,6 @@ class Worker:
     def _publish_session_name(self, name: str) -> None:
         assert self.agent is not None
         title = name or Path(self.record["workspace"]).name
-        if self.hub_client is not None:
-            self.hub_client.meta["name"] = name
-            self.hub_client.meta["title"] = title
         self.events.publish(
             "session_meta",
             name=name,
@@ -431,28 +453,6 @@ class Worker:
         current = read_record(path)
         if current is not None and current.get("token") == self.token:
             unlink_record(path)
-
-    def _start_hub(self) -> None:
-        assert self.agent is not None
-        info = discover_hub()
-        if info is None:
-            return
-        self.hub_client = HubClient(
-            self.events, self.inputs, self.prompts, self.cancellation,
-            host=info.get("host", "127.0.0.1"), port=int(info.get("port", 8765)),
-            token=info.get("token", ""), session_id=self.runtime_id,
-            meta={
-                "title": self.record.get("name") or Path(self.record["workspace"]).name,
-                "name": self.record.get("name", ""), "cwd": self.record["workspace"],
-                "model": self.agent.model_alias, "pid": os.getpid(),
-                "host": socket.gethostname(),
-            },
-        )
-        self.hub_client.get_process_status = lambda: format_process_status(
-            *self.agent.tool_executor.process_counts(),
-            self.agent.tool_executor.process_activity(),
-        )
-        self.hub_client.start()
 
     def _handle(self, sock: socket.socket) -> None:
         with self.connections_lock:
@@ -481,16 +481,26 @@ class Worker:
             if kind != "attach":
                 send_frame(sock, {"ok": False, "error": "Unknown request"})
                 return
+            client = hello.get("client")
+            client = client if client in {"terminal", "web"} else "terminal"
             with self.terminal_lock:
                 if self.terminal_attached:
                     # The code lets a reattach tell this apart from a fatal
                     # rejection and wait for a dead terminal to be released.
+                    # The owner lets a client decide whether waiting is even
+                    # worthwhile: only a terminal slot self-releases.
+                    owner = self.attachment_owner or "terminal"
                     send_frame(sock, {
-                        "ok": False, "code": "attached",
-                        "error": "Another terminal is already attached",
+                        "ok": False, "code": "attached", "owner": owner,
+                        "error": (
+                            "This session is attached in the web UI"
+                            if owner == "web"
+                            else "Another terminal is already attached"
+                        ),
                     })
                     return
                 self.terminal_attached = True
+                self.attachment_owner = client
                 attached = True
             send_frame(sock, {"ok": True})
             self._serve_terminal(sock, replay_history=bool(hello.get("replay", True)))
@@ -500,6 +510,7 @@ class Worker:
             if attached:
                 with self.terminal_lock:
                     self.terminal_attached = False
+                    self.attachment_owner = ""
             with self.connections_lock:
                 self.connections.discard(sock)
             try:
@@ -507,7 +518,9 @@ class Worker:
             except OSError:
                 pass
 
-    def _submit_terminal(self, text: str) -> None:
+    def _submit_attached(
+        self, text: str, source: str = "terminal", action_id: str | None = None
+    ) -> None:
         agent = getattr(self, "agent", None)
         if (
             self.inputs.pending
@@ -515,10 +528,10 @@ class Worker:
             and text.startswith("/")
             and agent.is_instant_command(text)
         ):
-            agent.console.user_input(text, source="terminal")
+            agent.console.user_input(text, source=source)
             agent._run_command(text)
             return
-        self.inputs.submit(text, "terminal")
+        self.inputs.submit(text, source, action_id=action_id)
 
     def _serve_terminal(self, sock: socket.socket, *, replay_history: bool = True) -> None:
         pending: queue.Queue[AgentEvent] = queue.Queue(maxsize=ATTACH_EVENT_QUEUE_SIZE)
@@ -608,6 +621,8 @@ class Worker:
                 except (OSError, EOFError, ValueError, LiveError, json.JSONDecodeError):
                     return
                 kind = action.get("type")
+                source = action.get("source")
+                source = source if source in {"terminal", "web"} else "terminal"
                 if kind == "detach":
                     return
                 if kind == "kill":
@@ -615,8 +630,13 @@ class Worker:
                     return
                 if kind == "submit":
                     request_id = action.get("request_id")
+                    action_id = action.get("action_id")
                     try:
-                        self._submit_terminal(str(action.get("text", "")))
+                        self._submit_attached(
+                            str(action.get("text", "")),
+                            source,
+                            str(action_id) if action_id else None,
+                        )
                     except ValueError as exc:
                         if request_id is None:
                             self.events.publish("warning", text=str(exc))
@@ -633,7 +653,11 @@ class Worker:
                             })
                 elif kind == "withdraw_pending":
                     request_id = action.get("request_id")
-                    item = self.inputs.withdraw(action.get("id"))
+                    action_id = action.get("action_id")
+                    item = self.inputs.withdraw(
+                        action.get("id"),
+                        action_id=str(action_id) if action_id else None,
+                    )
                     if request_id is not None:
                         send({
                             "type": "action_result", "request_id": request_id,
@@ -643,9 +667,11 @@ class Worker:
                             }),
                         })
                 elif kind == "prompt_response":
-                    self.prompts.resolve(str(action.get("id", "")), str(action.get("answer", "")), "terminal")
+                    self.prompts.resolve(
+                        str(action.get("id", "")), str(action.get("answer", "")), source
+                    )
                 elif kind == "prompt_cancel":
-                    self.prompts.cancel(str(action.get("id", "")), source="terminal")
+                    self.prompts.cancel(str(action.get("id", "")), source=source)
                 elif kind == "cancel":
                     self.cancellation.cancel(action.get("operation_id"))
                 elif kind == "ping":

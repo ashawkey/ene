@@ -24,42 +24,159 @@ export function ConnectionBanner({
   )
 }
 
+function sessionDir(session: SessionSummary) {
+  return session.cwd
+    ? session.cwd.split(/[\\/]/).filter(Boolean).pop() || session.cwd
+    : session.title
+}
+
+/**
+ * Primary line of a session card: its name, else the last thing asked of it.
+ * A session with neither is brand new; the directory is already the second
+ * line, so repeating it here would say the same thing twice.
+ */
+function sessionLabel(session: SessionSummary) {
+  return session.name || session.preview || 'New session'
+}
+
+export function sessionStatus(session: SessionSummary) {
+  if (session.attached_by === 'terminal') {
+    return { kind: 'terminal', title: 'Attached in a terminal' }
+  }
+  const titles: Record<string, string> = {
+    working: 'Working',
+    waiting: 'Waiting on queued input',
+    done: 'Done · needs review',
+  }
+  // Finished work is green in an open tab (review it here) and yellow when
+  // detached (it needs attaching first), so the rail distinguishes review you
+  // can act on now from review that is one click away.
+  const kind =
+    session.state === 'done' && session.attached_by !== 'web' ? 'review' : session.state
+  return { kind, title: titles[session.state] ?? session.state }
+}
+
+/**
+ * Status dot. `working` animates like the terminal's spinner; the rest are
+ * static colours: green means the round finished and wants review, yellow
+ * means queued input, red means a terminal holds the session.
+ *
+ * Decorative: the status is repeated in the row's own tooltip, so labelling
+ * the dot would only pad every tab's accessible name.
+ */
+function SessionState({ session }: { session: SessionSummary }) {
+  const { kind } = sessionStatus(session)
+  if (kind === 'working') {
+    // `busy`, not `working`: the timeline's global .working rule would
+    // override this element's fixed width and break name alignment.
+    return (
+      <span className="session-state busy" aria-hidden="true">
+        <i /><i /><i />
+      </span>
+    )
+  }
+  return <span className={`session-state ${kind}`} aria-hidden="true" />
+}
+
+/**
+ * Fixed left rail listing every live session, one per row. The list scrolls
+ * on its own so a long list never pushes the conversation around, and on
+ * narrow screens the rail slides in as a drawer over the timeline.
+ */
 export function SessionSidebar({
   sessions,
   activeId,
+  busyId,
+  open,
   onSelect,
+  onAttach,
+  onDetach,
+  onClose,
 }: {
   sessions: SessionSummary[]
   activeId: string | null
+  busyId: string | null
+  open: boolean
   onSelect: (id: string) => void
+  onAttach: (id: string) => void
+  onDetach: (id: string) => void
+  onClose: () => void
 }) {
+  const attached = sessions.filter((session) => session.attached_by === 'web')
+  const others = sessions.filter((session) => session.attached_by !== 'web')
   return (
-    <nav className="sidebar" aria-label="Agent sessions">
-      <img className="sidebar-logo" src="/favicon.svg" alt="ene" />
-      {sessions.length === 0 ? (
-        <p className="sidebar-empty">No agents connected. Run <code>ene</code>.</p>
-      ) : (
-        <ul className="session-list">
-          {sessions.map((session) => {
-            const dir = session.cwd
-              ? session.cwd.split(/[\\/]/).filter(Boolean).pop() || session.cwd
-              : session.title
-            return (
-              <li key={session.id}>
-                <button
-                  type="button"
-                  className={session.id === activeId ? 'session-tab active' : 'session-tab'}
-                  onClick={() => onSelect(session.id)}
-                  title={session.cwd}
-                >
-                  <span className="session-name">{session.name || dir}</span>
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </nav>
+    <>
+      {open ? <div className="sidebar-scrim" onClick={onClose} aria-hidden="true" /> : null}
+      <nav className={open ? 'sidebar open' : 'sidebar'} aria-label="Agent sessions">
+        <div className="session-scroll">
+          {attached.length === 0 && others.length === 0 ? (
+            <p className="sidebar-empty">No live sessions yet.</p>
+          ) : null}
+          {attached.length > 0 ? (
+            <ul className="session-list">
+              {attached.map((session) => (
+                <li key={session.id} className="session-row" data-session={session.id}>
+                  <button
+                    type="button"
+                    className={session.id === activeId ? 'session-tab active' : 'session-tab'}
+                    onClick={() => onSelect(session.id)}
+                    title={`${sessionStatus(session).title} · ${session.cwd}`}
+                  >
+                    <SessionState session={session} />
+                    <span className="session-text">
+                      <span className="session-name">{sessionLabel(session)}</span>
+                      {/* Decorative: the full path is in the row's tooltip. */}
+                      <span className="session-meta" aria-hidden="true">{sessionDir(session)}</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="session-close"
+                    onClick={() => onDetach(session.id)}
+                    disabled={busyId === session.id}
+                    aria-label={`Detach ${session.name || sessionDir(session)}`}
+                    title="Detach (the session keeps running)"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {others.length > 0 ? (
+            <>
+              <p className="sidebar-heading">Detached</p>
+              <ul className="session-list">
+                {others.map((session) => {
+                  const owned = session.attached_by === 'terminal'
+                  return (
+                    <li key={session.id} className="session-row" data-session={session.id}>
+                      <button
+                        type="button"
+                        className="session-tab detached"
+                        onClick={() => onAttach(session.id)}
+                        disabled={owned || busyId === session.id}
+                        title={
+                          owned
+                            ? `${sessionStatus(session).title} · ${session.cwd}`
+                            : `Attach · ${session.cwd}`
+                        }
+                      >
+                        <SessionState session={session} />
+                        <span className="session-text">
+                          <span className="session-name">{sessionLabel(session)}</span>
+                          <span className="session-meta" aria-hidden="true">{sessionDir(session)}</span>
+                        </span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </>
+          ) : null}
+        </div>
+      </nav>
+    </>
   )
 }
 
@@ -80,6 +197,35 @@ export function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () =>
 
 // Scroll-to-top affordance in the fixed top controls. Hidden until the user
 // has scrolled down a meaningful amount so it never clutters the initial view.
+export function NewSessionButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="session-new"
+      type="button"
+      onClick={onClick}
+      aria-label="New session"
+      title="New session"
+    >
+      +
+    </button>
+  )
+}
+
+/** Opens the session rail when it is collapsed into a drawer (narrow screens). */
+export function SidebarToggle({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="sidebar-toggle"
+      type="button"
+      onClick={onClick}
+      aria-label="Show sessions"
+      title="Sessions"
+    >
+      ☰
+    </button>
+  )
+}
+
 export function ScrollTopButton({ onClick }: { onClick: () => void }) {
   const [visible, setVisible] = useState(false)
   useEffect(() => {
@@ -402,6 +548,7 @@ export function Composer({
   busy,
   connected = true,
   draft,
+  commands = {},
   onDraftChange,
   onSend,
   onWithdraw,
@@ -412,6 +559,7 @@ export function Composer({
   busy: boolean
   connected?: boolean
   draft: string
+  commands?: Record<string, string>
   onDraftChange: (text: string) => void
   onSend: (text: string) => void
   onWithdraw: () => void
@@ -421,6 +569,20 @@ export function Composer({
   const setText = onDraftChange
   const field = useRef<HTMLTextAreaElement>(null)
   const shell = useRef<HTMLElement>(null)
+  const [completionIndex, setCompletionIndex] = useState(0)
+  const [dismissedCompletion, setDismissedCompletion] = useState('')
+  const commandToken = /^\/[\w-]*$/.test(text) ? text.slice(1).toLowerCase() : null
+  const completions = commandToken === null || dismissedCompletion === text
+    ? []
+    : Object.entries(commands).filter(([name]) => name.toLowerCase().startsWith(commandToken))
+  const visibleCompletions = completions.length === 1 && completions[0][0].toLowerCase() === commandToken
+    ? []
+    : completions
+
+  useEffect(() => {
+    setCompletionIndex(0)
+    if (dismissedCompletion && dismissedCompletion !== text) setDismissedCompletion('')
+  }, [dismissedCompletion, text])
 
   // Grow the single-line field to fit wrapped/multi-line input, up to the CSS
   // max-height (then it scrolls). Runs on every value change.
@@ -459,7 +621,36 @@ export function Composer({
     field.current?.focus()
   }
 
+  function complete(index: number) {
+    const command = visibleCompletions[index]
+    if (!command) return
+    setText(`/${command[0]}`)
+    field.current?.focus()
+  }
+
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (visibleCompletions.length) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setCompletionIndex((current) => (current + 1) % visibleCompletions.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setCompletionIndex((current) => (current - 1 + visibleCompletions.length) % visibleCompletions.length)
+        return
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault()
+        complete(completionIndex)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDismissedCompletion(text)
+        return
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       submit()
@@ -482,6 +673,26 @@ export function Composer({
         </button>
       ) : null}
       <div className="composer">
+        {visibleCompletions.length ? (
+          <div className="command-completions" id="command-completions" role="listbox">
+            {visibleCompletions.map(([name, description], index) => (
+              <button
+                className={index === completionIndex ? 'selected' : undefined}
+                id={`command-completion-${index}`}
+                key={name}
+                type="button"
+                role="option"
+                aria-selected={index === completionIndex}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => complete(index)}
+                onMouseEnter={() => setCompletionIndex(index)}
+              >
+                <strong>/{name}</strong>
+                <span>{description}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         <textarea
           ref={field}
           rows={1}
@@ -490,6 +701,10 @@ export function Composer({
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={keyDown}
+          aria-autocomplete="list"
+          aria-controls={visibleCompletions.length ? 'command-completions' : undefined}
+          aria-expanded={visibleCompletions.length > 0}
+          aria-activedescendant={visibleCompletions.length ? `command-completion-${completionIndex}` : undefined}
         />
         {operationId ? (
           <button

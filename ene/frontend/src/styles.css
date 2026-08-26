@@ -69,6 +69,11 @@
   --content: min(max(70vw, 820px), 1200px);
   --gutter: 1rem;
 
+  /* Width of the fixed session rail; 0 when it collapses into a drawer. */
+  --rail: 15rem;
+  /* Height of the fixed top bar; the rail and content start below it. */
+  --top-bar: 3rem;
+
   /* Bottom reserve under the timeline so the fixed composer never hides the
      tail of the conversation. JS keeps this in sync with the composer height. */
   --composer-reserve: 8.5rem;
@@ -210,12 +215,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .connection-banner {
   position: fixed;
   z-index: 50;
-  top: max(0.65rem, env(safe-area-inset-top));
-  left: 50%;
+  top: calc(var(--top-bar) + 0.5rem);
+  /* Centered over the content, not the viewport, so the rail cannot cover it. */
+  left: calc(var(--rail) + (100vw - var(--rail)) / 2);
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  max-width: calc(100vw - 2rem);
+  max-width: calc(100vw - var(--rail) - 2rem);
   padding: 0.55rem 0.75rem;
   color: var(--text);
   font-size: 0.84rem;
@@ -290,16 +296,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
    without stay horizontally identical (composer + timeline share one center). */
 html { scrollbar-gutter: stable; }
 .app-shell { min-height: 100dvh; }
-.top-controls {
+/* Fixed strip across the full width: brand on the left, controls on the right.
+   The rail starts below it so both stay visible together. */
+.top-bar {
   position: fixed;
-  z-index: 15;
-  top: max(0.7rem, env(safe-area-inset-top));
-  right: max(0.8rem, env(safe-area-inset-right));
+  z-index: 35;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: var(--top-bar);
+  padding: 0 max(0.8rem, env(safe-area-inset-right)) 0
+    max(0.8rem, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--surface-soft);
+  box-shadow: 0 8px 28px rgba(0, 8, 28, 0.10), inset 0 1px 0 var(--glass-highlight);
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+}
+.brand-logo { width: 1.6rem; height: 1.6rem; object-fit: contain; }
+.top-controls {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  margin-left: auto;             /* pin the controls to the right edge */
 }
-.top-controls button {
+/* Shared pill styling for every top-bar control, left- or right-aligned. */
+.top-bar button {
   padding: 0.32rem 0.7rem;
   color: var(--dim);
   background: var(--pill-bg);
@@ -314,46 +339,54 @@ html { scrollbar-gutter: stable; }
   opacity: 0.72;
   transition: opacity 0.2s ease, color 0.2s ease, transform 0.2s ease, background 0.2s ease;
 }
-.top-controls button:hover { transform: translateY(-1px) scale(1.03); background: var(--elevated); }
-.top-controls button:hover, .top-controls button:focus-visible { opacity: 1; color: var(--text); }
+.top-bar button:hover { transform: translateY(-1px) scale(1.03); background: var(--elevated); }
+.top-bar button:hover, .top-bar button:focus-visible { opacity: 1; color: var(--text); }
 .theme-toggle { line-height: 1; font-size: 0.95rem; }
 .scroll-top { line-height: 1; font-size: 0.95rem; }
 .logout { line-height: 1; font-size: 1rem; }
 .layout { display: block; }
+/* Content sits right of the fixed rail. The timeline still scrolls the window,
+   so per-session scroll restoration keeps working unchanged. */
+.panes { margin-left: var(--rail); }
 .workspace {
   width: min(100%, var(--content));
   min-height: calc(100dvh - var(--composer-reserve));
   margin: 0 auto;
-  padding: 1.25rem var(--gutter) var(--composer-reserve);
+  /* Clear the fixed top bar; the timeline still scrolls the window. */
+  padding: calc(var(--top-bar) + 1rem) var(--gutter) var(--composer-reserve);
 }
 .timeline { display: flex; flex-direction: column; gap: 0.8rem; }
 
-/* -- session tabs (top bar) ------------------------------------------- */
+/* -- session rail (fixed left panel) ----------------------------------- */
 .sidebar {
-  position: sticky;
-  top: 0;
-  z-index: 12;
+  position: fixed;
+  /* Above the composer and an open prompt, so switching sessions is always
+     possible; still below the new-session modal, which the rail opens. */
+  z-index: 32;
+  top: var(--top-bar);
+  bottom: 0;
+  left: 0;
+  width: var(--rail);
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 0.5rem;
-  /* Leave room on the right for the fixed theme/sign-out controls. */
-  padding: 0.55rem max(7.5rem, env(safe-area-inset-right)) 0.55rem
-    max(var(--gutter), env(safe-area-inset-left));
-  border-bottom: 1px solid var(--glass-border);
+  padding: 0.5rem 0.4rem 0.7rem max(0.4rem, env(safe-area-inset-left));
+  border-right: 1px solid var(--glass-border);
   background: var(--surface-soft);
-  box-shadow: 0 8px 28px rgba(0, 8, 28, 0.10), inset 0 1px 0 var(--glass-highlight);
+  box-shadow: 8px 0 28px rgba(0, 8, 28, 0.10), inset -1px 0 0 var(--glass-highlight);
   backdrop-filter: blur(26px) saturate(170%);
   -webkit-backdrop-filter: blur(26px) saturate(170%);
-  overflow-x: auto;
-  scrollbar-width: none;
 }
-.sidebar::-webkit-scrollbar { display: none; }
-.sidebar-logo {
-  flex: none;
-  width: 1.75rem;
-  height: 1.75rem;
-  object-fit: contain;
+.session-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
+.session-scroll::-webkit-scrollbar { width: 6px; }
+.session-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; }
+.sidebar-scrim { display: none; }
 .sidebar-empty { color: var(--muted); font-size: 0.85rem; line-height: 1.5; }
 .sidebar-empty code {
   background: var(--code-bg);
@@ -361,33 +394,306 @@ html { scrollbar-gutter: stable; }
   border-radius: 5px;
   color: var(--mono-text);
 }
-.session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: row; gap: 0.3rem; }
+.session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+/* The row is the capsule: it spans the rail's full width and contains both the
+   select button and the detach control, which cannot nest inside it (a button
+   may not contain another button). */
 .session-tab {
+  flex: 1;
+  min-width: 0;                  /* lets long names ellipsize instead of overflowing */
   display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  white-space: nowrap;
+  align-items: center;
+  gap: 0.45rem;
   text-align: left;
-  padding: 0.35rem 0.7rem;
-  color: var(--muted);
+  padding: 0;
+  color: inherit;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  border: none;
   cursor: pointer;
-  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
 }
-.session-tab:hover { background: var(--btn-subtle); color: var(--text); transform: translateY(-1px); }
-.session-tab.active {
+.session-text { display: flex; flex-direction: column; min-width: 0; gap: 0.05rem; }
+.session-meta {
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-row:has(.session-tab.active) {
   background: linear-gradient(135deg, var(--glass-highlight), var(--accent-faint));
   border-color: var(--glass-border-strong);
   box-shadow: var(--glass-shadow-soft);
   color: var(--text);
 }
-.session-name { font-size: 0.85rem; font-weight: 650; }
+.session-name {
+  overflow: hidden;
+  font-size: 0.85rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .session-host { font-size: 0.7rem; color: var(--dim); }
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  /* Uniform right padding keeps text ending at the same place whether or not
+     the row owns a detach control. */
+  padding: 0.4rem 0.5rem 0.4rem 0.55rem;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.session-row:hover { background: var(--btn-subtle); color: var(--text); }
+/* The tab fills the capsule, so draw its focus ring around the whole row. */
+.session-tab:focus-visible { outline: none; }
+.session-row:has(.session-tab:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* A terminal-owned row cannot be selected, so it must not look clickable. */
+.session-row:has(.session-tab:disabled):hover { background: transparent; color: var(--muted); }
+.session-tab.detached { opacity: 0.8; }
+.session-tab.detached:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* -- status dots -- */
+/* A fixed-width box keeps names aligned whether the indicator is one dot or
+   the three-dot working animation. */
+.session-state {
+  flex: none;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.95rem;
+  height: 0.5rem;
+}
+.session-state::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--dim);
+}
+/* Attached and finished: review it in this tab. */
+.session-state.done::before { background: var(--success); }
+/* Detached and finished: attach it to review. */
+.session-state.review::before { background: var(--warning); }
+.session-state.waiting::before { background: var(--warning); }
+.session-state.terminal::before { background: var(--danger); }
+/* Working reuses the timeline indicator's bouncing dots, scaled to the rail. */
+.session-state.busy {
+  gap: 0.1rem;
+}
+.session-state.busy::before { content: none; }
+.session-state.busy i {
+  flex: none;                    /* keeps the box its declared width */
+  width: 0.22rem;
+  height: 0.22rem;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.1s infinite ease-in-out;
+}
+.session-state.busy i:nth-child(2) { animation-delay: 0.14s; }
+.session-state.busy i:nth-child(3) { animation-delay: 0.28s; }
+
+.session-close {
+  /* A bare, centred glyph inside the row capsule: in normal flow so revealing
+     it never shifts the row, and with no background of its own. */
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  padding: 0;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  /* Revealed on hover so idle rows stay clean; keyboard focus reveals it too. */
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+/* Rows without a detach control reserve its width, so text in the attached and
+   detached groups wraps at the same point. */
+.session-row:not(:has(.session-close))::after {
+  content: "";
+  flex: none;
+  width: 1.3rem;
+}
+.session-row:hover .session-close,
+.session-close:focus-visible { opacity: 1; }
+.session-close:hover { color: var(--danger); }
+.session-close:disabled { cursor: not-allowed; opacity: 0.4; }
+@media (hover: none) {
+  /* Without a hover state (touch), the control must always be reachable. */
+  .session-close { opacity: 1; }
+}
+/* Left-aligned icon button in the top bar; shares the .top-bar pill styling. */
+.session-new { line-height: 1; font-size: 0.95rem; }
+.top-bar .session-new:hover, .top-bar .session-new:focus-visible { color: var(--accent); }
+.sidebar-heading {
+  margin: 0.35rem 0.2rem 0.15rem;
+  color: var(--dim);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.action-error {
+  width: min(100%, calc(var(--content) - 2 * var(--gutter)));
+  margin: 0.6rem auto 0;
+  padding: 0.5rem 0.75rem;
+  color: var(--danger);
+  background: var(--danger-faint);
+  border: 1px solid var(--danger-weak);
+  border-radius: 10px;
+  font-size: 0.85rem;
+}
+
+/* -- new-session modal -- */
+.modal-overlay {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--overlay);
+  backdrop-filter: blur(7px);
+}
+.modal {
+  width: min(100%, 620px);
+  max-height: calc(100dvh - 2rem);
+  padding: 1.25rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(145deg, var(--glass-highlight), transparent 42%), var(--surface);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(32px) saturate(170%);
+  -webkit-backdrop-filter: blur(32px) saturate(170%);
+}
+.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.9rem; }
+.modal-header h2 { margin: 0; font-size: 1rem; font-weight: 700; }
+.modal-close {
+  padding: 0 0.4rem;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--text); }
+.field { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.75rem; flex: 1; }
+.field > span { color: var(--muted); font-size: 0.75rem; font-weight: 650; letter-spacing: 0.04em; }
+.field input,
+.field select {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  color: var(--text);
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+.field-row { display: flex; gap: 0.75rem; }
+.recents { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.75rem; }
+.recent {
+  padding: 0.2rem 0.55rem;
+  color: var(--muted);
+  background: var(--btn-subtle);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.recent:hover { color: var(--accent); border-color: var(--accent); }
+.browser { margin-bottom: 0.9rem; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--btn-subtle);
+}
+.browser-toolbar button {
+  padding: 0.2rem 0.55rem;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.browser-toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
+.hidden-toggle { display: flex; align-items: center; gap: 0.3rem; color: var(--muted); font-size: 0.75rem; }
+.browser-list { list-style: none; margin: 0; padding: 0.25rem; max-height: 11rem; overflow-y: auto; }
+.browser-list li { display: block; }
+.browser-list button {
+  display: block;
+  width: 100%;
+  padding: 0.3rem 0.45rem;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.browser-list button:hover { background: var(--btn-subtle); color: var(--accent); }
+.browser-empty { padding: 0.4rem 0.45rem; color: var(--dim); font-size: 0.8rem; }
+.modal-error { margin: 0 0 0.75rem; color: var(--danger); font-size: 0.82rem; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.modal-actions button {
+  padding: 0.45rem 0.9rem;
+  color: var(--text);
+  background: var(--btn-subtle);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.modal-actions button.primary { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+.modal-actions button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* The rail is permanent on wide screens, so its opener is not needed there. */
+.sidebar-toggle { display: none; }
+
+@media (max-width: 900px) {
+  :root { --rail: 0rem; }
+  .sidebar-toggle { display: inline-flex; align-items: center; line-height: 1; }
+  .sidebar {
+    width: min(17rem, 82vw);
+    transform: translateX(-102%);   /* the extra 2% hides the shadow */
+    transition: transform 0.22s ease;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    z-index: 31;
+    inset: var(--top-bar) 0 0 0;
+    background: var(--overlay);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}
 
 @media (max-width: 640px) {
   .session-host { display: none; }
+  .field-row { flex-direction: column; gap: 0; }
 }
 
 .event { align-self: stretch; max-width: 100%; overflow-wrap: anywhere; animation: rise 0.35s cubic-bezier(.2,.8,.2,1) both; }
@@ -635,7 +941,7 @@ html { scrollbar-gutter: stable; }
 .prompt-backdrop {
   position: fixed;
   z-index: 30;
-  inset: 0;
+  inset: 0 0 0 var(--rail);
   display: grid;
   place-items: end center;
   padding: 1rem;
@@ -717,7 +1023,7 @@ html { scrollbar-gutter: stable; }
   z-index: 20;
   right: 0;
   bottom: 0;
-  left: 0;
+  left: var(--rail);
   padding: 1rem max(var(--gutter), env(safe-area-inset-right)) max(var(--gutter), env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
   background: linear-gradient(transparent, var(--composer-fade) 42%);
   pointer-events: none;
@@ -740,6 +1046,35 @@ html { scrollbar-gutter: stable; }
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 .composer:focus-within { border-color: var(--accent-focus); box-shadow: var(--glass-shadow), 0 0 0 4px var(--accent-faint); transform: translateY(-1px); }
+.command-completions {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  max-height: min(22rem, 45dvh);
+  padding: 0.35rem;
+  overflow-y: auto;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: var(--glass-shadow);
+}
+.command-completions button {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) 1fr;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.command-completions button.selected { background: var(--accent-faint); }
+.command-completions strong { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.command-completions span { min-width: 0; color: var(--muted); }
 .composer textarea {
   flex: 1;
   min-width: 0;

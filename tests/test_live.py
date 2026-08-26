@@ -332,6 +332,7 @@ def test_live_worker_status_includes_prompt_opened_before_attach():
     worker.runtime_id = "runtime"
     worker.record = {"workspace": "/tmp", "created_at": 0}
     worker.terminal_attached = False
+    worker.attachment_owner = ""
     worker.events = events
     worker.inputs = SimpleNamespace(submission=None)
     worker.prompts = PromptBroker(events)
@@ -358,6 +359,7 @@ def test_live_worker_status_includes_current_process_activity():
     worker.runtime_id = "runtime"
     worker.record = {"workspace": "/tmp", "created_at": 0}
     worker.terminal_attached = False
+    worker.attachment_owner = ""
     worker.inputs = SimpleNamespace(submission=None)
     worker.prompts = SimpleNamespace(active=None)
     worker.cancellation = SimpleNamespace(operation_id=None)
@@ -425,6 +427,7 @@ def test_live_worker_status_includes_pending_submission_and_operation_id():
     worker.runtime_id = "runtime"
     worker.record = {"workspace": "/tmp", "created_at": 0}
     worker.terminal_attached = False
+    worker.attachment_owner = ""
     worker.inputs = SimpleNamespace(submission=SimpleNamespace(
         id="pending-1",
         text="follow up",
@@ -462,7 +465,7 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
         _run_command=dispatched.append,
     )
 
-    worker._submit_terminal("/context")
+    worker._submit_attached("/context")
 
     assert dispatched == ["/context"]
     assert inputs.submission == queued
@@ -476,6 +479,7 @@ def test_live_worker_terminal_prompt_cancel_resolves_open_prompt():
     worker.record = {"workspace": "/tmp", "created_at": 0}
     worker.stop_event = threading.Event()
     worker.terminal_attached = False
+    worker.attachment_owner = ""
     worker.events = events
     worker.inputs = SimpleNamespace(submission=None)
     worker.prompts = PromptBroker(events)
@@ -703,7 +707,7 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
         raise EOFError
 
     terminal = FakeTerminal()
-    monkeypatch.setattr("ene.live_terminal.connect", lambda *_args: FakeSocket())
+    monkeypatch.setattr("ene.live_terminal.connect", lambda *_args, **_options: FakeSocket())
     monkeypatch.setattr("ene.live_terminal.recv_frame", receive)
     # patch_stdout needs a real console, which pytest does not provide.
     monkeypatch.setattr(
@@ -1168,6 +1172,7 @@ def _attached_worker(monkeypatch, sock, *, idle_timeout: float = 0.1):
     worker.token = "token"
     worker.terminal_lock = threading.Lock()
     worker.terminal_attached = False
+    worker.attachment_owner = ""
     worker.connections = set()
     worker.connections_lock = threading.Lock()
     worker.events = EventHub()
@@ -1239,6 +1244,7 @@ def test_live_worker_rejects_a_second_attachment_as_retryable(monkeypatch):
     assert reply == {
         "ok": False,
         "code": "attached",
+        "owner": "terminal",
         "error": "Another terminal is already attached",
     }
     assert not rejecting.is_alive()
@@ -1259,6 +1265,7 @@ def test_live_worker_drops_a_connection_that_never_identifies_itself(monkeypatch
     worker.token = "token"
     worker.terminal_lock = threading.Lock()
     worker.terminal_attached = False
+    worker.attachment_owner = ""
     worker.connections = set()
     worker.connections_lock = threading.Lock()
     handling = threading.Thread(target=worker._handle, args=(right,))
@@ -1280,7 +1287,7 @@ def test_live_terminal_waits_for_a_killed_terminal_to_release_the_session(monkey
     attempts = []
     attached = object()
 
-    def fake_connect(_record, _kind):
+    def fake_connect(_record, _kind, **_options):
         attempts.append(_kind)
         if len(attempts) < 3:
             raise live.LiveBusyError("Another terminal is already attached")
@@ -1302,7 +1309,7 @@ def test_live_terminal_gives_up_on_a_session_that_stays_attached(monkeypatch):
     monkeypatch.setattr("ene.live_terminal.ATTACH_WAIT_TIMEOUT", 0.05)
     monkeypatch.setattr(
         "ene.live_terminal.connect",
-        lambda *_args: (_ for _ in ()).throw(
+        lambda *_args, **_options: (_ for _ in ()).throw(
             live.LiveBusyError("Another terminal is already attached")
         ),
     )
@@ -1311,6 +1318,26 @@ def test_live_terminal_gives_up_on_a_session_that_stays_attached(monkeypatch):
 
     with pytest.raises(live.LiveBusyError, match="already attached"):
         client._attach()
+
+
+def test_live_terminal_refuses_a_web_owned_session_without_waiting(monkeypatch):
+    """A web attachment is released by the user, so waiting it out is pointless."""
+    monkeypatch.setattr("ene.live_terminal.ATTACH_RETRY_INTERVAL", 10)
+    attempts = []
+
+    def fake_connect(_record, _kind, **_options):
+        attempts.append(_kind)
+        raise live.LiveBusyError("This session is attached in the web UI", "web")
+
+    monkeypatch.setattr("ene.live_terminal.connect", fake_connect)
+    client = LiveTerminal({})
+    client.console = SimpleNamespace(system=lambda _text: None)
+
+    with pytest.raises(live.LiveBusyError, match="detach it there") as excinfo:
+        client._attach()
+
+    assert excinfo.value.owner == "web"
+    assert attempts == ["attach"]  # no retry loop
 
 
 def test_live_worker_keeps_attachment_alive_with_heartbeats(monkeypatch):
@@ -1505,12 +1532,17 @@ def test_live_worker_restores_saved_name_when_resuming(monkeypatch):
         "update_identity",
         lambda runtime_id, **changes: identities.append((runtime_id, changes)) or worker.record | changes,
     )
+    # Stop startup right after identity restoration, before the worker opens
+    # its control listener.
     monkeypatch.setattr(
         live_worker,
         "update_record",
-        lambda _runtime_id, **changes: worker.record | changes,
+        lambda _runtime_id, **changes: (
+            (_ for _ in ()).throw(RuntimeError("stop"))
+            if "status" in changes
+            else worker.record | changes
+        ),
     )
-    monkeypatch.setattr(worker, "_start_hub", lambda: (_ for _ in ()).throw(RuntimeError("stop")))
 
     with pytest.raises(RuntimeError, match="stop"):
         worker.start()
