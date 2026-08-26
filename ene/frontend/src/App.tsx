@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { newActionId } from './actionId'
 import { ApiError, attachSession, createSession, detachSession } from './api'
 import { ActivityStatus, Composer, ConnectionBanner, Login, NewSessionButton, PromptDialog, ScrollTopButton, SessionSidebar, SidebarToggle, ThemeToggle } from './components'
 import type { ContextStatusProps, ThinkingProps } from './components'
@@ -378,7 +379,7 @@ function SessionPane({
           onDraftChange={onDraftChange}
           onSend={(text) => {
             if (pending || submitAction) return
-            const actionId = crypto.randomUUID()
+            const actionId = newActionId()
             if (!send({ type: 'submit', text, action_id: actionId })) return
             submitActionRef.current = actionId
             setSubmitAction(actionId)
@@ -387,7 +388,7 @@ function SessionPane({
           }}
           onWithdraw={() => {
             if (!pending || draft || withdrawAction) return
-            const actionId = crypto.randomUUID()
+            const actionId = newActionId()
             if (!send({ type: 'withdraw_pending', id: pending.id, action_id: actionId })) return
             withdrawActionRef.current = actionId
             setWithdrawAction(actionId)
