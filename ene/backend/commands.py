@@ -5,6 +5,7 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 
+from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 
 from ene.context import (
@@ -22,11 +23,34 @@ from ene.providers import (
 from ene.personas import DEFAULT_PERSONA, PersonaInfo, discover_personas, get_persona
 from ene.tools.constants import MAX_PROCESS_LOG_TAIL_CHARS
 from ene.utils.interrupt import RequestInterrupted, run_interruptible
+from ene.utils.io import EVENT_TEXT_LIMIT
 
 
 _RECAP_INPUT_MAX_CHARS = 24_000
 _RECAP_MAX_OUTPUT_TOKENS = 128
 _RECAP_TIMEOUT_SECONDS = 60
+# Web/terminal event rendering happens at a fixed 120 columns, so rows wider
+# than that wrap and stop being one line per context message.
+_CONTEXT_LIST_WIDTH = 120
+_CONTEXT_PREVIEW_MIN = 24
+# Each published event field is clipped at EVENT_TEXT_LIMIT characters, which
+# would silently drop the *newest* messages of a long listing. Emitting the
+# listing in chunks well under that limit keeps the whole context visible.
+_CONTEXT_CHUNK_CHARS = EVENT_TEXT_LIMIT // 4
+
+
+def _fit_segments(segments: list[tuple[str, str]], budget: int) -> str:
+    """Render ``(style, text)`` segments as markup clipped to *budget* cells."""
+    parts = []
+    for style, text in segments:
+        if budget <= 0:
+            break
+        if cell_len(text) > budget:
+            text = set_cell_size(text, max(budget - 3, 1)).rstrip() + "..."
+        budget -= cell_len(text)
+        text = escape(text)
+        parts.append(f"[{style}]{text}[/{style}]" if style else text)
+    return "".join(parts)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -50,7 +74,7 @@ class AgentCommandsMixin:
     # Drives dispatch (COMMANDS), /help output, and terminal auto-completion.
     COMMAND_HELP = {
         "help": "Show this help message",
-        "context": "List context; user|assistant filters; <id> shows one in full",
+        "context": "List context; user|assistant filters; <id> shows one in full (-1 is the newest)",
         "system_prompt": "Print the current full system prompt",
         "compact": "Force context compaction via LLM summarization",
         "recap": "Summarize the conversation's task in one sentence",
@@ -690,7 +714,7 @@ class AgentCommandsMixin:
     def _cmd_context(self, raw: str = "/context"):
         msgs = self.context.messages
         parts = raw.split()
-        usage = "Usage: /context [user|assistant|id]"
+        usage = "Usage: /context [user|assistant|id] (id may be negative)"
         if len(parts) > 2:
             self.console.warn(usage)
             return
@@ -702,14 +726,16 @@ class AgentCommandsMixin:
                 role_filter = argument
             else:
                 message_id = argument.removeprefix("#")
-                if not message_id.isdigit():
+                if not message_id.removeprefix("-").isdigit():
                     self.console.warn(usage)
                     return
                 idx = int(message_id)
-                if idx >= len(msgs):
+                # Negative indices count back from the newest message.
+                resolved = idx + len(msgs) if idx < 0 else idx
+                if not 0 <= resolved < len(msgs):
                     self.console.warn(f"Context message #{idx} does not exist.")
                     return
-                self._print_context_message(idx, msgs[idx])
+                self._print_context_message(resolved, msgs[resolved])
                 return
 
         indexed_msgs = [
@@ -733,6 +759,13 @@ class AgentCommandsMixin:
         lines = [f"[bold blue]Context log ({count_label}):[/bold blue]"]
 
         tc_id_to_name = build_tool_name_index(msgs)
+        id_width = max(len(str(idx)) for idx, _ in indexed_msgs)
+        # Rows must fit both the attached terminal and the fixed-width event
+        # rendering, otherwise a row wraps onto a second line.
+        width = min(
+            getattr(self.console, "width", None) or _CONTEXT_LIST_WIDTH,
+            _CONTEXT_LIST_WIDTH,
+        )
 
         for idx, m in indexed_msgs:
             role = m.role
@@ -740,62 +773,72 @@ class AgentCommandsMixin:
             chars = m.chars
             total_chars += chars
 
-            preview = text.replace("\n", " ").strip()
-            if len(preview) > 80:
-                preview = preview[:77] + "..."
+            # Collapse every whitespace run so a multi-line message (notably
+            # tool output) still occupies exactly one row.
+            preview = " ".join(text.split())
 
             role_style = {
                 "user": "bold yellow",
                 "assistant": "bold white",
                 "tool": "bright_black",
             }.get(role, "dim")
-            role_tag = f"[{role_style}]{escape(role):>9}[/{role_style}]"
-            size_tag = f"[dim]{chars:>6} ch[/dim]"
+            head = f"  #{idx:<{id_width}} {role:>9} {chars:>6} ch  "
+            head_markup = (
+                f"  [dim]#{idx:<{id_width}}[/dim] "
+                f"[{role_style}]{escape(role):>9}[/{role_style}] "
+                f"[dim]{chars:>6} ch[/dim]  "
+            )
 
             tcs = m.tool_calls if m.is_assistant else []
             if tcs:
                 n_tc = len(tcs)
                 tc_names = ", ".join(tc.name for tc in tcs)
-                extra = (
-                    f"[yellow]{n_tc} call{'s' if n_tc > 1 else ''}[/yellow] "
-                    f"({escape(tc_names)})"
-                )
+                segments = [
+                    ("yellow", f"{n_tc} call{'s' if n_tc > 1 else ''}"),
+                    ("", f" ({tc_names})"),
+                ]
                 if preview:
-                    lines.append(
-                        f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {extra}  "
-                        f"[white]{escape(preview)}[/white]"
-                    )
-                else:
-                    lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {extra}")
+                    segments.append(("white", f"  {preview}"))
             elif role == "tool":
                 tid = m.tool_call_id
                 tool_name = tc_id_to_name.get(tid, "?") if tid else "?"
-                lines.append(
-                    f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  "
-                    f"[bright_black]({escape(tool_name)})  {escape(preview)}[/bright_black]"
-                )
+                segments = [("bright_black", f"({tool_name})  {preview}")]
             else:
                 preview_style = (
                     "yellow" if role == "user" else
                     "white" if role == "assistant" else ""
                 )
-                if preview_style:
-                    lines.append(
-                        f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  "
-                        f"[{preview_style}]{escape(preview)}[/{preview_style}]"
-                    )
-                else:
-                    lines.append(f"  [dim]#{idx:<3}[/dim] {role_tag} {size_tag}  {escape(preview)}")
+                segments = [(preview_style, preview)]
+
+            budget = max(width - cell_len(head), _CONTEXT_PREVIEW_MIN)
+            lines.append(head_markup + _fit_segments(segments, budget))
 
         est_tokens = self.token_estimator.chars_to_tokens(total_chars)
         ctx_pct = est_tokens / self.context_length * 100 if self.context_length else 0
         lines.append(f"\n  [bold]Total:[/bold] ~{est_tokens:,} tokens / {self.context_length:,} [{ctx_pct:.0f}%]")
 
         lines.append(
-            "  [dim]Use /context user|assistant to filter or /context <id> "
-            "to show a message in full.[/dim]"
+            "  [dim]Filter: /context user|assistant · "
+            "Full message: /context <id> (-1 is the newest)[/dim]"
         )
-        self.console.print("\n".join(lines))
+        self._print_chunked("\n".join(lines))
+
+    def _print_chunked(self, text: str, **kwargs) -> None:
+        """Print *text* in chunks that survive the event hub's per-field clip.
+
+        A single oversized print is truncated at its tail, which would hide the
+        newest context messages; chunking keeps the whole listing visible.
+        """
+        chunk: list[str] = []
+        chunk_chars = 0
+        for line in text.split("\n"):
+            if chunk and chunk_chars + len(line) > _CONTEXT_CHUNK_CHARS:
+                self.console.print("\n".join(chunk), **kwargs)
+                chunk, chunk_chars = [], 0
+            chunk.append(line)
+            chunk_chars += len(line) + 1
+        if chunk:
+            self.console.print("\n".join(chunk), **kwargs)
 
     def _print_context_message(self, idx: int, message: Message) -> None:
         """Print one context message in full, rendering assistant text as Markdown."""
@@ -811,20 +854,20 @@ class AgentCommandsMixin:
         display_content = message.display
         if display_content != content:
             self.console.print("[bold]Display content:[/bold]")
-            self.console.print(display_content, markup=False)
+            self._print_chunked(display_content, markup=False)
             shown = True
         if content or message.content is not None:
             self.console.print("[bold]Content:[/bold]")
             if message.is_assistant and content:
                 self.console.response(content)
             else:
-                self.console.print(content, markup=False)
+                self._print_chunked(content, markup=False)
             shown = True
 
         reasoning = message.reasoning_content
         if isinstance(reasoning, str):
             self.console.print("[bold]Reasoning:[/bold]")
-            self.console.print(reasoning, markup=False)
+            self._print_chunked(reasoning, markup=False)
             shown = True
 
         for call_idx, tool_call in enumerate(message.tool_calls or []):
@@ -834,7 +877,7 @@ class AgentCommandsMixin:
             self.console.print(
                 f"[bold]Tool call {call_idx}:[/bold] {escape(str(name))}{id_suffix}"
             )
-            self.console.print(tool_call.arguments, markup=False)
+            self._print_chunked(tool_call.arguments, markup=False)
             shown = True
 
         tool_call_id = message.tool_call_id

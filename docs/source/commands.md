@@ -48,7 +48,7 @@ The agent supports the following slash commands while chatting:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help message for all slash commands |
-| `/context [user\|assistant\|id]` | List all context messages, filter the list by user or assistant role, or show one message in full (assistant content is rendered as Markdown) |
+| `/context [user\|assistant\|id]` | List all context messages (one clipped line each), filter the list by user or assistant role, or show one message in full (assistant content is rendered as Markdown). A negative id counts back from the newest message, so `/context -1` shows the last one |
 | `/system_prompt` | Print the current full system prompt |
 | `/compact` | Force context compaction via LLM summarization |
 | `/recap` | Summarize the conversation's task in one sentence, focusing on user requests |

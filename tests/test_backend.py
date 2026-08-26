@@ -10,6 +10,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 from prompt_toolkit.validation import ValidationError
+from rich.console import Console as RichConsole
 
 import ene.backend as backend
 from ene.backend import LLMAgent, _is_fatal_api_error
@@ -21,6 +22,15 @@ from ene.utils.interrupt import RequestInterrupted
 from ene.terminal import MessageValidator
 from ene.utils.io import EventHub, InputBroker, UserSubmission
 from ene.utils.presence import WorkspacePresence
+from ene.ui import AgentConsole
+
+
+def _plain(markup_lines):
+    """Render rich markup lines to plain text without wrapping."""
+    console = RichConsole(width=400, no_color=True)
+    with console.capture() as capture:
+        console.print("\n".join(markup_lines))
+    return capture.get().rstrip("\n").split("\n")
 
 
 def test_reserve_session_id_is_atomic_across_agents(tmp_path):
@@ -609,6 +619,50 @@ def test_context_list_highlights_conversation_and_dims_tools():
     assert "[bright_black](?)  noisy \\[output][/bright_black]" in rendered
 
 
+def test_context_list_keeps_one_line_per_message():
+    output = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = NS(print=lambda message: output.append(str(message)), width=200)
+    agent.context = NS(messages=[
+        Message.tool("call-1", "first line\nsecond line\n" + "x" * 400),
+        Message.assistant("multi\nline\nanswer"),
+    ])
+    agent.token_estimator = NS(chars_to_tokens=lambda chars: chars // 4)
+    agent.context_length = 1000
+
+    agent._cmd_context()
+
+    rows = [
+        line for line in "\n".join(output).split("\n")
+        if line.startswith("  [dim]#")
+    ]
+    assert len(rows) == 2
+    plain = _plain(rows)
+    assert all(len(line) <= 120 for line in plain)
+    assert plain[0].endswith("...")
+    assert "first line second line" in plain[0]
+    assert "multi line answer" in plain[1]
+
+
+def test_context_list_emits_chunks_that_survive_event_clipping():
+    hub = EventHub()
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = AgentConsole(events=hub, render_terminal=False)
+    agent.context = NS(messages=[
+        Message.tool("call-1", f"tool output {idx} " + "y" * 300)
+        for idx in range(600)
+    ])
+    agent.token_estimator = NS(chars_to_tokens=lambda chars: chars // 4)
+    agent.context_length = 1000
+
+    agent._cmd_context()
+
+    texts = [event.data["text"] for event in hub.snapshot() if event.type == "output"]
+    assert len(texts) > 1
+    assert not any("(truncated," in text for text in texts)
+    assert "#599" in texts[-1]
+
+
 def test_context_list_filters_user_and_assistant_messages():
     output = []
 
@@ -657,13 +711,28 @@ def test_context_detail_validates_message_id():
 
     agent._cmd_context("/context nope")
     agent._cmd_context("/context 2")
+    agent._cmd_context("/context -2")
     agent._cmd_context("/context 0 extra")
 
+    usage = "Usage: /context [user|assistant|id] (id may be negative)"
     assert warnings == [
-        "Usage: /context [user|assistant|id]",
+        usage,
         "Context message #2 does not exist.",
-        "Usage: /context [user|assistant|id]",
+        "Context message #-2 does not exist.",
+        usage,
     ]
+
+
+def test_context_detail_accepts_negative_index():
+    printed = []
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = NS(print=lambda message, **kwargs: printed.append(str(message)))
+    agent.context = NS(messages=[Message.user("first"), Message.user("last")])
+
+    agent._cmd_context("/context -1")
+
+    assert "Context message #1" in printed[0]
+    assert "last" in printed[2]
 
 
 def test_process_status_callback_publishes_without_inspection(tmp_path):

@@ -89,7 +89,7 @@ Useful commands during a session include:
 | Command | Purpose |
 |---|---|
 | `/help` | Show interactive commands. |
-| `/context [user\|assistant\|id]` | List context messages, filter by role, or inspect one in full. |
+| `/context [user\|assistant\|id]` | List context messages, filter by role, or inspect one in full (`-1` is the newest). |
 | `/usage` | Show token usage. |
 | `/recap` | Summarize the current task in one sentence. |
 | `/export <path/filename>` | Export the last assistant response to a file. |
