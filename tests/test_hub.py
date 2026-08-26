@@ -154,11 +154,13 @@ def ws_header_kwargs(websockets, headers):
 
 # -- static / auth (browser surface) ---------------------------------------
 
-def test_hub_binds_all_interfaces_and_uses_hostname_in_browser_url(monkeypatch):
-    monkeypatch.setattr(socket, "gethostname", lambda: "ene-box")
+def test_hub_binds_all_interfaces_and_builds_network_urls(monkeypatch):
+    monkeypatch.setattr("ene.hub._local_ipv4", lambda: "192.168.1.25")
+    monkeypatch.setattr(socket, "getfqdn", lambda: "ene.example.com")
     hub = make_hub()
     assert hub.host == "0.0.0.0"
-    assert hub.url == "http://ene-box:8765"
+    assert hub.ipv4_url == "http://192.168.1.25:8765"
+    assert hub.fqdn_url == "http://ene.example.com:8765"
 
 
 def test_login_rejects_bad_tokens():

@@ -357,7 +357,9 @@ def cmd_hub(args: Args):
         console.error(f"Could not start hub: {exc}")
         return
 
-    console.system(f"ene hub running at {hub.url}")
+    console.system("ene hub running at:")
+    console.system(f"  IPv4: {hub.ipv4_url}")
+    console.system(f"  FQDN: {hub.fqdn_url}")
     console.local(f"[bold yellow]Web access token:[/bold yellow] {hub.token}")
     console.system("Create, attach, and detach sessions from the browser.")
     console.system("Press Ctrl+C to stop the hub.")

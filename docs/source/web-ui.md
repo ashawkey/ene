@@ -27,9 +27,9 @@ Start the hub in a dedicated terminal:
 ene hub --web-port 8765
 ```
 
-The command prints the URL and access token. If `ene_web_token` is absent, Ene generates a temporary token for that hub process. Starting a second hub on a port that already has one is refused.
+The command prints browser URLs using both the machine's local IPv4 address and fully qualified domain name (FQDN), followed by the access token. If `ene_web_token` is absent, Ene generates a temporary token for that hub process. Starting a second hub on a port that already has one is refused.
 
-Open the printed URL—normally `http://<hostname>:8765`—and enter the token. Devices on the same network can use that URL or substitute the machine's LAN IP address. A successful login creates an httponly browser session cookie; signing out invalidates it. Keep the hub terminal running while using the Web UI.
+Open either printed URL—such as `http://192.168.1.25:8765` or `http://ene.example.com:8765`—and enter the token. A successful login creates an httponly browser session cookie; signing out invalidates it. Keep the hub terminal running while using the Web UI.
 
 ## Create a session
 

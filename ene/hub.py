@@ -69,6 +69,20 @@ MAX_CREATE_BODY_BYTES = 8192
 HUB_INFO_PATH = Path.home() / ".ene" / "hub.json"
 
 
+def _local_ipv4() -> str:
+    """Return the IPv4 address used by this machine's default route."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # UDP connect only selects a route; it sends no traffic.
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return LOOPBACK_HOST
+
+
 def read_hub_info() -> dict | None:
     """Return the hub info file's contents, or ``None`` if absent/corrupt.
 
@@ -382,7 +396,8 @@ class Hub:
         console=None,
     ):
         self.host = HUB_BIND_HOST
-        self.browser_host = socket.gethostname()
+        self.local_ipv4 = _local_ipv4()
+        self.fqdn = socket.getfqdn()
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.console = console
@@ -419,8 +434,12 @@ class Hub:
         self.app = self._create_app()
 
     @property
-    def url(self) -> str:
-        return f"http://{self.browser_host}:{self.port}"
+    def ipv4_url(self) -> str:
+        return f"http://{self.local_ipv4}:{self.port}"
+
+    @property
+    def fqdn_url(self) -> str:
+        return f"http://{self.fqdn}:{self.port}"
 
     # -- logging ------------------------------------------------------------
 
