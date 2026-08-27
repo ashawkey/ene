@@ -29,8 +29,9 @@ registry. Like other built-in model tools, their advertisement is subject to
 the active persona's tool policy; `/ps` and live status remain available to the
 UI.
 
-While jobs are active, the terminal and Web UI show running and finished counts,
-followed by one line per running process with its managed ID, label, automatically
+While jobs are active, the terminal shows running and finished counts followed by
+one line per running process. The Web UI presents the same activity as individual
+rows in the composer dock. Both include the managed ID, label, automatically
 formatted runtime, and latest log line. Managed IDs are short session-local
 numbers (`1`, `2`, ...). Use `/ps` to list all jobs with their latest output,
 `/ps <label|process-id> [tail-chars]` for details and recent output, or

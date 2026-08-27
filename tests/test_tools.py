@@ -20,7 +20,7 @@ import ene.tools.commands as command_tools
 import ene.tools.search as search_tools
 import ene.tools.web as web_tools
 from ene.bundled_skills.browser import tools as browser_tools
-from ene.tools.process_manager import format_process_status
+from ene.tools.process_manager import format_process_status, process_status_snapshot
 from ene.tools import (
     ToolExecutor,
     _human_size,
@@ -258,6 +258,24 @@ def test_format_process_status_shows_one_line_per_running_process():
         "├ 1 [review parser] (13s) reading src/parse.py\n"
         "└ 2 [plan refactor] (3s)"
     )
+    assert process_status_snapshot(2, 1, activity) == {
+        "running": 2,
+        "finished": 1,
+        "processes": [
+            {
+                "process_id": "1",
+                "label": "review parser",
+                "elapsed_seconds": 12.9,
+                "last_line": "reading src/parse.py",
+            },
+            {
+                "process_id": "2",
+                "label": "plan refactor",
+                "elapsed_seconds": 3.0,
+                "last_line": "",
+            },
+        ],
+    }
     assert format_process_status(0, 3, activity) == ""
 
 

@@ -1,7 +1,7 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from 'react'
 
 import type { ConnectionStatus } from './connection'
-import type { PendingMessage, Prompt, SessionSummary } from './types'
+import type { PendingMessage, ProcessStatus, Prompt, SessionSummary } from './types'
 import type { Theme } from './theme'
 
 export function ConnectionBanner({
@@ -330,7 +330,6 @@ export type ThinkingProps = {
   countdown?: number
   startedAt?: number
   roundElapsed?: number
-  processStatus?: string
 }
 
 function ContextUsage({
@@ -349,16 +348,16 @@ function ContextUsage({
     : 0
   const details = `↑${compactTokens(inputTokens)} · ↓${compactTokens(outputTokens)} · ${Math.round(cacheHitRatio * 100)}% hit`
   if (contextLimit <= 0) {
-    return <small>~{compactTokens(contextTokens)} · {details}</small>
+    return <div className="context-usage"><small>~{compactTokens(contextTokens)} · {details}</small></div>
   }
   return (
-    <>
+    <div className="context-usage" aria-label="context usage">
       <i className={`context-progress ${contextLevel}`} aria-hidden="true">
         <i style={{ width: `${fraction * 100}%` }} />
       </i>
       <strong className={contextLevel}>{Math.round(fraction * 100)}%</strong>
       <small>{details}</small>
-    </>
+    </div>
   )
 }
 
@@ -374,7 +373,6 @@ export function Thinking({
   countdown,
   startedAt,
   roundElapsed,
-  processStatus = '',
 }: ThinkingProps) {
   const mountedAt = useRef(Date.now())
   const start = startedAt ?? mountedAt.current
@@ -386,22 +384,24 @@ export function Thinking({
     return () => window.clearInterval(id)
   }, [start])
   return (
-    <div className="working" aria-label="working">
-      <span /><span /><span />
-      <em>{label}... ({countdown == null ? `${seconds}s` : formatDuration(countdown - seconds)})</em>
-      {progress ? <i className="indeterminate-progress" aria-hidden="true"><i /></i> : null}
-      {processStatus ? <small className="process-status">{processStatus}</small> : null}
-      {suffix ? <small>{suffix}</small> : null}
-      {contextLimit > 0 || contextTokens > 0 ? (
-        <ContextUsage
-          contextTokens={contextTokens}
-          contextLimit={contextLimit}
-          inputTokens={inputTokens}
-          outputTokens={outputTokens}
-          cachedTokens={cachedTokens}
-        />
-      ) : null}
-      {roundElapsed == null ? null : <small>· {formatRoundDuration(roundElapsed)}</small>}
+    <div className="activity-operation" aria-label="working">
+      <div className="activity-operation-line">
+        <span className="activity-pulse" aria-hidden="true"><i /><i /><i /></span>
+        <strong>{label}</strong>
+        {suffix ? <small className="activity-suffix">{suffix}</small> : null}
+        {progress ? <i className="indeterminate-progress" aria-hidden="true"><i /></i> : null}
+        {contextLimit > 0 || contextTokens > 0 ? (
+          <ContextUsage
+            contextTokens={contextTokens}
+            contextLimit={contextLimit}
+            inputTokens={inputTokens}
+            outputTokens={outputTokens}
+            cachedTokens={cachedTokens}
+          />
+        ) : null}
+        <time>{countdown == null ? `${seconds}s` : formatDuration(countdown - seconds)}</time>
+        {roundElapsed == null ? null : <small className="round-elapsed">· {formatRoundDuration(roundElapsed)}</small>}
+      </div>
     </div>
   )
 }
@@ -409,24 +409,40 @@ export function Thinking({
 export function ActivityStatus({
   busy,
   status,
-  processStatus = '',
+  processStatus = { running: 0, finished: 0, processes: [] },
   contextStatus = null,
 }: {
   busy: boolean
   status: ThinkingProps | null
-  processStatus?: string
+  processStatus?: ProcessStatus
   contextStatus?: ContextStatusProps | null
 }) {
-  if (!busy && status === null) {
-    if (!processStatus && contextStatus === null) return null
-    return (
-      <div className="working" aria-label={contextStatus ? 'status' : 'background processes'}>
-        {processStatus ? <small className="process-status">{processStatus}</small> : null}
-        {contextStatus ? <ContextUsage {...contextStatus} /> : null}
-      </div>
-    )
-  }
-  return <Thinking {...(status ?? {})} {...(contextStatus ?? {})} processStatus={processStatus} />
+  const active = busy || status !== null
+  const hasProcesses = processStatus.running > 0 || processStatus.processes.length > 0
+  if (!active && !hasProcesses && contextStatus === null) return null
+  return (
+    <aside className="activity-dock" aria-label="Session activity">
+      {active ? <Thinking {...(status ?? {})} {...(contextStatus ?? {})} /> : (
+        contextStatus ? <ContextUsage {...contextStatus} /> : null
+      )}
+      {hasProcesses ? (
+        <section className="process-panel" aria-label="background processes">
+          <ul>
+            {processStatus.processes.map((process) => (
+              <li key={process.process_id}>
+                <span className="process-indicator" aria-hidden="true" />
+                <span className="process-copy">
+                  <strong><code>#{process.process_id}</code> {process.label}</strong>
+                  {process.last_line ? <small>{process.last_line}</small> : <small>Waiting for output…</small>}
+                </span>
+                <time>{formatDuration(process.elapsed_seconds)}</time>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </aside>
+  )
 }
 
 export function Login({ onSuccess }: { onSuccess: () => void }) {
@@ -543,6 +559,7 @@ export function PromptDialog({
 }
 
 export function Composer({
+  activity,
   operationId,
   pending,
   busy,
@@ -554,6 +571,7 @@ export function Composer({
   onWithdraw,
   onCancel,
 }: {
+  activity?: ReactNode
   operationId: string | null
   pending: PendingMessage | null
   busy: boolean
@@ -659,6 +677,7 @@ export function Composer({
 
   return (
     <section className="composer-shell" ref={shell}>
+      {activity}
       {pending ? (
         <button
           className="pending-message"

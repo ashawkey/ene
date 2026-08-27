@@ -36,6 +36,19 @@ export type Prompt = {
   default: string
 }
 
+export type ProcessActivity = {
+  process_id: string
+  label: string
+  elapsed_seconds: number
+  last_line: string
+}
+
+export type ProcessStatus = {
+  running: number
+  finished: number
+  processes: ProcessActivity[]
+}
+
 export type StateMessage = {
   type: 'state'
   csrf: string
@@ -46,6 +59,7 @@ export type StateMessage = {
   replay_truncated: boolean
   operation_id: string | null
   process_status: string
+  processes?: ProcessStatus
   context_status: Record<string, unknown> | null
   active_indicator: EventData | null
   commands: Record<string, string>

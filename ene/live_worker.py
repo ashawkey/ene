@@ -29,7 +29,7 @@ from ene.live import (
 )
 from ene.providers import provider_names
 from ene.replay import HiddenMessages, compact_replay, hidden_message
-from ene.tools.process_manager import format_process_status
+from ene.tools.process_manager import format_process_status, process_status_snapshot
 from ene.ui import AgentConsole
 from ene.utils.io import AgentEvent, CancellationToken, EventHub, InputBroker, PromptBroker
 
@@ -317,9 +317,13 @@ class Worker:
             status["instant_listing_commands"] = sorted(
                 agent.INSTANT_LISTING_COMMANDS
             )
+            process_counts = agent.tool_executor.process_counts()
+            process_activity = agent.tool_executor.process_activity()
             status["process_status"] = format_process_status(
-                *agent.tool_executor.process_counts(),
-                agent.tool_executor.process_activity(),
+                *process_counts, process_activity,
+            )
+            status["processes"] = process_status_snapshot(
+                *process_counts, process_activity,
             )
             get_context_status = getattr(agent, "_status_suffix", None)
             if get_context_status is not None:

@@ -151,6 +151,33 @@ def _registry_digest(records: list[dict]) -> list[tuple]:
     ]
 
 
+def _process_snapshot(value: object) -> dict:
+    """Normalize structured process activity received from a live worker."""
+    if not isinstance(value, dict):
+        return {"running": 0, "finished": 0, "processes": []}
+    items = value.get("processes")
+    return {
+        "running": int(value.get("running", 0))
+        if isinstance(value.get("running"), (int, float)) else 0,
+        "finished": int(value.get("finished", 0))
+        if isinstance(value.get("finished"), (int, float)) else 0,
+        "processes": [
+            {
+                "process_id": item.get("process_id", ""),
+                "label": item.get("label", ""),
+                "elapsed_seconds": item.get("elapsed_seconds", 0),
+                "last_line": item.get("last_line", ""),
+            }
+            for item in items or []
+            if isinstance(item, dict)
+            and isinstance(item.get("process_id"), str)
+            and isinstance(item.get("label"), str)
+            and isinstance(item.get("elapsed_seconds"), (int, float))
+            and isinstance(item.get("last_line"), str)
+        ] if isinstance(items, list) else [],
+    }
+
+
 class RemoteSession:
     """A live worker currently attached by the hub.
 
@@ -171,6 +198,7 @@ class RemoteSession:
         self.pending: dict | None = None
         self.operation_id: str | None = None
         self.process_status = ""
+        self.processes = _process_snapshot(None)
         self.context_status: dict | None = None
         self.active_indicator: dict | None = None
         self.commands: dict[str, str] = {}
@@ -187,6 +215,7 @@ class RemoteSession:
         self.pending = None
         self.operation_id = None
         self.process_status = ""
+        self.processes = _process_snapshot(None)
         self.context_status = None
         self.active_indicator = None
         self.commands = {}
@@ -234,6 +263,7 @@ class RemoteSession:
         self.operation_id = operation_id if isinstance(operation_id, str) else None
         process_status = status.get("process_status", "")
         self.process_status = process_status if isinstance(process_status, str) else ""
+        self.processes = _process_snapshot(status.get("processes"))
         context_status = status.get("context_status")
         self.context_status = (
             {
@@ -324,6 +354,7 @@ class RemoteSession:
         elif etype == "process_status":
             text = data.get("text", "")
             self.process_status = text if isinstance(text, str) else ""
+            self.processes = _process_snapshot(data)
         elif etype == "thinking_start":
             self.active_indicator = dict(data)
         elif etype == "thinking_update" and self.active_indicator is not None:
@@ -1157,6 +1188,7 @@ class Hub:
                 "latest_seq": s.events.latest_seq,
                 "operation_id": s.operation_id,
                 "process_status": s.process_status,
+                "processes": s.processes,
                 "context_status": s.context_status,
                 "active_indicator": s.active_indicator,
                 "commands": s.commands,

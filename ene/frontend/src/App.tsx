@@ -9,7 +9,7 @@ import { NewSessionDialog } from './NewSessionDialog'
 import { EventCard } from './renderers'
 import { applyTheme, hasStoredTheme, resolveInitialTheme, storeTheme } from './theme'
 import type { Theme } from './theme'
-import type { AgentEvent, ClientAction, DisplayEvent, NewSessionRequest, PendingMessage, Prompt, SessionSummary, StateMessage } from './types'
+import type { AgentEvent, ClientAction, DisplayEvent, NewSessionRequest, PendingMessage, ProcessStatus, Prompt, SessionSummary, StateMessage } from './types'
 import { displayTypes, isPrompt } from './types'
 import { appendDelta, finalizeStream } from './streaming'
 
@@ -21,6 +21,34 @@ function parseContextStatus(data: Record<string, unknown>): ContextStatusProps |
     inputTokens: typeof data.input_tokens === 'number' ? data.input_tokens : 0,
     outputTokens: typeof data.output_tokens === 'number' ? data.output_tokens : 0,
     cachedTokens: typeof data.cached_tokens === 'number' ? data.cached_tokens : 0,
+  }
+}
+
+const emptyProcessStatus: ProcessStatus = { running: 0, finished: 0, processes: [] }
+
+function parseProcessStatus(data: Record<string, unknown>): ProcessStatus {
+  const processes = Array.isArray(data.processes)
+    ? data.processes.flatMap((item) => {
+      if (!item || typeof item !== 'object') return []
+      const process = item as Record<string, unknown>
+      if (
+        typeof process.process_id !== 'string' ||
+        typeof process.label !== 'string' ||
+        typeof process.elapsed_seconds !== 'number' ||
+        typeof process.last_line !== 'string'
+      ) return []
+      return [{
+        process_id: process.process_id,
+        label: process.label,
+        elapsed_seconds: process.elapsed_seconds,
+        last_line: process.last_line,
+      }]
+    })
+    : []
+  return {
+    running: typeof data.running === 'number' ? data.running : processes.length,
+    finished: typeof data.finished === 'number' ? data.finished : 0,
+    processes,
   }
 }
 
@@ -67,7 +95,7 @@ function SessionPane({
   const withdrawActionRef = useRef<string | null>(null)
   const [thinkingStatus, setThinkingStatus] = useState<ThinkingProps | null>(null)
   const [contextStatus, setContextStatus] = useState<ContextStatusProps | null>(null)
-  const [processStatus, setProcessStatus] = useState('')
+  const [processStatus, setProcessStatus] = useState<ProcessStatus>(emptyProcessStatus)
   const [commands, setCommands] = useState<Record<string, string>>({})
   const lastSeq = useRef(0)
   const streamKey = useRef('')
@@ -102,7 +130,7 @@ function SessionPane({
       }
       streamKey.current = key
       setOperationId(state.operation_id)
-      setProcessStatus(state.process_status)
+      setProcessStatus(parseProcessStatus(state.processes ?? {}))
       setCommands(state.commands ?? {})
       setContextStatus(state.context_status ? parseContextStatus(state.context_status) : null)
       // State frames are authoritative after reconnect.
@@ -251,7 +279,7 @@ function SessionPane({
         setThinkingStatus(null)
         break
       case 'process_status':
-        setProcessStatus(typeof data.text === 'string' ? data.text : '')
+        setProcessStatus(parseProcessStatus(data))
         break
       case 'commands':
         if (data.commands && typeof data.commands === 'object') {
@@ -349,14 +377,6 @@ function SessionPane({
         <div className="timeline" aria-live="polite">
           {events.map((event) => <EventCard event={event} key={event.key} />)}
         </div>
-        {active ? (
-          <ActivityStatus
-            busy={operationId !== null}
-            status={thinkingStatus}
-            processStatus={processStatus}
-            contextStatus={contextStatus}
-          />
-        ) : null}
       </section>
       {active && showConnectionStatus ? (
         <ConnectionBanner status={connection.status} onRetry={connection.retry} />
@@ -370,6 +390,14 @@ function SessionPane({
       ) : null}
       {active ? (
         <Composer
+          activity={(
+            <ActivityStatus
+              busy={operationId !== null}
+              status={thinkingStatus}
+              processStatus={processStatus}
+              contextStatus={contextStatus}
+            />
+          )}
           operationId={operationId}
           pending={pending}
           busy={submitAction !== null || withdrawAction !== null}

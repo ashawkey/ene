@@ -33,7 +33,7 @@ from ene.tools import (
     format_tool_result,
     format_tool_summary,
 )
-from ene.tools.process_manager import format_process_status
+from ene.tools.process_manager import format_process_status, process_status_snapshot
 from ene.tools.results import (
     discard_tool_result_artifact,
     persist_tool_result_artifact,
@@ -390,15 +390,13 @@ class LLMAgent(
 
     def _process_status_changed(self, running: int, finished: int) -> None:
         """Publish process counts plus live activity, if any."""
-        status = format_process_status(
-            running, finished, self.tool_executor.process_activity()
-        )
+        activity = self.tool_executor.process_activity()
+        status = format_process_status(running, finished, activity)
+        snapshot = process_status_snapshot(running, finished, activity)
         if self._process_status_sink is not None:
             self._process_status_sink(status)
         if self.events is not None:
-            self.events.publish(
-                "process_status", running=running, finished=finished, text=status
-            )
+            self.events.publish("process_status", text=status, **snapshot)
 
     def _status_suffix(self) -> ContextStatus:
         """Context-window progress shown in the status bar."""

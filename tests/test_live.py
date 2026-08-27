@@ -389,6 +389,16 @@ def test_live_worker_status_includes_current_process_activity():
         "1 process running · 0 finished\n"
         "└ 1 [review parser] (12s) reading src/parse.py"
     )
+    assert status["processes"] == {
+        "running": 1,
+        "finished": 0,
+        "processes": [{
+            "process_id": "1",
+            "label": "review parser",
+            "elapsed_seconds": 12.0,
+            "last_line": "reading src/parse.py",
+        }],
+    }
 
 
 def test_live_worker_status_tracks_state_transition_time(monkeypatch):

@@ -195,7 +195,13 @@ def test_per_session_state_and_event_replay():
     session.events = EventHub(max_events=1)
     session.ingest({
         "type": "process_status",
-        "data": {"running": 1, "finished": 0, "text": "1/1 running processes"},
+        "data": {
+            "running": 1, "finished": 0, "text": "1/1 running processes",
+            "processes": [{
+                "process_id": "1", "label": "tests",
+                "elapsed_seconds": 4, "last_line": "collecting",
+            }],
+        },
     })
     session.commands = {"help": "Show help"}
     session.events.publish("system", text="ready")
@@ -209,6 +215,7 @@ def test_per_session_state_and_event_replay():
             assert state["csrf"] == csrf
             assert state["session"] == "s1"
             assert state["process_status"] == "1/1 running processes"
+            assert state["processes"]["processes"][0]["label"] == "tests"
             assert state["commands"] == {"help": "Show help"}
             assert state["replay_truncated"] is True
             assert receive_type(sock, "system")["data"]["text"] == "ready"
@@ -302,15 +309,25 @@ def test_remote_session_tracks_process_status_for_authoritative_state():
     session = RemoteSession("s1", {})
     session.ingest({
         "type": "process_status",
-        "data": {"running": 1, "finished": 2, "text": "1/3 running processes"},
+        "data": {
+            "running": 1,
+            "finished": 2,
+            "text": "1/3 running processes",
+            "processes": [{
+                "process_id": "1", "label": "tests",
+                "elapsed_seconds": 4, "last_line": "collecting",
+            }],
+        },
     })
     assert session.process_status == "1/3 running processes"
+    assert session.processes["processes"][0]["label"] == "tests"
 
     session.ingest({
         "type": "process_status",
         "data": {"running": 0, "finished": 3, "text": ""},
     })
     assert session.process_status == ""
+    assert session.processes == {"running": 0, "finished": 3, "processes": []}
 
 
 def test_remote_session_hydrates_state_from_attach_payload():
@@ -321,6 +338,13 @@ def test_remote_session_hydrates_state_from_attach_payload():
         "conversation_id": "conv-1",
         "operation_id": "op-1",
         "process_status": "1/2 running processes",
+        "processes": {
+            "running": 1, "finished": 1,
+            "processes": [{
+                "process_id": "1", "label": "tests",
+                "elapsed_seconds": 4, "last_line": "collecting",
+            }],
+        },
         "context_status": {"context_tokens": 10, "context_limit": 100},
         "active_indicator": {"label": "Executing", "started_at": 5.0},
         "commands": {"help": "Show help", "review": "Skill — Review code"},
@@ -333,6 +357,7 @@ def test_remote_session_hydrates_state_from_attach_payload():
 
     assert session.operation_id == "op-1"
     assert session.process_status == "1/2 running processes"
+    assert session.processes["processes"][0]["last_line"] == "collecting"
     assert session.context_status["context_tokens"] == 10
     assert session.active_indicator == {"label": "Executing", "started_at": 5.0}
     assert session.commands == {"help": "Show help", "review": "Skill — Review code"}

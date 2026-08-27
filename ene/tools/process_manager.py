@@ -49,25 +49,43 @@ def _format_process_elapsed(seconds: float) -> str:
     return f"{seconds}s"
 
 
+def process_status_snapshot(
+    running: int,
+    finished: int,
+    activity: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return structured process activity suitable for browser clients."""
+    processes = []
+    for item in activity or []:
+        if item["status"] != "running":
+            continue
+        label = item.get("label") or " ".join(item["command"].split())
+        processes.append({
+            "process_id": str(item["process_id"]),
+            "label": _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS],
+            "elapsed_seconds": max(0, float(item["elapsed_seconds"])),
+            "last_line": _clean_process_line(item.get("last_line", "")),
+        })
+    return {"running": running, "finished": finished, "processes": processes}
+
+
 def format_process_status(
     running: int,
     finished: int,
     activity: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Return the multiline process summary shared by terminal and web UIs."""
+    """Return the multiline process summary used by the terminal UI."""
     if running <= 0:
         return ""
     noun = "process" if running == 1 else "processes"
     lines = [f"{running} {noun} running · {finished} finished"]
-    active = [item for item in activity or [] if item["status"] == "running"]
+    active = process_status_snapshot(running, finished, activity)["processes"]
     for index, item in enumerate(active):
         marker = "└" if index == len(active) - 1 else "├"
-        label = item.get("label") or " ".join(item["command"].split())
-        label = _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS]
         elapsed = _format_process_elapsed(item["elapsed_seconds"])
-        latest = _clean_process_line(item.get("last_line", ""))
         lines.append(
-            f"{marker} {item['process_id']} [{label}] ({elapsed}) {latest}".rstrip()
+            f"{marker} {item['process_id']} [{item['label']}] ({elapsed}) "
+            f"{item['last_line']}".rstrip()
         )
     return "\n".join(lines)
 

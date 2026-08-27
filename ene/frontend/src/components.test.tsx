@@ -174,9 +174,11 @@ describe('interaction components', () => {
     vi.useFakeTimers()
     try {
       render(<Thinking />)
-      expect(screen.getByText('Working... (0s)')).toBeInTheDocument()
+      expect(screen.getByText('Working')).toBeInTheDocument()
+      expect(screen.getByText('0s')).toBeInTheDocument()
       act(() => { vi.advanceTimersByTime(2000) })
-      expect(screen.getByText('Working... (2s)')).toBeInTheDocument()
+      expect(screen.getByText('Working')).toBeInTheDocument()
+      expect(screen.getByText('2s')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -195,11 +197,13 @@ describe('interaction components', () => {
           roundElapsed={312}
         />,
       )
-      expect(screen.getByText('Working... (0s)')).toBeInTheDocument()
+      expect(screen.getByText('Working')).toBeInTheDocument()
+      expect(screen.getByText('0s')).toBeInTheDocument()
       expect(screen.getByText('↑226K · ↓5K · 80% hit')).toBeInTheDocument()
       expect(screen.getByText('· 5m')).toBeInTheDocument()
       act(() => { vi.advanceTimersByTime(2000) })
-      expect(screen.getByText('Working... (2s)')).toBeInTheDocument()
+      expect(screen.getByText('Working')).toBeInTheDocument()
+      expect(screen.getByText('2s')).toBeInTheDocument()
       expect(screen.getByText('· 5m')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
@@ -210,9 +214,10 @@ describe('interaction components', () => {
     vi.useFakeTimers()
     try {
       render(<Thinking label="Waiting" countdown={61} />)
-      expect(screen.getByText('Waiting... (1m 01s)')).toBeInTheDocument()
+      expect(screen.getByText('Waiting')).toBeInTheDocument()
+      expect(screen.getByText('1m 01s')).toBeInTheDocument()
       act(() => { vi.advanceTimersByTime(2000) })
-      expect(screen.getByText('Waiting... (59s)')).toBeInTheDocument()
+      expect(screen.getByText('59s')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -220,21 +225,58 @@ describe('interaction components', () => {
 
   it('falls back to working while an operation has no specific indicator', () => {
     render(<ActivityStatus busy status={null} />)
-    expect(screen.getByText('Working... (0s)')).toBeInTheDocument()
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    expect(screen.getByText('0s')).toBeInTheDocument()
   })
 
   it('keeps the specific activity while an operation is busy', () => {
     render(<ActivityStatus busy status={{ label: 'Executing', suffix: 'read_file' }} />)
-    expect(screen.getByText('Executing... (0s)')).toBeInTheDocument()
+    expect(screen.getByText('Executing')).toBeInTheDocument()
+    expect(screen.getByText('0s')).toBeInTheDocument()
     expect(screen.getByText('read_file')).toBeInTheDocument()
   })
 
-  it('shows multiline background process activity while otherwise idle', () => {
-    const processStatus = '1 process running · 2 finished\n└ 42 [review parser] reading src/parse.py'
-    render(<ActivityStatus busy={false} status={null} processStatus={processStatus} />)
-    const status = screen.getByLabelText('background processes').querySelector('small')
-    expect(status).toHaveClass('process-status')
-    expect(status?.textContent).toBe(processStatus)
+  it('binds session activity to the composer shell', () => {
+    const { container } = render(
+      <Composer
+        activity={<ActivityStatus busy status={{ label: 'Executing' }} />}
+        operationId="op"
+        pending={null}
+        busy={false}
+        draft=""
+        onDraftChange={() => undefined}
+        onSend={() => undefined}
+        onWithdraw={() => undefined}
+        onCancel={() => undefined}
+      />,
+    )
+    expect(container.querySelector('.composer-shell > .activity-dock')).toBeInTheDocument()
+  })
+
+  it('shows each background process as a separate activity row', () => {
+    render(
+      <ActivityStatus
+        busy={false}
+        status={null}
+        processStatus={{
+          running: 2,
+          finished: 1,
+          processes: [
+            { process_id: '1', label: 'review parser', elapsed_seconds: 12, last_line: 'reading src/parse.py' },
+            { process_id: '2', label: 'run tests', elapsed_seconds: 75, last_line: '' },
+          ],
+        }}
+      />,
+    )
+    const panel = screen.getByLabelText('background processes')
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(panel).getByText('#1')).toBeInTheDocument()
+    expect(within(panel).getByText(/review parser/)).toBeInTheDocument()
+    expect(within(panel).getByText('reading src/parse.py')).toBeInTheDocument()
+    expect(within(panel).getByText('1m 15s')).toBeInTheDocument()
+    expect(within(panel).getByText('Waiting for output…')).toBeInTheDocument()
+    expect(within(panel).queryByText('Background tasks')).not.toBeInTheDocument()
+    expect(within(panel).queryByText('1 finished')).not.toBeInTheDocument()
   })
 
   it('keeps context usage visible while idle', () => {
@@ -270,9 +312,11 @@ describe('interaction components', () => {
         }}
       />,
     )
-    expect(screen.getByText('Executing... (0s)')).toBeInTheDocument()
+    expect(screen.getByText('Executing')).toBeInTheDocument()
+    expect(screen.getByText('0s')).toBeInTheDocument()
     expect(screen.getByText('50%')).toBeInTheDocument()
     expect(screen.getByText('↑20K · ↓2K · 50% hit')).toBeInTheDocument()
+    expect(screen.getByLabelText('working').querySelector('.activity-operation-line > .context-usage')).toBeInTheDocument()
   })
 
   it('hides the status before context usage is available', () => {
@@ -286,7 +330,8 @@ describe('interaction components', () => {
       const startedAt = Date.now()
       act(() => { vi.advanceTimersByTime(5000) })
       render(<Thinking startedAt={startedAt} />)
-      expect(screen.getByText('Working... (5s)')).toBeInTheDocument()
+      expect(screen.getByText('Working')).toBeInTheDocument()
+      expect(screen.getByText('5s')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -300,7 +345,8 @@ describe('interaction components', () => {
         suffix="436 messages, ~305,603 tokens"
       />,
     )
-    expect(screen.getByText('Compacting... (0s)')).toBeInTheDocument()
+    expect(screen.getByText('Compacting')).toBeInTheDocument()
+    expect(screen.getByText('0s')).toBeInTheDocument()
     expect(screen.getByText('436 messages, ~305,603 tokens')).toBeInTheDocument()
     expect(container.querySelector('.indeterminate-progress > i')).toBeInTheDocument()
   })
@@ -315,7 +361,8 @@ describe('interaction components', () => {
         cachedTokens={1_600}
       />,
     )
-    expect(screen.getByText('Working... (0s)')).toBeInTheDocument()
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    expect(screen.getByText('0s')).toBeInTheDocument()
     expect(screen.getByText('1%')).toBeInTheDocument()
     expect(screen.getByText('↑2K · ↓500 · 80% hit')).toBeInTheDocument()
     expect(container.querySelector('.context-progress > i')).toHaveStyle({ width: '0.78125%' })

@@ -58,7 +58,7 @@ Attaching from a terminal to a session the hub owns is refused immediately with 
 
 ## Browser behavior
 
-The browser shows the conversation, tool activity, interactive selections, queued message, and process status of every attached session. Only one message can be queued while a round is active; a message the agent refuses is reported rather than silently dropped.
+The browser shows the conversation, tool activity, interactive selections, queued message, and process status of every attached session. Live agent activity is docked above the composer, so it stays visible while the conversation scrolls. Each running background process gets its own row with its managed ID, label, runtime, and latest output; long process lists scroll within the dock. Only one message can be queued while a round is active; a message the agent refuses is reported rather than silently dropped.
 
 Typing `/` at the start of an empty composer opens slash-command suggestions, including discovered skills. Continue typing to filter them, use Up/Down to select, and press Tab or Enter to complete; press Enter again to run the completed command.
 
