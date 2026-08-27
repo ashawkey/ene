@@ -50,7 +50,7 @@ class SessionToolsMixin:
         else:
             header = f"[Skill '{name}' loaded.]\n\n"
         body = header + body
-        return {"content": body, "success": True}
+        return {"content": body, "name": name, "success": True}
 
     def _register_skill_tools(self, name: str, skill_dir: str | None) -> str | None:
         """Import a loaded skill's tools.py (if any) and register its tools.

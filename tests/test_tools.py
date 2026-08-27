@@ -1471,6 +1471,11 @@ def test_skill_owned_tool_output_description_is_used(tmp_path):
     assert describe_tool_output("demo_output", result, spec.describe_output) == "Returned useful"
 
 
+def test_load_skill_output_description_hides_instructions():
+    result = {"content": "long skill instructions", "name": "lean", "success": True}
+    assert describe_tool_output("load_skill", result) == "Skill lean loaded."
+
+
 def test_read_file_output_description_only_warns_for_unintentional_truncation():
     line_cap = {
         "lines_read": 100,

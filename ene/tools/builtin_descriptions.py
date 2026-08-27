@@ -185,5 +185,6 @@ BUILTIN_OUTPUT_DESCRIBERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "remove_file": lambda r: str(r["message"]),
     "glob_files": lambda r: _describe_search_output(r, "files matched"),
     "grep_files": lambda r: _describe_search_output(r, "matches"),
+    "load_skill": lambda r: f"Skill {r['name']} loaded.",
     "wait": lambda r: f"Waited {r['waited_seconds']:g}s",
 }
