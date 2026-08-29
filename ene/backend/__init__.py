@@ -7,6 +7,7 @@ import threading
 import time
 from contextlib import nullcontext
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,62 @@ def _strip_at_marks(query: str) -> str:
 
 def _is_local_query(query: str) -> bool:
     return query.lower() in ("exit", "quit") or query.startswith(("!", "/"))
+
+
+def _repair_tool_call_arguments(message: Message) -> Message:
+    """Return a copy of *message* with any unparseable tool-call arguments fixed.
+
+    Local models frequently truncate a tool call's JSON mid-string, leaving an
+    ``arguments`` payload that fails ``json.loads``. A provider rejects the whole
+    conversation when an assistant message carries such a malformed call, so the
+    history must never store one. Replacing each offending ``arguments`` with the
+    valid placeholder ``"{}"`` keeps the assistant/tool pairing valid on the wire
+    without executing anything; the paired tool result already carries the parse
+    error, so the model still sees why its call was refused and can retry.
+    """
+    if not message.is_assistant or not message.tool_calls:
+        return message
+    repaired_calls = None
+    for index, call in enumerate(message.tool_calls):
+        try:
+            json.loads(call.arguments)
+        except json.JSONDecodeError:
+            if repaired_calls is None:
+                repaired_calls = list(message.tool_calls)
+            repaired_calls[index] = replace(call, arguments="{}")
+    if repaired_calls is None:
+        return message
+    return replace(message, tool_calls=repaired_calls)
+
+
+def sanitize_unparseable_tool_calls(context) -> None:
+    """Repair every malformed assistant tool call already in the history.
+
+    Run on the history before building each provider request so a broken call
+    from an earlier round, or one this round has already refused, can never be
+    re-sent and poison the rest of the session with a provider 400. Tolerates a
+    bare ``messages``-list context (as used by focused tests) in addition to the
+    real :class:`~ene.context.ContextManager`.
+    """
+    messages = getattr(context, "messages", None)
+    if not isinstance(messages, list):
+        return
+    repaired_messages = messages
+    changed = False
+    for index, message in enumerate(messages):
+        repaired = _repair_tool_call_arguments(message)
+        if repaired is not message:
+            if repaired_messages is messages:
+                repaired_messages = list(messages)
+            repaired_messages[index] = repaired
+            changed = True
+    if not changed:
+        return
+    replace_messages = getattr(context, "replace_messages", None)
+    if replace_messages is not None:
+        replace_messages(repaired_messages)
+    else:
+        context.messages = repaired_messages
 
 
 class LLMAgent(
@@ -514,6 +571,9 @@ class LLMAgent(
         had_pending_images = bool(self._pending_images)
 
         def build_request() -> tuple[list[Message], CompletionRequest]:
+            # Repair any malformed tool-call arguments in the history so a
+            # broken call can never be re-sent and rejected by the provider.
+            sanitize_unparseable_tool_calls(self.context)
             messages = self._messages_with_pending_images()
             return messages, CompletionRequest(
                 model=self.model,
@@ -852,7 +912,11 @@ class LLMAgent(
 
             if parse_error is not None:
                 self.console.error(f"Failed to parse tool args: {parse_error}")
-            
+                # Rewrite the malformed call in the stored assistant message so
+                # the next request does not re-send invalid JSON and get rejected
+                # by the provider, which would poison the whole session.
+                sanitize_unparseable_tool_calls(self.context)
+
             if self.verbose:
                 self.console.debug(f"Tool call {i+1}/{len(tool_calls)}: {function_name}({function_args})")
 
@@ -1024,6 +1088,10 @@ class LLMAgent(
                         "call was complete, so it was never executed."
                     ),
                 ))
+            # The truncated message stays in history (paired with the synthetic
+            # results), so rewrite any tool call whose JSON was cut off mid-string
+            # before the session saves it — otherwise the next request is rejected.
+            sanitize_unparseable_tool_calls(self.context)
         else:
             self.context.drop_last(message)
 

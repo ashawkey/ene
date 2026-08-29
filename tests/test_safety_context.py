@@ -313,6 +313,123 @@ def test_unparseable_arguments_still_answer_their_tool_call(tmp_path):
     assert "Invalid tool arguments" in agent.context.messages[0].text
 
 
+def test_unparseable_tool_call_arguments_are_repaired_in_history():
+    """A malformed tool call is rewritten to valid JSON so it never poisons the wire.
+
+    Providers reject the whole conversation when an assistant message carries a
+    tool call whose ``arguments`` is not valid JSON (a truncation local models
+    do often). Repairing it keeps the assistant/tool pairing valid so the round
+    — and every later round — can continue instead of being rejected with 400.
+    """
+    context = ContextManager("system")
+    context.add(Message.assistant(
+        content="let me write",
+        tool_calls=[ToolCall("call-1", "write_file", "{not json")],
+    ))
+    original = context.messages[0]
+
+    backend.sanitize_unparseable_tool_calls(context)
+
+    repaired = context.messages[0]
+    assert repaired is not original
+    assert repaired.tool_calls[0].id == "call-1"
+    assert repaired.tool_calls[0].name == "write_file"
+    assert json.loads(repaired.tool_calls[0].arguments) == {}
+    # Valid calls are left untouched, and the system/user messages are not altered.
+    assert context.messages[0].is_assistant
+
+
+def test_execute_tool_calls_repairs_malformed_call_in_context(tmp_path):
+    """A malformed call is repaired in the stored assistant message before reuse."""
+    context = ContextManager("system")
+    context.add(Message.user("write a file"))
+    bad = ToolCall("bad", "write_file", "{not json")
+    good = ToolCall("good", "write_file", json.dumps({"file": "ok.txt", "content": "ok"}))
+    context.add(Message.assistant(content=None, tool_calls=[bad, good]))
+    original_assistant = context.messages[-1]
+
+    console = _Console()
+    console.error = lambda *args, **kwargs: None
+    executed = []
+
+    agent = NS(
+        verbose=False,
+        console=console,
+        tool_executor=NS(execute=lambda name, args: executed.append((name, args)) or {"success": True, "message": "written"}),
+        context=context,
+        cancellation=None,
+        context_length=16_000,
+        token_estimator=NS(chars_per_token=3.3),
+        work_dir=str(tmp_path),
+        _session_id="test",
+        round_id=1,
+        tool_compaction_totals={"calls": 0, "original_chars": 0, "retained_chars": 0},
+    )
+
+    outcome = LLMAgent.execute_tool_calls(agent, [bad, good])
+
+    assert outcome == TurnOutcome.COMPLETED
+    assert executed == [("write_file", {"file": "ok.txt", "content": "ok"})]
+    assistant = next(message for message in context.messages if message.is_assistant)
+    assert assistant is not original_assistant
+    assert json.loads(assistant.tool_calls[0].arguments) == {}
+    assert assistant.tool_calls[0].id == "bad"
+    # The repaired call still pairs with its error result, so nothing is unpaired.
+    assert [message.tool_call_id for message in context.messages if message.is_tool] == ["bad", "good"]
+
+
+def test_call_api_sanitizes_history_before_sending():
+    """The request built for a re-send never carries malformed tool-call JSON."""
+    usage = ProviderUsage(prompt_tokens=10, completion_tokens=1, total_tokens=11)
+    seen_requests = []
+    context = ContextManager("system")
+    context.add(Message.user("do it"))
+    context.add(Message.assistant(
+        content=None,
+        tool_calls=[ToolCall("call-1", "write_file", "{not json")],
+    ))
+    context.add(Message.tool("call-1", "Invalid tool arguments: Unterminated string"))
+
+    def completion(request):
+        seen_requests.append(request)
+        return CompletionResult(Message.assistant("done"), usage, "stop")
+
+    agent = NS(
+        console=_Console(),
+        _interruptible_sleep=lambda seconds: None,
+        context_length=0,
+        model="test-model",
+        max_output_tokens=1_000,
+        INITIAL_BACKOFF=0.01,
+        MAX_BACKOFF=0.02,
+        verbose=False,
+        round_id=1,
+        _session_id=None,
+        _isolated_turn_active=False,
+        _pending_images=[],
+        _messages_with_pending_images=lambda: context.get(),
+        stream=False,
+        tools=[],
+        profile=NS(reasoning=None),
+        reasoning_effort="high",
+        _blocking_completion=completion,
+        cancellation=None,
+        _accumulate_usage=lambda value: None,
+        token_estimator=NS(observe=lambda *args: None),
+        context=context,
+        _run_compaction=lambda reason: False,
+    )
+    agent._context_tokens = lambda: 1
+
+    LLMAgent.call_api(agent)
+
+    sent = seen_requests[0].messages
+    sent_tool_call = next(m for m in sent if m.is_assistant).tool_calls[0]
+    assert json.loads(sent_tool_call.arguments) == {}
+    # The repair is applied to the history, so the saved context is clean too.
+    assert json.loads(context.messages[1].tool_calls[0].arguments) == {}
+
+
 def test_interrupted_wait_skips_later_sequential_calls(tmp_path):
     console = _Console()
     executed = []
