@@ -354,6 +354,46 @@ def test_live_worker_status_includes_prompt_opened_before_attach():
     prompt_thread.join(timeout=1)
 
 
+def test_live_worker_status_includes_current_active_indicator():
+    worker = Worker({
+        "runtime_id": "runtime",
+        "token": "token",
+        "workspace": "/tmp",
+        "created_at": 0,
+    })
+    operation_id = worker.cancellation.begin("agent response")
+    worker.events.publish(
+        "thinking_start",
+        label="Waiting for processes",
+        suffix="",
+        started_at=123.0,
+    )
+    worker.events.publish("thinking_update", suffix="still waiting")
+
+    status = worker._status()
+
+    assert status["operation_id"] == operation_id
+    assert status["active_indicator"] == {
+        "label": "Waiting for processes",
+        "suffix": "still waiting",
+        "started_at": 123.0,
+    }
+
+
+def test_live_worker_status_omits_stopped_active_indicator():
+    worker = Worker({
+        "runtime_id": "runtime",
+        "token": "token",
+        "workspace": "/tmp",
+        "created_at": 0,
+    })
+    worker.cancellation.begin("agent response")
+    worker.events.publish("thinking_start", label="Waiting for processes")
+    worker.events.publish("thinking_stop")
+
+    assert "active_indicator" not in worker._status()
+
+
 def test_live_worker_status_includes_current_process_activity():
     worker = Worker.__new__(Worker)
     worker.runtime_id = "runtime"
@@ -1127,6 +1167,39 @@ def test_live_worker_can_attach_without_replaying_history():
 
     assert attached["session"]["has_replay"] is False
     assert attached["session"]["show_startup"] is False
+    assert not serving.is_alive()
+
+
+def test_live_worker_attach_prefers_tracked_indicator_over_bounded_history():
+    left, right = socket.socketpair()
+    worker = Worker({
+        "runtime_id": "runtime",
+        "token": "token",
+        "workspace": "/tmp",
+        "created_at": 0,
+    })
+    worker.events = EventHub(max_events=2)
+    worker.events.add_listener(worker._track_state)
+    worker.cancellation.events = worker.events
+    worker.cancellation.begin("agent response")
+    worker.events.publish(
+        "thinking_start", label="Waiting for processes", started_at=123.0
+    )
+    worker.events.publish("process_status", text="first update")
+    worker.events.publish("process_status", text="second update")
+    assert all(event.type != "thinking_start" for event in worker.events.snapshot())
+    serving = threading.Thread(target=worker._serve_terminal, args=(right,))
+    serving.start()
+
+    attached = live.recv_frame(left)
+    live.send_frame(left, {"type": "detach"})
+    serving.join(timeout=1)
+    left.close()
+    right.close()
+
+    assert attached["session"]["active_indicator"] == {
+        "label": "Waiting for processes", "started_at": 123.0
+    }
     assert not serving.is_alive()
 
 

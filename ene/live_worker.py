@@ -147,6 +147,7 @@ class Worker:
         )
         self._state_busy = False
         self._state_pending = False
+        self._active_indicator: dict[str, Any] | None = None
         self._last_user_message = ""
         self.events.add_listener(self._track_state)
         self.agent: LLMAgent | None = None
@@ -229,7 +230,7 @@ class Worker:
                 return
 
     def _track_state(self, event: AgentEvent) -> None:
-        """Record exact working/waiting/done transition times for discovery."""
+        """Record live UI state and exact discovery-state transition times."""
         if event.type == "user_message":
             # Kept for session pickers, which show it when a session is unnamed.
             text = str((event.data or {}).get("text", ""))
@@ -237,6 +238,17 @@ class Worker:
                 self._last_user_message = " ".join(text.split())[:PREVIEW_LIMIT]
             return
         with self._state_lock:
+            if event.type == "thinking_start":
+                self._active_indicator = dict(event.data or {})
+                return
+            if event.type == "thinking_update":
+                suffix = (event.data or {}).get("suffix")
+                if self._active_indicator is not None and isinstance(suffix, str):
+                    self._active_indicator["suffix"] = suffix
+                return
+            if event.type == "thinking_stop":
+                self._active_indicator = None
+                return
             if event.type == "operation_start":
                 self._state_busy = True
             elif event.type == "operation_end":
@@ -278,6 +290,13 @@ class Worker:
             else "waiting" if submission is not None
             else "done"
         )
+        lock = getattr(self, "_state_lock", None)
+        if lock is None:
+            active_indicator = None
+        else:
+            with lock:
+                indicator = getattr(self, "_active_indicator", None)
+                active_indicator = dict(indicator) if indicator is not None else None
         status = {
             "runtime_id": self.runtime_id,
             "name": self.record.get("name", ""),
@@ -293,6 +312,8 @@ class Worker:
             "state_changed_at": self._state_timestamp(state),
             "created_at": self.record.get("created_at", 0),
         }
+        if operation_id is not None and active_indicator is not None:
+            status["active_indicator"] = active_indicator
         if submission is not None:
             status["pending"] = {
                 "id": submission.id,
@@ -577,7 +598,13 @@ class Worker:
         session = self._status()
         session["has_replay"] = bool(replay)
         session["show_startup"] = replay_history and not replay
-        if session.get("operation_id") is not None:
+        if (
+            session.get("operation_id") is not None
+            and "active_indicator" not in session
+        ):
+            # Compatibility fallback for synthetic/older workers. Real workers
+            # track this independently because the start event can age out of
+            # the bounded replay history during a long wait.
             indicator = _active_indicator(events)
             if indicator is not None:
                 session["active_indicator"] = indicator
