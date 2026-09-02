@@ -144,6 +144,63 @@ def test_list_records_keeps_stopping_worker_reserved(monkeypatch, tmp_path):
     assert live.record_path(record["runtime_id"]).exists()
 
 
+def test_list_records_keeps_live_detached_worker_after_transient_probe_failure(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
+    monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
+    record = live.create_record(name="waiting", workspace=str(tmp_path), options={})
+    record = live.update_record(record["runtime_id"], status="ready", pid=123)
+    replies = iter([
+        None,
+        {"session": {"attached": False, "needs_attention": True}},
+    ])
+    monkeypatch.setattr(live, "probe", lambda _record: next(replies))
+    monkeypatch.setattr(live, "process_exited", lambda _pid: False)
+
+    first = live.list_records()
+    current = live.read_record(live.record_path(record["runtime_id"]))
+
+    assert [item["name"] for item in first] == ["waiting"]
+    assert current is not None
+    assert "unreachable_since" in current
+
+    second = live.list_records()
+    current = live.read_record(live.record_path(record["runtime_id"]))
+
+    assert second[0]["needs_attention"] is True
+    assert current is not None
+    assert "unreachable_since" not in current
+
+
+def test_list_records_reaps_unreachable_record_without_worker_pid(monkeypatch, tmp_path):
+    monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
+    monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
+    record = live.create_record(name="failed", workspace=str(tmp_path), options={})
+    live.update_record(record["runtime_id"], status="ready", pid=0)
+    monkeypatch.setattr(live, "probe", lambda _record: None)
+
+    assert live.list_records() == []
+    assert not live.record_path(record["runtime_id"]).exists()
+
+
+def test_list_records_reaps_worker_unreachable_beyond_grace(monkeypatch, tmp_path):
+    monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
+    monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
+    record = live.create_record(name="wedged", workspace=str(tmp_path), options={})
+    live.update_record(
+        record["runtime_id"],
+        status="ready",
+        pid=123,
+        unreachable_since=time.time() - live.UNREACHABLE_RECORD_GRACE - 1,
+    )
+    monkeypatch.setattr(live, "probe", lambda _record: None)
+    monkeypatch.setattr(live, "process_exited", lambda _pid: False)
+
+    assert live.list_records() == []
+    assert not live.record_path(record["runtime_id"]).exists()
+
+
 def test_live_worker_marks_record_stopping_before_closing_listener(monkeypatch):
     worker = Worker.__new__(Worker)
     worker.runtime_id = "runtime"
@@ -519,6 +576,49 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
 
     assert dispatched == ["/context"]
     assert inputs.submission == queued
+
+
+def test_live_worker_detach_preserves_round_waiting_for_prompt_response():
+    events = EventHub()
+    worker = Worker.__new__(Worker)
+    worker.runtime_id = "runtime"
+    worker.record = {"workspace": "/tmp", "created_at": 0}
+    worker.stop_event = threading.Event()
+    worker.events = events
+    worker.inputs = InputBroker(events)
+    worker.prompts = PromptBroker(events)
+    worker.cancellation = CancellationToken(events, worker.prompts)
+    worker.terminal_attached = True
+    worker.attachment_owner = "terminal"
+    worker.agent = None
+
+    result = []
+    ask_thread = threading.Thread(
+        target=lambda: result.append(worker.prompts.ask("text", "Need input"))
+    )
+    ask_thread.start()
+    deadline = time.monotonic() + 1
+    while worker.prompts.active is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert worker.prompts.active is not None
+
+    left, right = socket.socketpair()
+    serving = threading.Thread(target=worker._serve_terminal, args=(right,))
+    serving.start()
+    assert live.recv_frame(left)["session"]["active_prompt"]["message"] == "Need input"
+    live.send_frame(left, {"type": "detach"})
+    serving.join(timeout=1)
+
+    assert not serving.is_alive()
+    assert ask_thread.is_alive()
+    assert worker.prompts.active is not None
+    assert not worker.stop_event.is_set()
+
+    worker.prompts.resolve(worker.prompts.active.id, "answer")
+    ask_thread.join(timeout=1)
+    left.close()
+    right.close()
+    assert result == ["answer"]
 
 
 def test_live_worker_terminal_prompt_cancel_resolves_open_prompt():

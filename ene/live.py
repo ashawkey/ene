@@ -26,6 +26,10 @@ REQUEST_TIMEOUT = 5.0
 START_TIMEOUT = 15.0
 STOP_TIMEOUT = 20.0
 STOP_RECORD_GRACE = 30.0
+# A worker can miss one status probe while it is transitioning between an
+# attached client and detached input. Do not turn that transient miss into an
+# orphaned worker by deleting its discovery record immediately.
+UNREACHABLE_RECORD_GRACE = 30.0
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 
 # Attached terminals send a heartbeat ("ping") frame every
@@ -101,6 +105,19 @@ def update_record(runtime_id: str, **changes: Any) -> dict[str, Any]:
         record.update(changes)
         _atomic_write(path, record)
         return record
+
+
+def _clear_unreachable(record: dict[str, Any]) -> dict[str, Any]:
+    """Clear a transient probe marker without overwriting worker updates."""
+    path = record_path(str(record.get("runtime_id", "")))
+    with FileLock(str(REGISTRY_LOCK)):
+        current = read_record(path)
+        if current is None or current.get("token") != record.get("token"):
+            return record
+        if "unreachable_since" in current:
+            current.pop("unreachable_since", None)
+            _atomic_write(path, current)
+        return current
 
 
 def update_identity(
@@ -231,9 +248,38 @@ def list_records(*, clean: bool = True) -> list[dict[str, Any]]:
                 continue
         if status is None:
             if clean:
+                now = time.time()
+                unreachable_since = record.get("unreachable_since")
+                try:
+                    pid = int(record.get("pid", 0))
+                except (TypeError, ValueError):
+                    pid = 0
+                if (
+                    pid > 0
+                    and not process_exited(pid)
+                    and (
+                        unreachable_since is None
+                        or now - float(unreachable_since) < UNREACHABLE_RECORD_GRACE
+                    )
+                ):
+                    # A detach closes only the attachment socket, but a status
+                    # probe can race that transition or another short stall.
+                    # Preserve discovery long enough for a later poll to prove
+                    # the worker is reachable again instead of orphaning it.
+                    if unreachable_since is None:
+                        try:
+                            record = update_record(
+                                str(record["runtime_id"]), unreachable_since=now
+                            )
+                        except LiveError:
+                            continue
+                    records.append(record)
+                    continue
                 with FileLock(str(REGISTRY_LOCK)):
                     unlink_record(path)
             continue
+        if clean and "unreachable_since" in record:
+            record = _clear_unreachable(record)
         record.update(status.get("session", {}))
         records.append(record)
     return sorted(records, key=lambda item: float(item.get("created_at", 0)))
