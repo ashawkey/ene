@@ -419,7 +419,9 @@ class Worker:
             self.runtime_id, status="ready", port=server.getsockname()[1], pid=os.getpid()
         )
         agent_thread = threading.Thread(
-            target=self.agent.run_headless_loop, args=(self.stop_event,), name="ene-agent", daemon=True
+            target=self.agent.run_headless_loop,
+            args=(self.stop_event,),
+            name="ene-agent",
         )
         agent_thread.start()
         try:
@@ -432,14 +434,25 @@ class Worker:
                 thread.start()
         finally:
             self._request_stop()
-            agent_thread.join(timeout=10)
-            if not agent_thread.is_alive():
-                try:
-                    self.agent.save_session(self.agent._session_id)
-                except Exception:
-                    pass
-            self.agent.close()
+            self._finish_agent(agent_thread)
             self._cleanup_record()
+
+    def _finish_agent(self, agent_thread: threading.Thread) -> None:
+        """Wait for cancellation to settle, then persist and close the agent.
+
+        The shutdown watchdog is the hard deadline. Returning from the worker's
+        main thread while the daemonized agent thread was still active used to
+        discard its final context update and round save.
+        """
+        agent_thread.join()
+        assert self.agent is not None
+        try:
+            try:
+                self.agent.save_session(self.agent._session_id)
+            except Exception:
+                pass
+        finally:
+            self.agent.close()
 
     def _session_changed(self, conversation_id: str, name: str) -> None:
         assert self.agent is not None

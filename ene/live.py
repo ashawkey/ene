@@ -26,10 +26,10 @@ REQUEST_TIMEOUT = 5.0
 START_TIMEOUT = 15.0
 STOP_TIMEOUT = 20.0
 STOP_RECORD_GRACE = 30.0
-# A worker can miss one status probe while it is transitioning between an
-# attached client and detached input. Do not turn that transient miss into an
-# orphaned worker by deleting its discovery record immediately.
-UNREACHABLE_RECORD_GRACE = 30.0
+# A live worker's discovery record must survive any length of control-plane
+# unreachability. Long tool calls and process waits must not orphan a detached
+# session merely because status probes fail; only a definitively exited worker
+# is stale.
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 
 # Attached terminals send a heartbeat ("ping") frame every
@@ -254,18 +254,12 @@ def list_records(*, clean: bool = True) -> list[dict[str, Any]]:
                     pid = int(record.get("pid", 0))
                 except (TypeError, ValueError):
                     pid = 0
-                if (
-                    pid > 0
-                    and not process_exited(pid)
-                    and (
-                        unreachable_since is None
-                        or now - float(unreachable_since) < UNREACHABLE_RECORD_GRACE
-                    )
-                ):
-                    # A detach closes only the attachment socket, but a status
-                    # probe can race that transition or another short stall.
-                    # Preserve discovery long enough for a later poll to prove
-                    # the worker is reachable again instead of orphaning it.
+                if pid > 0 and not process_exited(pid):
+                    # Status is advisory; process liveness is authoritative.
+                    # A detached session may be unreachable throughout a long
+                    # tool call or process wait. Never orphan a live worker by
+                    # deleting the only record through which it can be attached
+                    # or explicitly stopped.
                     if unreachable_since is None:
                         try:
                             record = update_record(

@@ -184,21 +184,51 @@ def test_list_records_reaps_unreachable_record_without_worker_pid(monkeypatch, t
     assert not live.record_path(record["runtime_id"]).exists()
 
 
-def test_list_records_reaps_worker_unreachable_beyond_grace(monkeypatch, tmp_path):
+def test_list_records_keeps_live_worker_unreachable_indefinitely(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
     monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
-    record = live.create_record(name="wedged", workspace=str(tmp_path), options={})
+    record = live.create_record(name="waiting", workspace=str(tmp_path), options={})
     live.update_record(
         record["runtime_id"],
         status="ready",
         pid=123,
-        unreachable_since=time.time() - live.UNREACHABLE_RECORD_GRACE - 1,
+        unreachable_since=time.time() - 24 * 60 * 60,
     )
     monkeypatch.setattr(live, "probe", lambda _record: None)
     monkeypatch.setattr(live, "process_exited", lambda _pid: False)
 
-    assert live.list_records() == []
-    assert not live.record_path(record["runtime_id"]).exists()
+    records = live.list_records()
+
+    assert [item["name"] for item in records] == ["waiting"]
+    assert live.record_path(record["runtime_id"]).exists()
+
+
+def test_live_worker_finish_waits_for_round_before_saving_and_closing():
+    worker = Worker.__new__(Worker)
+    calls = []
+    release = threading.Event()
+    agent_thread = threading.Thread(
+        target=lambda: release.wait(), name="active-agent-round"
+    )
+    agent_thread.start()
+    worker.agent = SimpleNamespace(
+        _session_id="conversation",
+        save_session=lambda session_id: calls.append(("save", session_id)),
+        close=lambda: calls.append(("close", None)),
+    )
+    finishing = threading.Thread(target=worker._finish_agent, args=(agent_thread,))
+    finishing.start()
+
+    time.sleep(0.05)
+    assert calls == []
+    assert finishing.is_alive()
+
+    release.set()
+    finishing.join(timeout=1)
+    agent_thread.join(timeout=1)
+
+    assert calls == [("save", "conversation"), ("close", None)]
+    assert not finishing.is_alive()
 
 
 def test_live_worker_marks_record_stopping_before_closing_listener(monkeypatch):
