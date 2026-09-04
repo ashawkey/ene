@@ -40,8 +40,7 @@ PREVIEW_LIMIT = 160
 
 
 def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Select compact authoritative history and mark omissions in place."""
-    starts_mid_turn = bool(events and int(events[0].get("seq", 0)) > 1)
+    """Replay direct conversation and fold tool/reasoning activity in place."""
     reset_index = next(
         (
             index
@@ -61,17 +60,6 @@ def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         is_assistant=lambda event: event.get("type") == "assistant_message",
         has_text=lambda event: bool(str((event.get("data") or {}).get("text", "")).strip()),
         is_visible=lambda event: event.get("type") in visible_types,
-        is_turn_start=lambda event: (
-            event.get("type") == "iteration_start"
-            and int((event.get("data") or {}).get("iteration", 0)) == 1
-        ),
-        user_starts_turn=lambda event: (
-            (event.get("data") or {}).get("source") == "replay"
-        ),
-        is_continuation_user=lambda event: bool(
-            (event.get("data") or {}).get("steer")
-        ),
-        starts_mid_turn=starts_mid_turn and reset_index < 0,
     )
 
     # A snapshot taken during streaming has no consolidated assistant message
@@ -136,6 +124,11 @@ class Worker:
         self.connections: set[socket.socket] = set()
         self.connections_lock = threading.Lock()
         self.events = EventHub(max_events=10000)
+        # Direct conversation must survive any amount of bounded tool/thinking
+        # activity so a later attachment can always reconstruct the transcript.
+        self._transcript_lock = threading.Lock()
+        self._transcript_events: list[AgentEvent] = []
+        self.events.add_listener(self._remember_transcript)
         self.inputs = InputBroker(self.events)
         self.prompts = PromptBroker(self.events)
         self.cancellation = CancellationToken(self.events, self.prompts)
@@ -228,6 +221,21 @@ class Worker:
                 with self._state_lock:
                     self._last_user_message = text[:PREVIEW_LIMIT]
                 return
+
+    def _remember_transcript(self, event: AgentEvent) -> None:
+        """Retain direct conversation independently of the bounded event hub."""
+        with self._transcript_lock:
+            if event.type == "timeline_reset":
+                self._transcript_events.clear()
+            elif event.type in {"user_message", "assistant_message"}:
+                self._transcript_events.append(event)
+
+    def _transcript_snapshot(self) -> list[AgentEvent]:
+        lock = getattr(self, "_transcript_lock", None)
+        if lock is None:
+            return []
+        with lock:
+            return list(self._transcript_events)
 
     def _track_state(self, event: AgentEvent) -> None:
         """Record live UI state and exact discovery-state transition times."""
@@ -605,9 +613,24 @@ class Worker:
         # Subscribe before taking the bounded history snapshot. Events racing
         # replay are queued and de-duplicated by sequence, so attach has no gap.
         self.events.add_listener(enqueue)
-        events = [event.to_dict() for event in self.events.snapshot()]
+        bounded_events = self.events.snapshot()
+        snapshot_seq = max((event.seq for event in bounded_events), default=0)
+        transcript_events = self._transcript_snapshot()
+        # Close the small gap between the two snapshots. Anything published
+        # later remains in the listener queue and is forwarded after replay.
+        catch_up_events = self.events.after(snapshot_seq)
+        replayed_through_seq = max(
+            (event.seq for event in catch_up_events), default=snapshot_seq
+        )
+        event_by_seq = {
+            event.seq: event
+            for event in [*bounded_events, *transcript_events, *catch_up_events]
+        }
+        events = [event_by_seq[seq].to_dict() for seq in sorted(event_by_seq)]
         replay = _replay_events(events) if replay_history else []
-        replayed_seq = max((int(event.get("seq", 0)) for event in events), default=0)
+        replayed_seqs = {
+            int(event.get("seq", 0)) for event in replay if int(event.get("seq", 0)) > 0
+        }
         session = self._status()
         session["has_replay"] = bool(replay)
         session["show_startup"] = replay_history and not replay
@@ -624,7 +647,6 @@ class Worker:
         send({"type": "attached", "session": session})
 
         def forward() -> None:
-            nonlocal replayed_seq
             try:
                 # Keep replay and live events on one sender so their wire order
                 # is stable, while the serving thread remains free to receive
@@ -638,10 +660,9 @@ class Worker:
                         event = pending.get(timeout=0.5)
                     except queue.Empty:
                         continue
-                    if event.seq <= replayed_seq:
+                    if event.seq <= replayed_through_seq or event.seq in replayed_seqs:
                         continue
                     send({"type": "event", "event": event.to_dict()})
-                    replayed_seq = event.seq
             except OSError:
                 stopped.set()
 

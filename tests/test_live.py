@@ -1300,6 +1300,42 @@ def test_live_worker_can_attach_without_replaying_history():
     assert not serving.is_alive()
 
 
+def test_live_worker_attach_keeps_direct_transcript_beyond_bounded_history():
+    left, right = socket.socketpair()
+    worker = Worker.__new__(Worker)
+    worker.events = EventHub(max_events=2)
+    worker._transcript_lock = threading.Lock()
+    worker._transcript_events = []
+    worker.events.add_listener(worker._remember_transcript)
+    worker.events.publish("user_message", text="old question")
+    worker.events.publish("assistant_message", text="old answer")
+    worker.events.publish("tool_result", text="output 1")
+    worker.events.publish("thinking", text="reasoning")
+    worker.events.publish("tool_result", text="output 2")
+    assert all(
+        event.type not in {"user_message", "assistant_message"}
+        for event in worker.events.snapshot()
+    )
+    worker.stop_event = threading.Event()
+    worker._status = lambda: {"runtime_id": "runtime"}
+    serving = threading.Thread(target=worker._serve_terminal, args=(right,))
+    serving.start()
+
+    live.recv_frame(left)  # attached
+    replay = [live.recv_frame(left)["event"] for _ in range(3)]
+    live.send_frame(left, {"type": "detach"})
+    serving.join(timeout=1)
+    left.close()
+    right.close()
+
+    assert [(event["type"], event["data"]["text"]) for event in replay] == [
+        ("user_message", "old question"),
+        ("assistant_message", "old answer"),
+        ("system", "2 messages hidden"),
+    ]
+    assert not serving.is_alive()
+
+
 def test_live_worker_attach_prefers_tracked_indicator_over_bounded_history():
     left, right = socket.socketpair()
     worker = Worker({
@@ -1616,13 +1652,14 @@ def test_live_worker_replays_full_history_compactly_in_original_order():
     replay = _replay_events(events)
 
     assert replay[0]["data"]["text"] == "prompt 1"
-    assert replay[1]["data"]["text"] == "4 messages hidden"
-    assert replay[2]["data"]["text"] == "final 1"
+    assert replay[1]["data"]["text"] == "intermediate 1"
+    assert replay[2]["data"]["text"] == "3 messages hidden"
+    assert replay[3]["data"]["text"] == "final 1"
     assert replay[-1]["data"]["text"] == "final 12"
     assert {event["type"] for event in replay} == {
         "system", "user_message", "assistant_message",
     }
-    assert len(replay) == 36
+    assert len(replay) == 48
     assert _replay_events([]) == []
 
 
@@ -1635,11 +1672,11 @@ def test_live_worker_replay_preserves_final_reply_when_bounded_history_lost_prom
     ]
 
     assert [event["data"]["text"] for event in _replay_events(events)] == [
-        "3 messages hidden", "final answer"
+        "1 message hidden", "tool call", "1 message hidden", "final answer"
     ]
 
 
-def test_live_worker_replay_omits_slash_commands_without_agent_turns():
+def test_live_worker_replay_keeps_slash_commands_as_direct_user_messages():
     events = [
         {"type": "user_message", "data": {"text": "/usage"}},
         {"type": "system", "data": {"text": "usage"}},
@@ -1649,7 +1686,7 @@ def test_live_worker_replay_omits_slash_commands_without_agent_turns():
     ]
 
     assert [event["data"]["text"] for event in _replay_events(events)] == [
-        "2 messages hidden", "question", "answer"
+        "/usage", "1 message hidden", "question", "answer"
     ]
 
 
@@ -1681,7 +1718,7 @@ def test_live_worker_replay_preserves_steering_and_final_response():
     ]
 
     assert [event["data"]["text"] for event in _replay_events(events)] == [
-        "question", "3 messages hidden", "steer", "final answer"
+        "question", "tool call", "2 messages hidden", "steer", "final answer"
     ]
 
 

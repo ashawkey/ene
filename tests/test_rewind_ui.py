@@ -310,7 +310,7 @@ def test_replay_omits_reasoning_only_assistant_messages(tmp_path: Path):
     assert "the retained final reasoning" not in console.text
 
 
-def test_replay_shows_only_final_text_response_for_a_user_turn(tmp_path: Path):
+def test_replay_shows_all_direct_assistant_responses_for_a_user_turn(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [
         Message.user("finish this"),
@@ -325,9 +325,9 @@ def test_replay_shows_only_final_text_response_for_a_user_turn(tmp_path: Path):
 
     assert "finish this" in console.text
     assert "final answer" in console.text
-    assert "intermediate" not in console.text
+    assert "intermediate" in console.text
     assert "tool output" not in console.text
-    assert "2 messages hidden" in console.text
+    assert "1 message hidden" in console.text
 
 
 def test_no_file_changes_only_offers_conversation_rewind(tmp_path: Path):
