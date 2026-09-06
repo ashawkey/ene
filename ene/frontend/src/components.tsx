@@ -566,6 +566,8 @@ export function Composer({
   connected = true,
   draft,
   commands = {},
+  history = [],
+  fetchPathCompletions,
   onDraftChange,
   onSend,
   onWithdraw,
@@ -578,6 +580,8 @@ export function Composer({
   connected?: boolean
   draft: string
   commands?: Record<string, string>
+  history?: string[]
+  fetchPathCompletions?: (query: string) => Promise<string[]>
   onDraftChange: (text: string) => void
   onSend: (text: string) => void
   onWithdraw: () => void
@@ -589,18 +593,54 @@ export function Composer({
   const shell = useRef<HTMLElement>(null)
   const [completionIndex, setCompletionIndex] = useState(0)
   const [dismissedCompletion, setDismissedCompletion] = useState('')
+  const [cursor, setCursor] = useState(text.length)
+  const [pathResults, setPathResults] = useState<{ query: string, items: string[] }>({ query: '', items: [] })
+  const historyIndex = useRef<number | null>(null)
+  const savedDraft = useRef('')
   const commandToken = /^\/[\w-]*$/.test(text) ? text.slice(1).toLowerCase() : null
-  const completions = commandToken === null || dismissedCompletion === text
+  const commandCompletions = commandToken === null || dismissedCompletion === text
     ? []
     : Object.entries(commands).filter(([name]) => name.toLowerCase().startsWith(commandToken))
-  const visibleCompletions = completions.length === 1 && completions[0][0].toLowerCase() === commandToken
+  const visibleCommands = commandCompletions.length === 1 && commandCompletions[0][0].toLowerCase() === commandToken
     ? []
-    : completions
+    : commandCompletions
+  const beforeCursor = text.slice(0, cursor)
+  const pathMatch = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/)
+  const pathToken = pathMatch && fetchPathCompletions && dismissedCompletion !== text
+    ? {
+      query: pathMatch[1],
+      start: cursor - pathMatch[1].length - 1,
+      end: cursor,
+    }
+    : null
+  const pathCompletions = pathToken && pathResults.query === pathToken.query ? pathResults.items : []
+  const visiblePaths = pathToken && !(pathCompletions.length === 1 && pathCompletions[0] === `@${pathToken.query}`)
+    ? pathCompletions
+    : []
+  const completionCount = visibleCommands.length || visiblePaths.length
 
   useEffect(() => {
     setCompletionIndex(0)
     if (dismissedCompletion && dismissedCompletion !== text) setDismissedCompletion('')
-  }, [dismissedCompletion, text])
+  }, [dismissedCompletion, text, cursor])
+
+  useEffect(() => {
+    if (!pathToken || !fetchPathCompletions) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      fetchPathCompletions(pathToken.query)
+        .then((items) => {
+          if (!cancelled) setPathResults({ query: pathToken.query, items })
+        })
+        .catch(() => {
+          if (!cancelled) setPathResults({ query: pathToken.query, items: [] })
+        })
+    }, 100)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [fetchPathCompletions, pathToken?.query])
 
   // Grow the single-line field to fit wrapped/multi-line input, up to the CSS
   // max-height (then it scrolls). Runs on every value change.
@@ -632,30 +672,73 @@ export function Composer({
     }
   }, [])
 
+  function updateText(value: string, nextCursor = value.length) {
+    historyIndex.current = null
+    setCursor(nextCursor)
+    setText(value)
+  }
+
   function submit() {
     const value = text.trim()
     if (!value || busy || pending) return
+    historyIndex.current = null
+    savedDraft.current = ''
     onSend(value)
     field.current?.focus()
   }
 
   function complete(index: number) {
-    const command = visibleCompletions[index]
-    if (!command) return
-    setText(`/${command[0]}`)
+    const command = visibleCommands[index]
+    if (command) {
+      updateText(`/${command[0]}`)
+      field.current?.focus()
+      return
+    }
+    const path = visiblePaths[index]
+    if (!path || !pathToken) return
+    const value = `${text.slice(0, pathToken.start)}${path}${text.slice(pathToken.end)}`
+    const nextCursor = pathToken.start + path.length
+    updateText(value, nextCursor)
+    requestAnimationFrame(() => field.current?.setSelectionRange(nextCursor, nextCursor))
     field.current?.focus()
   }
 
+  function recallHistory(direction: -1 | 1) {
+    if (!history.length) return false
+    let next: number
+    if (historyIndex.current === null) {
+      if (direction === 1) return false
+      savedDraft.current = text
+      next = history.length - 1
+    } else {
+      next = historyIndex.current + direction
+      if (next >= history.length) {
+        historyIndex.current = null
+        updateText(savedDraft.current)
+        return true
+      }
+      next = Math.max(0, next)
+    }
+    historyIndex.current = next
+    setCursor(history[next].length)
+    setText(history[next])
+    requestAnimationFrame(() => {
+      const length = history[next].length
+      field.current?.setSelectionRange(length, length)
+    })
+    return true
+  }
+
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (visibleCompletions.length) {
+    if (completionCount) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setCompletionIndex((current) => (current + 1) % visibleCompletions.length)
+        setCompletionIndex((current) => (current + 1) % completionCount)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        setCompletionIndex((current) => (current - 1 + visibleCompletions.length) % visibleCompletions.length)
+        setCompletionIndex((current) => (current - 1 + completionCount) % completionCount)
         return
       }
       if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
@@ -669,7 +752,15 @@ export function Composer({
         return
       }
     }
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'ArrowUp' && recallHistory(-1)) {
+      event.preventDefault()
+      return
+    }
+    if (event.key === 'ArrowDown' && historyIndex.current !== null && recallHistory(1)) {
+      event.preventDefault()
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
       submit()
     }
@@ -692,12 +783,12 @@ export function Composer({
         </button>
       ) : null}
       <div className="composer">
-        {visibleCompletions.length ? (
-          <div className="command-completions" id="command-completions" role="listbox">
-            {visibleCompletions.map(([name, description], index) => (
+        {completionCount ? (
+          <div className="command-completions" id="composer-completions" role="listbox">
+            {visibleCommands.map(([name, description], index) => (
               <button
                 className={index === completionIndex ? 'selected' : undefined}
-                id={`command-completion-${index}`}
+                id={`composer-completion-${index}`}
                 key={name}
                 type="button"
                 role="option"
@@ -710,6 +801,21 @@ export function Composer({
                 <span>{description}</span>
               </button>
             ))}
+            {visiblePaths.map((path, index) => (
+              <button
+                className={index === completionIndex ? 'selected' : undefined}
+                id={`composer-completion-${index}`}
+                key={path}
+                type="button"
+                role="option"
+                aria-selected={index === completionIndex}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => complete(index)}
+                onMouseEnter={() => setCompletionIndex(index)}
+              >
+                <strong>{path}</strong>
+              </button>
+            ))}
           </div>
         ) : null}
         <textarea
@@ -718,12 +824,13 @@ export function Composer({
           maxLength={32768}
           placeholder={operationId ? 'Queue a message...' : 'Type Anything...'}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => updateText(event.target.value, event.target.selectionStart)}
+          onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
           onKeyDown={keyDown}
           aria-autocomplete="list"
-          aria-controls={visibleCompletions.length ? 'command-completions' : undefined}
-          aria-expanded={visibleCompletions.length > 0}
-          aria-activedescendant={visibleCompletions.length ? `command-completion-${completionIndex}` : undefined}
+          aria-controls={completionCount ? 'composer-completions' : undefined}
+          aria-expanded={completionCount > 0}
+          aria-activedescendant={completionCount ? `composer-completion-${completionIndex}` : undefined}
         />
         {operationId ? (
           <button

@@ -718,6 +718,30 @@ def test_fs_endpoint_lists_only_directories(tmp_path):
         ).status_code == 400
 
 
+def test_path_completion_endpoint_uses_session_workspace(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "widget.py").write_text("x", encoding="utf-8")
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(tmp_path))
+    with TestClient(hub.app) as client:
+        assert client.get(
+            "/api/sessions/s1/path-completions", params={"query": "wid"}
+        ).status_code == 403
+        login(client)
+        response = client.get(
+            "/api/sessions/s1/path-completions", params={"query": "wid"}
+        )
+
+        assert response.status_code == 200
+        assert "@src/widget.py" in response.json()["completions"]
+        assert client.get(
+            "/api/sessions/missing/path-completions", params={"query": "wid"}
+        ).status_code == 404
+        assert client.get(
+            "/api/sessions/s1/path-completions", params={"query": "two words"}
+        ).status_code == 400
+
+
 def test_conversations_endpoint_marks_live_conversations(tmp_path):
     sessions = tmp_path / ".ene" / "sessions" / "20260101_000000"
     sessions.mkdir(parents=True)

@@ -51,6 +51,12 @@ async function post<T>(path: string, csrf: string, body?: unknown): Promise<T> {
 
 export const listDirectory = (path: string) => get<FsListing>('/api/fs', path ? { path } : {})
 
+export const listPathCompletions = (sessionId: string, query: string) =>
+  get<{ completions: string[] }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/path-completions`,
+    { query },
+  ).then((data) => data.completions)
+
 export const listWorkspaces = () =>
   get<{ workspaces: string[] }>('/api/workspaces').then((data) => data.workspaces)
 

@@ -53,6 +53,71 @@ describe('interaction components', () => {
     expect(onSend).toHaveBeenCalledWith('hello')
   })
 
+  it('recalls submitted commands with Up and restores the draft with Down', () => {
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer
+        operationId={null}
+        pending={null}
+        busy={false}
+        draft="working draft"
+        history={['first command', 'second command']}
+        onDraftChange={onDraftChange}
+        onSend={() => undefined}
+        onWithdraw={() => undefined}
+        onCancel={() => undefined}
+      />,
+    )
+    const field = screen.getByPlaceholderText('Type Anything...')
+    fireEvent.keyDown(field, { key: 'ArrowUp' })
+    expect(onDraftChange).toHaveBeenLastCalledWith('second command')
+
+    rerender(
+      <Composer
+        operationId={null}
+        pending={null}
+        busy={false}
+        draft="second command"
+        history={['first command', 'second command']}
+        onDraftChange={onDraftChange}
+        onSend={() => undefined}
+        onWithdraw={() => undefined}
+        onCancel={() => undefined}
+      />,
+    )
+    fireEvent.keyDown(field, { key: 'ArrowUp' })
+    expect(onDraftChange).toHaveBeenLastCalledWith('first command')
+    fireEvent.keyDown(field, { key: 'ArrowDown' })
+    expect(onDraftChange).toHaveBeenLastCalledWith('second command')
+    fireEvent.keyDown(field, { key: 'ArrowDown' })
+    expect(onDraftChange).toHaveBeenLastCalledWith('working draft')
+  })
+
+  it('completes @ paths at the cursor', async () => {
+    const onDraftChange = vi.fn()
+    const fetchPathCompletions = vi.fn().mockResolvedValue(['@src/', '@src/App.tsx'])
+    render(
+      <Composer
+        operationId={null}
+        pending={null}
+        busy={false}
+        draft="review @src then"
+        fetchPathCompletions={fetchPathCompletions}
+        onDraftChange={onDraftChange}
+        onSend={() => undefined}
+        onWithdraw={() => undefined}
+        onCancel={() => undefined}
+      />,
+    )
+    const field = screen.getByPlaceholderText('Type Anything...')
+    fireEvent.select(field, { target: { selectionStart: 11 } })
+    await waitFor(() => expect(fetchPathCompletions).toHaveBeenCalledWith('src'))
+    expect(await screen.findByRole('option', { name: '@src/' })).toBeInTheDocument()
+    fireEvent.keyDown(field, { key: 'ArrowDown' })
+    fireEvent.keyDown(field, { key: 'Tab' })
+    expect(onDraftChange).toHaveBeenLastCalledWith('review @src/App.tsx then')
+  })
+
   it('completes slash commands with keyboard navigation', () => {
     const onDraftChange = vi.fn()
     const { rerender } = render(

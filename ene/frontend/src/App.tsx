@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { newActionId } from './actionId'
-import { ApiError, attachSession, createSession, detachSession } from './api'
+import { ApiError, attachSession, createSession, detachSession, listPathCompletions } from './api'
 import { ActivityStatus, Composer, ConnectionBanner, Login, NewSessionButton, PromptDialog, ScrollTopButton, SessionSidebar, SidebarToggle, ThemeToggle } from './components'
 import type { ContextStatusProps, ThinkingProps } from './components'
 import { useConnectionSocket } from './connection'
@@ -86,6 +86,7 @@ function SessionPane({
   onDraftChange: (text: string) => void
 }) {
   const [events, setEvents] = useState<DisplayEvent[]>([])
+  const [commandHistory, setCommandHistory] = useState<string[]>([])
   const [operationId, setOperationId] = useState<string | null>(null)
   const [prompt, setPrompt] = useState<Prompt | null>(null)
   const [pending, setPending] = useState<PendingMessage | null>(null)
@@ -127,6 +128,7 @@ function SessionPane({
       if (streamChanged) {
         lastSeq.current = 0
         setEvents([])
+        setCommandHistory([])
       }
       streamKey.current = key
       setOperationId(state.operation_id)
@@ -299,6 +301,12 @@ function SessionPane({
         setThinkingStatus(null)
         setEvents([])
         break
+      case 'user_message': {
+        const text = typeof data.text === 'string' ? data.text : ''
+        if (text) setCommandHistory((current) => [...current, text])
+        showEvent(message.type, text, data, message.seq)
+        break
+      }
       case 'assistant_delta':
       case 'thinking_delta':
         setEvents((current) => appendDelta(current, message.type, typeof data.text === 'string' ? data.text : ''))
@@ -370,6 +378,10 @@ function SessionPane({
   }, [events, thinkingStatus, operationId, scrollToTail])
 
   const send = useCallback((action: ClientAction): boolean => connection.send(action), [connection.send])
+  const fetchPathCompletions = useCallback(
+    (query: string) => listPathCompletions(sessionId, query),
+    [sessionId],
+  )
 
   return (
     <>
@@ -404,6 +416,8 @@ function SessionPane({
           connected={connection.status === 'connected'}
           draft={draft}
           commands={commands}
+          history={commandHistory}
+          fetchPathCompletions={fetchPathCompletions}
           onDraftChange={onDraftChange}
           onSend={(text) => {
             if (pending || submitAction) return

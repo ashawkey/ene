@@ -32,6 +32,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from prompt_toolkit.document import Document
 from starlette.websockets import WebSocketDisconnect
 
 from ene.hublink import WorkerLink
@@ -42,6 +43,7 @@ from ene.live import (
     list_records,
     start_session,
 )
+from ene.terminal import AtFileCompleter
 from ene.utils.io import EventHub
 
 
@@ -458,6 +460,8 @@ class Hub:
         self._login_lock = threading.Lock()
         self._clients = 0
         self._client_lock = threading.Lock()
+        self._path_completers: dict[str, AtFileCompleter] = {}
+        self._path_completion_lock = threading.Lock()
 
         self._thread: threading.Thread | None = None
         self._server = None
@@ -956,6 +960,37 @@ class Hub:
                 ) from exc
             parent = str(target.parent) if target.parent != target else ""
             return {"path": str(target), "parent": parent, "entries": entries}
+
+        @app.get("/api/sessions/{session_id}/path-completions")
+        def path_completions(request: Request, session_id: str, query: str = ""):
+            """Complete an @ path relative to an attached session's workspace."""
+            require_login(request)
+            if len(query) > 1024 or any(char.isspace() for char in query):
+                raise HTTPException(status_code=400, detail="Invalid path query.")
+            session = self.get_session(session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Session not found.")
+            workspace = str(session.meta.get("cwd", ""))
+            try:
+                work_dir = resolved_directory(workspace)
+            except HTTPException as exc:
+                raise HTTPException(
+                    status_code=400, detail="Session workspace is unavailable."
+                ) from exc
+
+            # AtFileCompleter caches its git/filesystem index. Serialize access
+            # so concurrent browser requests do not rebuild the same index.
+            with self._path_completion_lock:
+                completer = self._path_completers.get(workspace)
+                if completer is None:
+                    completer = AtFileCompleter(work_dir)
+                    self._path_completers[workspace] = completer
+                document = Document(f"@{query}")
+                values = [
+                    completion.text
+                    for completion in completer.get_completions(document, None)
+                ]
+            return {"completions": values}
 
         @app.get("/api/workspaces")
         async def workspaces(request: Request):

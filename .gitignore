@@ -16,3 +16,5 @@ ene/frontend/vite.config.d.ts
 # The built Web UI is runtime package data.
 !ene/frontend/dist/
 !ene/frontend/dist/**
+
+generated/
