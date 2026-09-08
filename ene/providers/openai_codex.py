@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterator
 import httpx
 
 from ene.messages import ContentPart, ImagePart, Message, RawPart, TextPart, ToolCall
+from ene.models import reasoning_kwargs, resolve_model_profile
 from ene.utils.io import sanitize_unicode
 
 from .auth import CredentialStore, OAuthCredential
@@ -171,9 +172,13 @@ def _build_body(request: CompletionRequest) -> dict[str, Any]:
     if request.tools:
         body["tools"] = _responses_tools(request.tools)
     if request.reasoning_effort is not None:
+        style = resolve_model_profile(request.model).reasoning
+        effort = reasoning_kwargs(
+            "openai-astra" if style == "openai-astra" else "openai",
+            request.reasoning_effort,
+        )["reasoning_effort"]
         body["reasoning"] = {
-            # OpenAI's highest reasoning level is named xhigh.
-            "effort": "xhigh" if request.reasoning_effort == "max" else request.reasoning_effort,
+            "effort": effort,
             "summary": "auto",
         }
     cache_key = _prompt_cache_key(request.session_id)

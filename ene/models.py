@@ -14,7 +14,7 @@ class ModelProfile:
     """Properties of a model family that affect API behaviour."""
 
     context_length: int = 128_000
-    # "openai" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
+    # "openai" | "openai-astra" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
     reasoning: str | None = None
     supports_image_input: bool = False
     # Max output tokens per request. Reasoning tokens count against this budget,
@@ -26,6 +26,7 @@ class ModelProfile:
 # Ordered most-specific → least-specific within each family.
 # Matching is case-insensitive substring; first hit wins.
 MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
+    ("gpt-6-astra", ModelProfile(context_length=1_050_000, reasoning="openai-astra", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt-5", ModelProfile(context_length=258_000, reasoning="openai", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt", ModelProfile(supports_image_input=True)),
     ("gemini", ModelProfile(context_length=1_000_000, reasoning="gemini", supports_image_input=True, max_output_tokens=64_000)),
@@ -65,8 +66,11 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
     """Translate normalized reasoning effort to OpenAI-compatible API fields."""
     if style is None:
         return {}
+    if style == "openai-astra":
+        # Astra always reasons and supports a native max level.
+        return {"reasoning_effort": "low" if effort in ("none", "minimal") else effort}
     if style == "openai":
-        # OpenAI's highest reasoning level is named xhigh.
+        # Older OpenAI models use xhigh for Ene's max level.
         return {"reasoning_effort": "xhigh" if effort == "max" else effort}
     if style == "anthropic":
         if effort == "none":

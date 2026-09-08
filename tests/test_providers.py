@@ -280,3 +280,16 @@ def test_openai_provider_stream_is_closed_and_normalized(monkeypatch):
     assert parts == ["hello"]
     assert raw_stream.close_calls == 1
     assert client.close_calls == 1
+
+
+@pytest.mark.parametrize("model, alias", [
+    ("gpt-6-astra", ""), ("openai/GPT-6-ASTRA", ""), ("custom", "gpt-6-astra"),
+])
+def test_astra_model_profile(model, alias):
+    profile = resolve_model_profile(model, alias)
+    assert profile.context_length == 1_050_000
+    assert profile.max_output_tokens == 128_000
+    assert profile.supports_image_input is True
+    assert profile.reasoning == "openai-astra"
+    assert reasoning_kwargs(profile.reasoning, "max") == {"reasoning_effort": "max"}
+    assert reasoning_kwargs(profile.reasoning, "none") == {"reasoning_effort": "low"}

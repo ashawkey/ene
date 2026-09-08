@@ -48,6 +48,11 @@ openai:
     provider: openai-codex
     model: gpt-5.6-sol
     reasoning_effort: high # optional
+
+  gpt-6-astra:
+    provider: openai-codex
+    model: gpt-6-astra
+    reasoning_effort: high # optional
 ```
 
 Start Ene and authenticate from the chat prompt:

@@ -171,9 +171,10 @@ def test_credential_store_round_trip_and_delete(tmp_path):
     assert store.read_oauth("openai-codex") is None
 
 
-def test_codex_request_converts_chat_messages_and_tools():
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra"])
+def test_codex_request_converts_chat_messages_and_tools(model):
     request = CompletionRequest(
-        model="gpt-5.6-sol",
+        model=model,
         messages=[
             Message.system("system prompt"),
             Message.user("inspect"),
@@ -197,6 +198,7 @@ def test_codex_request_converts_chat_messages_and_tools():
 
     body = _build_body(request)
 
+    assert body["model"] == model
     assert body["instructions"] == "system prompt"
     assert body["store"] is False
     assert body["include"] == ["reasoning.encrypted_content"]
@@ -221,7 +223,8 @@ def test_codex_request_maps_max_effort_to_xhigh():
     assert body["reasoning"] == {"effort": "xhigh", "summary": "auto"}
 
 
-def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path):
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra"])
+def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path, model):
     terminal_output = [
         {
             "type": "reasoning",
@@ -282,7 +285,7 @@ def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path):
     text = []
     thinking = []
     stream = provider.open_stream(CompletionRequest(
-        model="gpt-5.6-sol",
+        model=model,
         messages=[Message.system("system"), Message.user("go")],
         stream=True,
         reasoning_effort="high",
@@ -298,7 +301,7 @@ def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path):
     assert seen_request["headers"]["originator"] == "ene"
     assert seen_request["headers"]["user-agent"].startswith("ene/")
     assert seen_request["headers"]["session-id"] == "session-one"
-    assert seen_request["body"]["model"] == "gpt-5.6-sol"
+    assert seen_request["body"]["model"] == model
     assert text == ["done"]
     assert thinking == ["considering"]
     assert result.message.text == "done"
@@ -309,7 +312,7 @@ def test_codex_stream_round_trip_and_provider_state(monkeypatch, tmp_path):
     assert result.finish_reason == "tool_calls"
 
     replay = _build_body(CompletionRequest(
-        model="gpt-5.6-sol",
+        model=model,
         messages=[result.message, Message.tool("call-1", "ok")],
     ))
     assert replay["input"][:3] == terminal_output
@@ -480,3 +483,16 @@ def test_codex_rejects_api_key_and_custom_endpoint():
         OpenAICodexProvider(ProviderSettings(api_key="secret"))
     with pytest.raises(ValueError, match="base_url"):
         OpenAICodexProvider(ProviderSettings(base_url="https://example.com"))
+
+
+@pytest.mark.parametrize("effort, expected", [
+    ("none", "low"), ("minimal", "low"), ("low", "low"),
+    ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
+])
+def test_astra_codex_reasoning(effort, expected):
+    body = _build_body(CompletionRequest(
+        model="gpt-6-astra",
+        messages=[Message.user("inspect")],
+        reasoning_effort=effort,
+    ))
+    assert body["reasoning"] == {"effort": expected, "summary": "auto"}
