@@ -698,6 +698,19 @@ def test_live_worker_terminal_prompt_cancel_resolves_open_prompt():
         server.join(timeout=2)
 
 
+def test_live_terminal_reports_reattach_command_when_session_detaches():
+    client = LiveTerminal({})
+    messages = []
+    client.console = SimpleNamespace(system=messages.append)
+
+    client._show_detached("my session")
+
+    assert messages == [
+        "Detached; the session is still running.",
+        "reattach with: ene attach 'my session'",
+    ]
+
+
 def test_live_terminal_reports_resume_command_when_session_stops():
     client = LiveTerminal({})
     messages = []

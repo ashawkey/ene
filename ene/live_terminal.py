@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import socket
 import threading
 import time
@@ -162,6 +163,7 @@ class LiveTerminal:
         pending = session.get("pending")
         self.pending = dict(pending) if isinstance(pending, dict) else None
         label = session.get("name") or str(session.get("runtime_id", ""))[:8]
+        reattach_identifier = session.get("name") or str(session.get("runtime_id", ""))
         workspace = session.get("workspace") or self.record.get("workspace")
         self.commands.update(session.get("commands", {}))
         self.commands.update(LOCAL_COMMANDS)
@@ -236,7 +238,7 @@ class LiveTerminal:
                         continue
                     except SessionDetach:
                         self._detach_from_worker()
-                        self.console.system("Detached; the session is still running.")
+                        self._show_detached(str(reattach_identifier))
                         return "detach", ""
                     except SessionSwitch:
                         if not self._select_switch():
@@ -257,7 +259,7 @@ class LiveTerminal:
                     command = command.lower()
                     if command == "/detach":
                         self._detach_from_worker()
-                        self.console.system("Detached; the session is still running.")
+                        self._show_detached(str(reattach_identifier))
                         return "detach", ""
                     if command == "/switch":
                         if not self._select_switch():
@@ -315,6 +317,10 @@ class LiveTerminal:
             self.console.warn(str(exc))
             return False
         return True
+
+    def _show_detached(self, identifier: str) -> None:
+        self.console.system("Detached; the session is still running.")
+        self.console.system(f"reattach with: ene attach {shlex.quote(identifier)}")
 
     def _show_session_stopped(self) -> None:
         self.console.system("Session stopped.")
