@@ -1300,6 +1300,19 @@ class _RecordingConsole(_SilentConsole):
         self.labels.append(msg)
 
 
+@pytest.mark.parametrize("arguments", [None, [], "text", 42, True])
+def test_executor_rejects_nonobject_arguments_before_logging(tmp_path, arguments):
+    console = _RecordingConsole()
+    executor = ToolExecutor(console=console, work_dir=str(tmp_path))
+
+    result = executor.execute("write_file", arguments)
+
+    assert result["success"] is False
+    assert "expected a JSON object" in result["error"]
+    assert console.labels == []
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "name, args",
     [

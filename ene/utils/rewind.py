@@ -75,10 +75,16 @@ class ChangeTracker:
     def close(self) -> None:
         pass
 
-    def _record_path(self, path: str | Path) -> tuple[Path, str]:
+    def _record_path(
+        self, path: str | Path, *, follow_symlinks: bool = False
+    ) -> tuple[Path, str]:
         candidate = Path(path)
         abs_path = candidate if candidate.is_absolute() else self.work_dir / candidate
         abs_path = Path(os.path.abspath(abs_path))
+        if follow_symlinks:
+            # Text writes follow links on disk, so rewind must restore their
+            # target rather than replacing the link itself with a regular file.
+            abs_path = abs_path.resolve()
         try:
             stored = str(abs_path.relative_to(self.work_dir))
         except ValueError:
@@ -90,7 +96,7 @@ class ChangeTracker:
         return path if path.is_absolute() else self.work_dir / path
 
     def track_write(self, round_id: int, path: str, content: str = ""):
-        abs_path, stored_path = self._record_path(path)
+        abs_path, stored_path = self._record_path(path, follow_symlinks=True)
         before = self.store.store_path(abs_path) if abs_path.exists() or abs_path.is_symlink() else None
         mode = stat.S_IMODE(abs_path.stat().st_mode) if abs_path.exists() else 0o644
         after = self.store.store_bytes(content.encode("utf-8"), mode=mode)
@@ -103,7 +109,7 @@ class ChangeTracker:
         original_content: str | None,
         new_content: str,
     ):
-        abs_path, stored_path = self._record_path(path)
+        abs_path, stored_path = self._record_path(path, follow_symlinks=True)
         mode = stat.S_IMODE(abs_path.stat().st_mode)
         before = (
             self.store.store_bytes(original_content.encode("utf-8"), mode=mode)

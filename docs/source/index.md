@@ -116,6 +116,22 @@ Tool calls execute automatically. Ene has the same permissions as the shell user
 
 See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
 
+## Python API
+
+Use `run_agent()` for a single non-interactive task with the configured model:
+
+```python
+from ene import run_agent
+
+result = run_agent("Review the changes in this project", work_dir=".")
+if result.success:
+    print(result.response)
+else:
+    print(result.outcome, result.error)
+```
+
+Responses that truncate during a tool call or remain unfinished after automatic continuations return `TurnOutcome.FAILED`, with `success=False` and an explanatory `error`. Any final partial text is retained in `response`.
+
 ## Persistent live sessions
 
 Interactive sessions run in detached workers and survive closing the terminal or shell. While attached, the terminal tab shows `◐ ene [name]` / `◑ ene [name]` while Ene is working and `✓ ene [name]` when it is ready; unnamed sessions use the workspace directory name. Terminal profiles configured to suppress application titles will ignore these updates.
@@ -148,3 +164,5 @@ ene resume SESSION_ID
 ```
 
 Within a running session, `/rewind` previews an earlier prompt boundary and lets you restore the conversation, tracked file changes, or both. The selected prompt returns to the editor so you can revise it before branching. `/fork [name]` uses the same prompt picker but starts a new, optionally named session at that conversation state, leaving both the old session and tracked files unchanged.
+
+When `write_file`, `edit_file`, or `multi_edit` writes through a symlink, rewind restores the target file and preserves the symlink. This also applies to targets outside the workspace and paths reached through a symlinked directory.

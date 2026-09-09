@@ -277,7 +277,8 @@ def test_old_session_captures_are_pruned(tmp_path):
     assert {path.name for path in root.iterdir()} == {"live", "s3", "s4"}
 
 
-def test_unparseable_arguments_still_answer_their_tool_call(tmp_path):
+@pytest.mark.parametrize("arguments", ["{not json", "null", "[]", '"text"', "42", "true"])
+def test_unparseable_arguments_still_answer_their_tool_call(tmp_path, arguments):
     """A malformed argument payload must not leave an unpaired tool call.
 
     Providers reject an assistant message whose tool calls have no matching
@@ -287,7 +288,7 @@ def test_unparseable_arguments_still_answer_their_tool_call(tmp_path):
     console = _Console()
     executed = []
     calls = [
-        ToolCall("bad", "write_file", "{not json"),
+        ToolCall("bad", "write_file", arguments),
         ToolCall("good", "write_file", json.dumps({"file": "ok.txt", "content": "ok"})),
     ]
     console.error = lambda *args, **kwargs: None
@@ -313,7 +314,8 @@ def test_unparseable_arguments_still_answer_their_tool_call(tmp_path):
     assert "Invalid tool arguments" in agent.context.messages[0].text
 
 
-def test_unparseable_tool_call_arguments_are_repaired_in_history():
+@pytest.mark.parametrize("arguments", ["{not json", "null", "[]", '"text"', "42", "true"])
+def test_unparseable_tool_call_arguments_are_repaired_in_history(arguments):
     """A malformed tool call is rewritten to valid JSON so it never poisons the wire.
 
     Providers reject the whole conversation when an assistant message carries a
@@ -324,7 +326,7 @@ def test_unparseable_tool_call_arguments_are_repaired_in_history():
     context = ContextManager("system")
     context.add(Message.assistant(
         content="let me write",
-        tool_calls=[ToolCall("call-1", "write_file", "{not json")],
+        tool_calls=[ToolCall("call-1", "write_file", arguments)],
     ))
     original = context.messages[0]
 
@@ -339,11 +341,12 @@ def test_unparseable_tool_call_arguments_are_repaired_in_history():
     assert context.messages[0].is_assistant
 
 
-def test_execute_tool_calls_repairs_malformed_call_in_context(tmp_path):
+@pytest.mark.parametrize("arguments", ["{not json", "null", "[]", '"text"', "42", "true"])
+def test_execute_tool_calls_repairs_malformed_call_in_context(tmp_path, arguments):
     """A malformed call is repaired in the stored assistant message before reuse."""
     context = ContextManager("system")
     context.add(Message.user("write a file"))
-    bad = ToolCall("bad", "write_file", "{not json")
+    bad = ToolCall("bad", "write_file", arguments)
     good = ToolCall("good", "write_file", json.dumps({"file": "ok.txt", "content": "ok"}))
     context.add(Message.assistant(content=None, tool_calls=[bad, good]))
     original_assistant = context.messages[-1]
@@ -705,6 +708,8 @@ def test_get_response_warns_and_automatically_continues(unfinished_reason):
 
     assert LLMAgent.get_response(agent) == "answer"
     assert len(warnings) == 1
+    assert agent._last_turn_outcome == TurnOutcome.COMPLETED
+    assert agent._last_error is None
     assert "automatically continuing (1/3)" in warnings[0]
     assert [message.text for message in context.messages] == [
         "write it", "partial ", "answer"
@@ -780,6 +785,9 @@ def test_get_response_stops_after_repeated_empty_responses():
 
     assert LLMAgent.get_response(agent) is None
     assert "still unfinished after 2 automatic continuations" in warnings[-1]
+    assert agent._last_turn_outcome == TurnOutcome.FAILED
+    assert agent._last_error == warnings[-1]
+    assert not agent._failure_reverts_prompt
     # Nothing in a contentless assistant turn reaches the next request, so none
     # of them may accumulate in the history that every later round re-sends.
     assert [message.role for message in context.messages] == ["user"]
@@ -831,6 +839,9 @@ def test_truncated_tool_call_is_answered_so_history_stays_valid():
 
     assert LLMAgent.get_response(agent) is None
     assert "cannot automatically continue safely" in warnings[-1]
+    assert agent._last_turn_outcome == TurnOutcome.FAILED
+    assert agent._last_error == warnings[-1]
+    assert not agent._failure_reverts_prompt
     assert [message.role for message in context.messages] == [
         "user", "assistant", "tool"
     ]

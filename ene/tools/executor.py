@@ -88,8 +88,10 @@ class ToolExecutor(
         spec = self.registry.get(function_name)
         if spec is None:
             return {"error": f"Unknown tool: {function_name}", "success": False}
-        log_tool_call(self.console, function_name, arguments, spec.describe)
+        if not isinstance(arguments, dict):
+            return {"error": "Invalid tool arguments: expected a JSON object", "success": False}
         try:
+            log_tool_call(self.console, function_name, arguments, spec.describe)
             return spec.handler(self, **arguments)
         except Exception as e:
             return {"error": f"Tool execution failed: {e}", "success": False}

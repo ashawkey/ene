@@ -6,6 +6,8 @@ import pytest
 
 from ene.messages import Message
 from ene.session_store import SessionStore
+from ene.tools import ToolExecutor
+from ene.ui import AgentConsole
 from ene.utils.rewind import ChangeTracker
 
 
@@ -18,6 +20,90 @@ def _state(round_id: int, text: str) -> dict:
         "round_id": round_id,
         "messages": [Message.user(text)],
     }
+
+
+@pytest.mark.parametrize("operation", ["write_file", "edit_file", "multi_edit"])
+@pytest.mark.parametrize("link_kind", ["file", "directory", "external"])
+def test_rewind_restores_symlink_targets_without_replacing_links(tmp_path, operation, link_kind):
+    work = tmp_path / "work"
+    work.mkdir()
+    target_dir = tmp_path / "external" if link_kind == "external" else work / "real"
+    target_dir.mkdir()
+    target = target_dir / "value.txt"
+    target.write_text("before")
+    link = work / "link"
+    link_target = "real" if link_kind == "directory" else (
+        "../external/value.txt" if link_kind == "external" else "real/value.txt"
+    )
+    try:
+        link.symlink_to(link_target, target_is_directory=link_kind == "directory")
+    except OSError as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
+    file = "link/value.txt" if link_kind == "directory" else "link"
+    console = AgentConsole(render_terminal=False)
+    store = SessionStore(tmp_path / "sessions", "session")
+    tracker = ChangeTracker("session", work, console, store)
+    executor = ToolExecutor(
+        console=console, work_dir=str(work),
+        change_tracker=tracker, get_round_id=lambda: 1,
+    )
+    edit = {"old_text": "before", "new_text": "after"}
+    arguments = {"content": "after"} if operation == "write_file" else (
+        {"edits": [edit]} if operation == "multi_edit" else edit
+    )
+
+    assert executor.execute(operation, {"file": file, **arguments})["success"]
+    assert target.read_text() == "after"
+    _, code, _ = store.commit(
+        _state(1, "edit"), parent_id=None, code_parent_id=None,
+        changes=tracker.pending_changes, reason="round",
+    )
+    tracker.mark_committed(code)
+
+    # The persisted history must work after a restart too.
+    tracker = ChangeTracker(
+        "session", work, console, SessionStore(tmp_path / "sessions", "session"), code
+    )
+    plan = tracker.plan_checkout(None)
+    assert not plan.dirty
+    tracker.apply_plan(plan)
+    assert target.read_text() == "before"
+    assert link.is_symlink()
+    assert link.readlink() == Path(link_target)
+
+    tracker.checkout_code(code)
+    assert target.read_text() == "after"
+    assert link.is_symlink()
+    assert link.readlink() == Path(link_target)
+
+
+def test_rewind_write_through_dangling_symlink_removes_created_target(tmp_path):
+    target = tmp_path / "new.txt"
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target.name)
+    except OSError as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
+    console = AgentConsole(render_terminal=False)
+    store = SessionStore(tmp_path / "sessions", "session")
+    tracker = ChangeTracker("session", tmp_path, console, store)
+    executor = ToolExecutor(
+        console=console, work_dir=str(tmp_path),
+        change_tracker=tracker, get_round_id=lambda: 1,
+    )
+
+    assert executor.execute("write_file", {"file": "link", "content": "new"})["success"]
+    _, code, _ = store.commit(
+        _state(1, "write"), parent_id=None, code_parent_id=None,
+        changes=tracker.pending_changes, reason="round",
+    )
+    tracker.mark_committed(code)
+    tracker.checkout_code(None)
+    assert not target.exists()
+    assert link.is_symlink()
+    tracker.checkout_code(code)
+    assert link.is_symlink()
+    assert target.read_text() == "new"
 
 
 def test_session_revisions_branch_without_losing_descendants(tmp_path: Path):

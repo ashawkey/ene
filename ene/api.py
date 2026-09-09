@@ -51,7 +51,10 @@ def run_agent(
     Progress output is suppressed by default. Pass ``quiet=False`` to observe
     normal output, optionally through a custom ``console``. Configuration and
     construction errors are raised; provider failures and interruptions are
-    represented by ``AgentRunResult.outcome``.
+    represented by ``AgentRunResult.outcome``. Responses that remain unfinished
+    after automatic continuations, or truncate during a tool call, return
+    ``FAILED`` with an error explaining why; any final partial text is retained
+    in ``response``.
     """
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")

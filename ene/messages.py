@@ -104,12 +104,15 @@ class ToolCall:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def parse_arguments(self) -> dict[str, Any]:
-        """Parse ``arguments`` as JSON, raising on malformed input.
+        """Parse ``arguments`` as a JSON object, raising on malformed input.
 
         An empty string is malformed, matching the wire contract where a tool
         call without arguments is ``"{}"`` rather than absent.
         """
-        return json.loads(self.arguments)
+        arguments = json.loads(self.arguments)
+        if not isinstance(arguments, dict):
+            raise ValueError("Tool arguments must be a JSON object")
+        return arguments
 
     def to_wire(self) -> dict[str, Any]:
         """Serialize to the OpenAI function-call wire format."""

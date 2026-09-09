@@ -254,6 +254,107 @@ def test_websocket_requires_same_origin():
         assert exc.value.code == 4403
 
 
+def test_logout_closes_all_sockets_for_only_that_login(monkeypatch):
+    hub = make_hub()
+    add_session(hub, "s1")
+    monkeypatch.setattr(hub, "_start_poller", lambda: None)
+    forwarded = []
+
+    async def forward(session_id, payload):
+        forwarded.append(payload)
+        return True
+
+    monkeypatch.setattr(hub, "_forward_to_worker", forward)
+    origin = {"origin": "http://testserver"}
+    with TestClient(hub.app) as client:
+        csrf = login(client)
+        first_cookie = client.cookies.get("ene_web_session")
+        with client.websocket_connect("/api/ws", headers=origin) as control:
+            receive_type(control, "sessions")
+            with client.websocket_connect("/api/ws?session=s1", headers=origin) as session:
+                receive_type(session, "state")
+                login(client)
+                with client.websocket_connect("/api/ws", headers=origin) as other_login:
+                    receive_type(other_login, "sessions")
+                    response = client.post("/api/logout", headers={
+                        "cookie": f"ene_web_session={first_cookie}",
+                        "x-csrf-token": csrf,
+                    })
+                    assert response.status_code == 200
+                    assert client.get("/api/sessions", headers={
+                        "cookie": f"ene_web_session={first_cookie}",
+                    }).status_code == 403
+                    # An idle control socket closes without another heartbeat.
+                    with pytest.raises(WebSocketDisconnect) as exc:
+                        control.receive_json()
+                    assert exc.value.code == 4403
+                    with pytest.raises(WebSocketDisconnect) as exc:
+                        session.send_json({"type": "submit", "text": "after logout"})
+                        session.receive_json()
+                    assert exc.value.code == 4403
+                    assert forwarded == []
+                    other_login.send_json({"type": "ping"})
+                    assert receive_type(other_login, "pong")["type"] == "pong"
+
+
+@pytest.mark.parametrize("channel", ["", "?session=s1"])
+def test_expired_login_closes_idle_browser_sockets(monkeypatch, channel):
+    monkeypatch.setattr("ene.hub.SESSION_TTL", 1)
+    hub = make_hub()
+    add_session(hub, "s1")
+    monkeypatch.setattr(hub, "_start_poller", lambda: None)
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect("/api/ws" + channel, headers={"origin": "http://testserver"}) as sock:
+            receive_type(sock, "state" if channel else "sessions")
+            with pytest.raises(WebSocketDisconnect) as exc:
+                sock.receive_json()
+            assert exc.value.code == 4403
+
+
+def test_evicted_login_closes_existing_socket(monkeypatch):
+    monkeypatch.setattr("ene.hub.MAX_SESSIONS", 1)
+    hub = make_hub()
+    monkeypatch.setattr(hub, "_start_poller", lambda: None)
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect("/api/ws", headers={"origin": "http://testserver"}) as sock:
+            receive_type(sock, "sessions")
+            login(client)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                sock.receive_json()
+            assert exc.value.code == 4403
+            assert client.get("/api/sessions").status_code == 200
+
+
+def test_expired_socket_cannot_forward_actions_while_watcher_is_waiting(monkeypatch):
+    hub = make_hub()
+    add_session(hub, "s1")
+    monkeypatch.setattr(hub, "_start_poller", lambda: None)
+    forwarded = []
+
+    async def forward(session_id, payload):
+        forwarded.append(payload)
+        return True
+
+    monkeypatch.setattr(hub, "_forward_to_worker", forward)
+    with TestClient(hub.app) as client:
+        login(client)
+        login_id = client.cookies.get("ene_web_session")
+        with client.websocket_connect("/api/ws?session=s1", headers={"origin": "http://testserver"}) as sock:
+            receive_type(sock, "state")
+            # Advance expiry without waking the watchdog: the action handler
+            # must independently check authorization before forwarding input.
+            with hub._login_lock:
+                _, csrf = hub._logins[login_id]
+                hub._logins[login_id] = (time.time() - 1, csrf)
+            sock.send_json({"type": "submit", "text": "expired"})
+            with pytest.raises(WebSocketDisconnect) as exc:
+                sock.receive_json()
+            assert exc.value.code == 4403
+            assert forwarded == []
+
+
 # -- RemoteSession derived-state unit --------------------------------------
 
 def test_remote_session_tracks_context_status_for_authoritative_state():

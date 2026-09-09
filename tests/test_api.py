@@ -1,12 +1,15 @@
 """Tests for the public one-shot Python API."""
 
 from contextlib import nullcontext
+from types import SimpleNamespace as NS
 
 import pytest
 
 from ene.config import conf
 from ene import AgentRunResult, TurnOutcome, run_agent
 from ene import api
+from ene.messages import Message, ToolCall
+from ene.providers import CompletionResult
 
 
 class _Console:
@@ -102,6 +105,31 @@ def test_run_agent_returns_failed_outcome(monkeypatch, model_config):
     assert not result.success
     assert result.outcome == TurnOutcome.FAILED
     assert result.error == "request failed"
+
+
+@pytest.mark.parametrize("case", ["empty", "partial", "tool"])
+def test_run_agent_reports_unfinished_responses_as_failed(monkeypatch, model_config, tmp_path, case):
+    calls = []
+    closed = []
+
+    def complete(request):
+        calls.append(request)
+        if case == "empty":
+            return CompletionResult(Message.assistant(""), None, "stop")
+        tool_calls = [ToolCall("cut", "write_file", '{"file":')] if case == "tool" else None
+        return CompletionResult(Message.assistant("partial", tool_calls=tool_calls), None, "length")
+
+    provider = NS(complete=complete, close=lambda: closed.append(True), cancel=lambda: None)
+    monkeypatch.setattr("ene.backend.create_provider", lambda *_args: provider)
+
+    result = run_agent("write a file", model_alias="test", work_dir=tmp_path)
+
+    assert result.outcome == TurnOutcome.FAILED
+    assert result.success is False
+    assert result.response == (None if case == "empty" else "partial")
+    assert ("truncated during a tool call" if case == "tool" else "still unfinished") in result.error
+    assert len(calls) == (1 if case == "tool" else api.LLMAgent.MAX_AUTO_CONTINUES + 1)
+    assert closed == [True]
 
 
 def test_run_agent_closes_when_execution_raises(monkeypatch, model_config):

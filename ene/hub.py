@@ -739,6 +739,16 @@ class Hub:
             docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
         )
         assets = Path(__file__).with_name("frontend") / "dist"
+        # All login mutations happen on the app loop. Sockets retain their
+        # login's event so removing a login wakes even idle connections.
+        login_revocations: dict[str, asyncio.Event] = {}
+
+        def revoke_login(login_id: str) -> None:
+            """Remove a login while holding _login_lock and wake its sockets."""
+            self._logins.pop(login_id, None)
+            revoked = login_revocations.pop(login_id, None)
+            if revoked is not None:
+                revoked.set()
 
         @app.middleware("http")
         async def security_headers(request: Request, call_next):
@@ -777,13 +787,13 @@ class Hub:
             csrf = secrets.token_urlsafe(24)
             with self._login_lock:
                 now = time.time()
-                self._logins = {
-                    key: value for key, value in self._logins.items()
-                    if value[0] >= now
-                }
+                for key, value in list(self._logins.items()):
+                    if value[0] < now:
+                        revoke_login(key)
                 while len(self._logins) >= MAX_SESSIONS:
-                    self._logins.pop(next(iter(self._logins)))
+                    revoke_login(next(iter(self._logins)))
                 self._logins[login_id] = (time.time() + SESSION_TTL, csrf)
+                login_revocations[login_id] = asyncio.Event()
             return login_id, csrf
 
         def authenticate_cookie(
@@ -797,7 +807,7 @@ class Hub:
                     return None
                 expires, csrf = record
                 if expires < time.time():
-                    self._logins.pop(login_id, None)
+                    revoke_login(login_id)
                     return None
                 if refresh:
                     self._logins.pop(login_id)
@@ -875,7 +885,7 @@ class Hub:
             ):
                 raise HTTPException(status_code=403, detail="Forbidden.")
             with self._login_lock:
-                self._logins.pop(login_id, None)
+                revoke_login(login_id)
             response = JSONResponse({"ok": True})
             response.delete_cookie(COOKIE_NAME, path="/")
             return response
@@ -1118,7 +1128,8 @@ class Hub:
         @app.websocket("/api/ws")
         async def websocket_endpoint(websocket: WebSocket):
             await websocket.accept()
-            csrf = authenticate_cookie(websocket.cookies.get(COOKIE_NAME))
+            login_id = websocket.cookies.get(COOKIE_NAME)
+            csrf = authenticate_cookie(login_id)
             if csrf is None or not valid_origin(
                 websocket.headers.get("origin"), websocket.headers.get("host")
             ):
@@ -1133,11 +1144,39 @@ class Hub:
             session_id = websocket.query_params.get("session", "")
             channel = f"session {session_id[:8]}" if session_id else "control"
             self._log_dim(f"web client connected ({channel}, {count} sockets)")
+
+            def require_socket_login():
+                if authenticate_cookie(login_id, refresh=False) is None:
+                    raise WebSocketDisconnect(code=4403)
+
+            revoked = login_revocations[login_id]
+
+            async def watch_login():
+                while True:
+                    require_socket_login()
+                    with self._login_lock:
+                        expires = self._logins[login_id][0]
+                    try:
+                        await asyncio.wait_for(
+                            revoked.wait(), max(0.001, expires - time.time())
+                        )
+                    except asyncio.TimeoutError:
+                        # HTTP activity may have extended the expiry while
+                        # this socket was waiting; re-read the current login.
+                        continue
+                    raise WebSocketDisconnect(code=4403)
+
             try:
                 if session_id:
-                    await self._serve_browser_session(websocket, csrf, session_id)
+                    serve = self._serve_browser_session(
+                        websocket, csrf, session_id, require_socket_login
+                    )
                 else:
-                    await self._serve_browser_control(websocket, csrf)
+                    serve = self._serve_browser_control(websocket, csrf, require_socket_login)
+                await self._race(serve, watch_login())
+            except WebSocketDisconnect as exc:
+                if exc.code == 4403:
+                    await websocket.close(code=4403)
             except Exception:
                 pass
             finally:
@@ -1151,7 +1190,8 @@ class Hub:
 
     # -- browser: control channel (session list) ---------------------------
 
-    async def _serve_browser_control(self, websocket, csrf: str) -> None:
+    async def _serve_browser_control(self, websocket, csrf: str, require_login) -> None:
+        require_login()
         await websocket.send_json({
             "type": "sessions",
             "csrf": csrf,
@@ -1163,6 +1203,7 @@ class Hub:
             nonlocal seq
             while True:
                 if self._control.latest_seq != seq:
+                    require_login()
                     seq = self._control.latest_seq
                     await websocket.send_json({
                         "type": "sessions",
@@ -1189,6 +1230,7 @@ class Hub:
                     payload = await websocket.receive_json()
                 except json.JSONDecodeError:
                     continue
+                require_login()
                 if isinstance(payload, dict) and payload.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
 
@@ -1197,7 +1239,7 @@ class Hub:
     # -- browser: per-session event stream ---------------------------------
 
     async def _serve_browser_session(
-        self, websocket, csrf: str, session_id: str
+        self, websocket, csrf: str, session_id: str, require_login
     ) -> None:
         session = self.get_session(session_id)
         if session is None:
@@ -1215,6 +1257,7 @@ class Hub:
             seq = 0
 
         def state_frame(s: RemoteSession, after_seq: int) -> dict:
+            require_login()
             return {
                 "type": "state",
                 "csrf": csrf,
@@ -1252,6 +1295,7 @@ class Hub:
                     await websocket.send_json(state_frame(current, seq))
                 pending = await current.wait_events(seq, EVENT_WAIT_TIMEOUT)
                 for event in pending:
+                    require_login()
                     await websocket.send_json(event.to_dict())
                     seq = event.seq
 
@@ -1262,10 +1306,12 @@ class Hub:
                 except WebSocketDisconnect:
                     return
                 except json.JSONDecodeError:
+                    require_login()
                     await websocket.send_json({
                         "type": "rejected", "error": "Invalid JSON message."
                     })
                     continue
+                require_login()
                 if not isinstance(payload, dict):
                     continue
                 action = payload.get("type")

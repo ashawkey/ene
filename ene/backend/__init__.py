@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import queue
 import re
@@ -154,9 +153,9 @@ def _is_local_query(query: str) -> bool:
 def _repair_tool_call_arguments(message: Message) -> Message:
     """Return a copy of *message* with any unparseable tool-call arguments fixed.
 
-    Local models frequently truncate a tool call's JSON mid-string, leaving an
-    ``arguments`` payload that fails ``json.loads``. A provider rejects the whole
-    conversation when an assistant message carries such a malformed call, so the
+    Local models can truncate a tool call's JSON mid-string or supply a value
+    that is not an object. A provider rejects the whole conversation when an
+    assistant message carries such a malformed call, so the
     history must never store one. Replacing each offending ``arguments`` with the
     valid placeholder ``"{}"`` keeps the assistant/tool pairing valid on the wire
     without executing anything; the paired tool result already carries the parse
@@ -167,8 +166,8 @@ def _repair_tool_call_arguments(message: Message) -> Message:
     repaired_calls = None
     for index, call in enumerate(message.tool_calls):
         try:
-            json.loads(call.arguments)
-        except json.JSONDecodeError:
+            call.parse_arguments()
+        except (TypeError, ValueError):
             if repaired_calls is None:
                 repaired_calls = list(message.tool_calls)
             repaired_calls[index] = replace(call, arguments="{}")
@@ -905,8 +904,8 @@ class LLMAgent(
 
             parse_error = None
             try:
-                function_args = json.loads(tool_call.arguments)
-            except json.JSONDecodeError as exc:
+                function_args = tool_call.parse_arguments()
+            except (TypeError, ValueError) as exc:
                 function_args = {}
                 parse_error = str(exc)
 
@@ -1193,10 +1192,12 @@ class LLMAgent(
             empty_response = not message.text.strip() and not message.tool_calls
             if finish_reason in (None, "length") or empty_response:
                 if message.tool_calls:
-                    self.console.warn(
+                    self._last_turn_outcome = TurnOutcome.FAILED
+                    self._last_error = (
                         "Response was truncated during a tool call; cannot "
                         "automatically continue safely."
                     )
+                    self.console.warn(self._last_error)
                     self._resolve_unexecuted_tool_calls(message)
                     return content or None
                 if empty_response and not message.provider_state:
@@ -1207,10 +1208,12 @@ class LLMAgent(
                     # continuation restarts from the exact pre-call context.
                     self.context.drop_last(message)
                 if auto_continues >= self.MAX_AUTO_CONTINUES:
-                    self.console.warn(
+                    self._last_turn_outcome = TurnOutcome.FAILED
+                    self._last_error = (
                         "Response is still unfinished after "
                         f"{auto_continues} automatic continuations; stopping."
                     )
+                    self.console.warn(self._last_error)
                     return content or None
                 auto_continues += 1
                 if finish_reason == "length":
