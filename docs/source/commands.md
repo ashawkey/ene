@@ -71,6 +71,7 @@ The agent supports the following slash commands while chatting:
 | `/detach` | Detach the terminal without stopping the live session (also Ctrl+D) |
 | `/switch` | Detach and choose another live session (also Ctrl+S); choose Cancel or press Ctrl+C to return to the current session |
 | `/new [name]` | Detach and start a new live session, optionally with a name |
+| `/clear` | Close the current live session (not detach) and immediately attach to a new unnamed session; the old conversation remains resumable |
 | `/resume [session_id]` | From an attached terminal, save the current conversation, activate a stopped one, and replay its full conversation as prompts and final assistant responses, with omitted-message counts interleaved in their original positions (bare `/resume` picks interactively and shows saved names) |
 | `/name [name]` | Show or set the live session name; use `/name` to inspect it |
 | `/exit` or `/quit` | Exit the agent and stop the live session (also Ctrl+K) |

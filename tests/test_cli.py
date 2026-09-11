@@ -1,5 +1,6 @@
 """Tests for CLI model configuration."""
 
+import pytest
 from rich import box
 
 from ene.config import conf
@@ -351,14 +352,15 @@ def test_live_picker_prioritizes_recent_done_sessions(monkeypatch):
     assert "● working" in choices_seen[3]
 
 
-def test_attach_loop_starts_named_new_session(monkeypatch):
+@pytest.mark.parametrize("name", ["fresh", ""])
+def test_attach_loop_starts_new_session(monkeypatch, name):
     first = {
         "runtime_id": "first",
         "workspace": "/tmp/project",
         "options": {"model": "test", "resume": "old"},
     }
     second = {"runtime_id": "second"}
-    actions = iter([("new", "fresh"), ("detach", "")])
+    actions = iter([("new", name), ("detach", "")])
     started = []
 
     class Terminal:
@@ -382,7 +384,7 @@ def test_attach_loop_starts_named_new_session(monkeypatch):
     cli._attach_live(first)
 
     assert started == [{
-        "name": "fresh",
+        "name": name,
         "workspace": "/tmp/project",
         "options": {"model": "test", "resume": None},
     }]

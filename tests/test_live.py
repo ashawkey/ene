@@ -1037,6 +1037,75 @@ def test_live_terminal_new_failure_keeps_current_attachment():
     assert detached == []
 
 
+@pytest.mark.parametrize(
+    "command, name, fails",
+    [
+        ("/clear", "", False),
+        ("/clear ignored-name", "", False),
+        ("/clear", "", True),
+        ("/new fresh", "fresh", False),
+    ],
+)
+def test_live_terminal_replaces_session(monkeypatch, tmp_path, command, name, fails):
+    actions = []
+    warnings = []
+    messages = []
+    replacement = {"runtime_id": "replacement"}
+
+    def start_new(requested_name):
+        actions.append(("start", requested_name))
+        if fails:
+            raise live.LiveError("Could not start session")
+        return replacement
+
+    client = LiveTerminal({"workspace": str(tmp_path)}, new_session=start_new)
+    client.console = SimpleNamespace(system=messages.append, warn=warnings.append)
+    sock = SimpleNamespace(settimeout=lambda _: None, close=lambda: None)
+    client._attach = lambda: sock
+    client._read_loop = lambda: None
+    client._ping_loop = lambda: None
+
+    def send(message):
+        actions.append((message["type"], ""))
+        client.stopped.set()
+
+    client._send = send
+    terminal = _Terminal()
+    terminal.set_runtime_state = lambda **_: None
+    terminal.set_status = lambda _: None
+    prompts = iter([command, "/detach"])
+    terminal.prompt = lambda **_: next(prompts)
+    monkeypatch.setattr("ene.live_terminal.TerminalInput", lambda **_: terminal)
+    monkeypatch.setattr("ene.live_terminal.patch_stdout", lambda **_: contextlib.nullcontext())
+    monkeypatch.setattr("ene.live_terminal.recv_frame", lambda _: {
+        "session": {
+            "name": "old-name",
+            "conversation_id": "old-conversation",
+            "operation_id": "active-round",
+            "pending": {"id": "pending-1", "text": "queued message"},
+        },
+    })
+
+    result = client.run()
+
+    assert client._is_instant_command(command)
+    assert "clear" in client.commands
+    if fails:
+        assert result == ("detach", "")
+        assert client.new_record is None
+        assert warnings == ["Could not start session"]
+        assert actions == [("start", ""), ("detach", "")]
+    else:
+        assert result == ("new", name)
+        assert client.new_record is replacement
+        assert warnings == []
+        closes = command.startswith("/clear")
+        assert actions == [("start", name), ("kill" if closes else "detach", "")]
+        assert ("Session stopped." in messages) is closes
+        if closes:
+            assert "resume with ene resume old-conversation" in messages
+
+
 def test_live_terminal_stop_waits_for_worker_disconnect():
     client = LiveTerminal({})
     sent = []

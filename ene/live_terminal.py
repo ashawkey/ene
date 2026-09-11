@@ -35,6 +35,7 @@ LOCAL_COMMANDS = {
     "detach": "Detach this terminal without stopping the session",
     "switch": "Detach and choose another live session",
     "new": "Detach and start a new live session (/new [name])",
+    "clear": "Close the current session and start a new unnamed live session",
 }
 
 
@@ -270,11 +271,16 @@ class LiveTerminal:
                         self._stop_worker()
                         self._show_session_stopped()
                         return "kill", ""
-                    if command == "/new":
-                        if not self._start_new(argument.strip()):
+                    if command in {"/new", "/clear"}:
+                        name = argument.strip() if command == "/new" else ""
+                        if not self._start_new(name):
                             continue
-                        self._detach_from_worker()
-                        return "new", argument.strip()
+                        if command == "/clear":
+                            self._stop_worker()
+                            self._show_session_stopped()
+                        else:
+                            self._detach_from_worker()
+                        return "new", name
                     response = self._request({"type": "submit", "text": text})
                     if not response.get("ok"):
                         self.console.warn(str(response.get("error", "Message was rejected")))
@@ -308,7 +314,7 @@ class LiveTerminal:
         return self.switch_record is not None
 
     def _start_new(self, name: str) -> bool:
-        """Start a replacement before detaching, so failure keeps this session."""
+        """Start a replacement before leaving, so failure keeps this session."""
         if self.new_session is None:
             return True
         try:
