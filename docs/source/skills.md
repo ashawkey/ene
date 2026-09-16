@@ -3,7 +3,8 @@
 Skills are reusable prompt packages that give Ene focused procedures, domain knowledge, and optional tools. They are compatible with the open [Agent Skills](https://agentskills.io) format and add Ene-specific optional `tools.py` support.
 
 Ene advertises only each skill's name and description in the system prompt.
-When a task matches, the model calls `load_skill` to bring the complete instructions into context.
+When a task matches, the model is instructed to reuse complete skill instructions already in context and call `load_skill` only when they are missing or incomplete, such as after compaction.
+Repeated loads still return the full instructions; this prompt guidance reduces redundant loads rather than enforcing deduplication.
 This progressive disclosure keeps the normal prompt small while making detailed workflows available on demand.
 
 ## Find and invoke skills

@@ -124,6 +124,20 @@ def test_reflection_is_bundled_with_project_only_default_workflow():
     assert "/skills reload" in body
 
 
+def test_skills_prompt_reuses_instructions_in_context():
+    section = build_skills_prompt_section({"alpha": {"description": "Alpha tasks."}})
+    text = " ".join(section.split())
+
+    assert "Reuse full instructions already in context" in text
+    assert "**load_skill** only when they are missing or incomplete" in text
+    assert "context compaction" in text
+    assert "Do not reload a skill merely because it matches a new turn." in text
+    assert (
+        "Always apply **skill-creator** before creating or modifying a skill, "
+        "using the same loading rule."
+    ) in text
+
+
 def test_skills_summary_counts_only_registry_in_persona_prompt():
     skills = {"alpha": {"description": "Use for alpha tasks."}}
     section = build_skills_prompt_section(skills)
