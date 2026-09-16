@@ -63,7 +63,6 @@ class _Agent(SessionMixin):
         self.replayed = 0
         self.show_thinking = True
         self.session_name = ""
-        self._pending_images = []
         self._isolated_turn_active = False
         self._session_changed = None
         self.tool_executor = types.SimpleNamespace(

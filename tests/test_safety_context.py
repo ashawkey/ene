@@ -176,7 +176,6 @@ def test_a_failed_request_keeps_the_context_management_it_paid_for(error):
         context=context,
         verbose=False,
         call_api=call_api,
-        _pending_images=[],
         _last_interrupted=False,
     )
 
@@ -409,11 +408,9 @@ def test_call_api_sanitizes_history_before_sending():
         round_id=1,
         _session_id=None,
         _isolated_turn_active=False,
-        _pending_images=[],
-        _messages_with_pending_images=lambda: context.get(),
         stream=False,
         tools=[],
-        profile=NS(reasoning=None),
+        profile=NS(reasoning=None, supports_image_input=False),
         reasoning_effort="high",
         _blocking_completion=completion,
         cancellation=None,
@@ -613,7 +610,6 @@ def test_interrupted_tool_iteration_does_not_consume_pending_message():
         console=NS(response=lambda text: None, system=lambda text: None),
         call_api=call_api,
         execute_tool_calls=execute_tool_calls,
-        _pending_images=[],
         _last_interrupted=False,
     )
     agent._inject_pending_steer = lambda: LLMAgent._inject_pending_steer(agent)
@@ -652,17 +648,15 @@ def test_call_api_preserves_output_limited_response_for_continuation():
         round_id=1,
         _session_id=None,
         _isolated_turn_active=False,
-        _pending_images=[],
-        _messages_with_pending_images=lambda: [],
         stream=False,
         tools=[],
-        profile=NS(reasoning=None),
+        profile=NS(reasoning=None, supports_image_input=False),
         reasoning_effort="high",
         _blocking_completion=completion,
         cancellation=None,
         _accumulate_usage=lambda value: None,
         token_estimator=NS(observe=lambda *args: None),
-        context=NS(add=added.append),
+        context=NS(add=added.append, get=lambda **kwargs: []),
     )
 
     message = LLMAgent.call_api(agent)
@@ -693,7 +687,6 @@ def test_get_response_warns_and_automatically_continues(unfinished_reason):
         context=context,
         verbose=False,
         stream=False,
-        _pending_images=[],
         _last_interrupted=False,
         MAX_AUTO_CONTINUES=3,
     )
@@ -736,7 +729,6 @@ def test_get_response_continues_after_empty_stopped_response():
         context=context,
         verbose=False,
         stream=False,
-        _pending_images=[],
         _last_interrupted=False,
         MAX_AUTO_CONTINUES=3,
     )
@@ -770,7 +762,6 @@ def test_get_response_stops_after_repeated_empty_responses():
         context=context,
         verbose=False,
         stream=False,
-        _pending_images=[],
         _last_interrupted=False,
         MAX_AUTO_CONTINUES=2,
     )
@@ -804,7 +795,6 @@ def _unfinished_agent(context, warnings):
         context=context,
         verbose=False,
         stream=False,
-        _pending_images=[],
         _last_interrupted=False,
         MAX_AUTO_CONTINUES=3,
     )
@@ -848,6 +838,48 @@ def test_truncated_tool_call_is_answered_so_history_stays_valid():
     result = context.messages[-1]
     assert result.tool_call_id == "call-cut"
     assert "never executed" in result.text
+
+
+@pytest.mark.parametrize('has_tool_call', [False, True])
+@pytest.mark.parametrize('text', ['', 'Partial response'])
+def test_content_filtered_response_stops_without_executing_or_continuing(has_tool_call, text):
+    from ene.providers.responses import response_result
+
+    output = []
+    if text:
+        output.append({'type': 'message', 'content': [{'type': 'output_text', 'text': text}]})
+    if has_tool_call:
+        output.append({'type': 'function_call', 'call_id': 'call-filtered',
+                       'name': 'exec_command', 'arguments': '{"command":"echo unsafe"}',
+                       'status': 'incomplete'})
+    result = response_result({
+        'status': 'incomplete', 'incomplete_details': {'reason': 'content_filter'},
+        'output': output,
+    }, 'gpt-6-astra', 'openai-responses')
+    context = ContextManager('system')
+    context.add(Message.user('run it'))
+    warnings = []
+    agent = _unfinished_agent(context, warnings)
+    calls = []
+
+    def call_api():
+        assert not calls, 'A filtered response must not be automatically continued'
+        calls.append(True)
+        agent._last_finish_reason = result.finish_reason
+        context.add(result.message)
+        return result.message
+
+    agent.call_api = call_api
+    agent.execute_tool_calls = lambda _: pytest.fail('Filtered tool call was executed')
+    assert LLMAgent.get_response(agent) == (text or None)
+    assert agent._last_turn_outcome == TurnOutcome.FAILED
+    assert 'content filter' in agent._last_error
+    assert result.message.provider_state is None
+    if has_tool_call:
+        assert context.messages[-1].tool_call_id == 'call-filtered'
+        assert 'never executed' in context.messages[-1].text
+    elif not text:
+        assert [message.role for message in context.messages] == ['user']
 
 
 def test_truncated_tool_call_without_an_id_withdraws_the_message():
@@ -976,10 +1008,9 @@ def test_compaction_is_skipped_while_the_floor_holds():
         round_id=1,
         _session_id=None,
         _isolated_turn_active=False,
-        _pending_images=[],
         stream=False,
         tools=[],
-        profile=NS(reasoning=None),
+        profile=NS(reasoning=None, supports_image_input=False),
         reasoning_effort="high",
         cancellation=None,
         _accumulate_usage=lambda value: None,
@@ -990,7 +1021,6 @@ def test_compaction_is_skipped_while_the_floor_holds():
     agent._context_tokens = lambda: agent.token_estimator.prompt_tokens(
         agent.context.total_chars
     )
-    agent._messages_with_pending_images = lambda: agent.context.get()
 
     LLMAgent.call_api(agent)
 
@@ -1016,17 +1046,15 @@ def _overflow_agent(completion, compactions):
         round_id=1,
         _session_id=None,
         _isolated_turn_active=False,
-        _pending_images=[],
-        _messages_with_pending_images=lambda: [],
         stream=False,
         tools=[],
-        profile=NS(reasoning=None),
+        profile=NS(reasoning=None, supports_image_input=False),
         reasoning_effort="high",
         _blocking_completion=completion,
         cancellation=None,
         _accumulate_usage=lambda value: None,
         token_estimator=NS(observe=lambda *args: None),
-        context=NS(add=lambda message: None),
+        context=NS(add=lambda message: None, get=lambda **kwargs: []),
         _run_compaction=lambda reason: compactions.append(reason) or True,
     )
 

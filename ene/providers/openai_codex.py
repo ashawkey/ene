@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from dataclasses import replace
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 import httpx
 
-from ene.messages import ContentPart, ImagePart, Message, RawPart, TextPart, ToolCall
-from ene.models import reasoning_kwargs, resolve_model_profile
 from ene.utils.io import sanitize_unicode
 
 from .auth import CredentialStore, OAuthCredential
@@ -21,6 +18,11 @@ from .openai_codex_oauth import (
     _decode_account_id,
     login_openai_codex,
     refresh_openai_codex,
+)
+from .responses import (
+    ResponsesCompletionStream,
+    build_responses_body,
+    _prompt_cache_key,
 )
 from .registry import ProviderSettings
 from .types import (
@@ -30,7 +32,6 @@ from .types import (
     CompletionStream,
     LLMProvider,
     ProviderError,
-    ProviderUsage,
 )
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api"
@@ -46,145 +47,8 @@ def _package_version() -> str:
         return "dev"
 
 
-def _user_content(content: str | list[ContentPart] | None) -> list[dict[str, Any]]:
-    if isinstance(content, str):
-        return [{"type": "input_text", "text": content}]
-    if not isinstance(content, list):
-        raise ProviderError("Codex user message has invalid content", retryable=False)
-    result: list[dict[str, Any]] = []
-    for item in content:
-        if isinstance(item, TextPart):
-            result.append({"type": "input_text", "text": item.text})
-        elif isinstance(item, ImagePart):
-            image = item.image_url
-            url = image.get("url") if isinstance(image, dict) else image
-            if not isinstance(url, str):
-                raise ProviderError("Codex image content has no URL", retryable=False)
-            result.append({"type": "input_image", "detail": "auto", "image_url": url})
-        elif isinstance(item, RawPart):
-            kind = item.raw.get("type") if isinstance(item.raw, dict) else "?"
-            raise ProviderError(f"Unsupported Codex user content type: {kind!r}", retryable=False)
-        else:
-            raise ProviderError("Codex user content item is invalid", retryable=False)
-    return result
-
-
-def _call_id(value: Any) -> str:
-    raw = str(value or "").split("|", 1)[0]
-    normalized = re.sub(r"[^A-Za-z0-9_-]", "_", raw)[:64].rstrip("_")
-    return normalized or "call_ene"
-
-
-def _messages_to_input(messages: list[Message], model: str) -> tuple[str, list[dict[str, Any]]]:
-    instructions: list[str] = []
-    items: list[dict[str, Any]] = []
-    for index, message in enumerate(messages):
-        if message.is_system:
-            if message.text:
-                instructions.append(message.text)
-        elif message.is_user:
-            content = _user_content(message.content)
-            if content:
-                items.append({"role": "user", "content": content})
-        elif message.is_assistant:
-            provider_state = message.provider_state
-            codex_state = provider_state.get("openai-codex") if isinstance(provider_state, dict) else None
-            if (
-                isinstance(codex_state, dict)
-                and codex_state.get("model") == model
-                and isinstance(codex_state.get("output"), list)
-            ):
-                items.extend(codex_state["output"])
-                continue
-
-            if message.text:
-                items.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": message.text, "annotations": []}],
-                    "status": "completed",
-                    "id": f"msg_ene_{index}",
-                })
-            for tool_call in message.tool_calls or []:
-                items.append({
-                    "type": "function_call",
-                    "call_id": _call_id(tool_call.id),
-                    "name": tool_call.name,
-                    "arguments": tool_call.arguments or "{}",
-                })
-        elif message.is_tool:
-            items.append({
-                "type": "function_call_output",
-                "call_id": _call_id(message.tool_call_id),
-                "output": message.text or "(no tool output)",
-            })
-        else:
-            raise ProviderError(f"Unsupported Codex message role: {message.role!r}", retryable=False)
-    return "\n\n".join(instructions) or "You are a helpful assistant.", items
-
-
-def _responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result = []
-    for tool in tools:
-        function = tool["function"]
-        result.append({
-            "type": "function",
-            "name": function["name"],
-            "description": function.get("description", ""),
-            "parameters": function.get("parameters", {"type": "object", "properties": {}}),
-            "strict": None,
-        })
-    return result
-
-
-def _prompt_cache_key(session_id: str | None) -> str | None:
-    if not session_id:
-        return None
-    value = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:64]
-    return value or None
-
-
 def _build_body(request: CompletionRequest) -> dict[str, Any]:
-    instructions, items = _messages_to_input(request.messages, request.model)
-    body: dict[str, Any] = {
-        "model": request.model,
-        "store": False,
-        "stream": True,
-        "instructions": instructions,
-        "input": items,
-        "text": (
-            {
-                "verbosity": "low",
-                "format": {
-                    "type": "json_schema",
-                    "name": "batch_item",
-                    "strict": True,
-                    "schema": request.response_schema,
-                },
-            }
-            if request.response_schema is not None
-            else {"verbosity": "low"}
-        ),
-        "include": ["reasoning.encrypted_content"],
-        "tool_choice": "auto",
-        "parallel_tool_calls": True,
-    }
-    if request.tools:
-        body["tools"] = _responses_tools(request.tools)
-    if request.reasoning_effort is not None:
-        style = resolve_model_profile(request.model).reasoning
-        effort = reasoning_kwargs(
-            "openai-astra" if style == "openai-astra" else "openai",
-            request.reasoning_effort,
-        )["reasoning_effort"]
-        body["reasoning"] = {
-            "effort": effort,
-            "summary": "auto",
-        }
-    cache_key = _prompt_cache_key(request.session_id)
-    if cache_key:
-        body["prompt_cache_key"] = cache_key
-    return body
+    return build_responses_body(request, codex=True)
 
 
 def _iter_sse(response: Any) -> Iterator[dict[str, Any]]:
@@ -217,183 +81,6 @@ def _iter_sse(response: Any) -> Iterator[dict[str, Any]]:
             if not isinstance(event, dict):
                 raise ProviderError("Invalid Codex stream event", retryable=False)
             yield event
-
-
-def _response_usage(response: dict[str, Any]) -> ProviderUsage | None:
-    usage = response.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    prompt = int(usage.get("input_tokens") or 0)
-    completion = int(usage.get("output_tokens") or 0)
-    input_details = usage.get("input_tokens_details")
-    input_details = input_details if isinstance(input_details, dict) else {}
-    output_details = usage.get("output_tokens_details")
-    output_details = output_details if isinstance(output_details, dict) else {}
-    return ProviderUsage(
-        prompt_tokens=prompt,
-        completion_tokens=completion,
-        total_tokens=int(usage.get("total_tokens") or prompt + completion),
-        cached_prompt_tokens=int(input_details.get("cached_tokens") or 0),
-        reasoning_tokens=int(output_details.get("reasoning_tokens") or 0),
-    )
-
-
-def _canonical_message(
-    output: list[dict[str, Any]],
-    model: str,
-    streamed_text: str,
-    streamed_reasoning: str,
-) -> Message:
-    text_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    tool_calls: list[ToolCall] = []
-    for item in output:
-        kind = item.get("type")
-        if kind == "message":
-            for content in item.get("content") or []:
-                if content.get("type") == "output_text":
-                    text_parts.append(content.get("text") or "")
-                elif content.get("type") == "refusal":
-                    text_parts.append(content.get("refusal") or "")
-        elif kind == "reasoning":
-            blocks = item.get("summary") or item.get("content") or []
-            reasoning_parts.extend(block.get("text") or "" for block in blocks)
-        elif kind == "function_call":
-            tool_calls.append(ToolCall(
-                id=item.get("call_id") or item.get("id") or "",
-                name=item.get("name") or "",
-                arguments=item.get("arguments") or "{}",
-            ))
-    text = "".join(text_parts) or streamed_text
-    reasoning = "\n\n".join(part for part in reasoning_parts if part) or streamed_reasoning
-    return Message.assistant(
-        content=text or None,
-        tool_calls=tool_calls or None,
-        provider_state={"openai-codex": {"model": model, "output": output}},
-        reasoning_content=reasoning or None,
-    )
-
-
-class _CodexCompletionStream(CompletionStream):
-    def __init__(self, response: Any, model: str, release: Callable[[], None]):
-        self._response = response
-        self._model = model
-        self._release = release
-        self._closed = False
-
-    def consume(self, *, on_content=None, on_thinking=None, should_stop=None) -> CompletionResult:
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        output_items: dict[int, dict[str, Any]] = {}
-        terminal: dict[str, Any] | None = None
-
-        for event in _iter_sse(self._response):
-            if should_stop is not None and should_stop():
-                from ene.utils.interrupt import RequestInterrupted
-
-                raise RequestInterrupted()
-            kind = event.get("type")
-            if kind == "response.output_item.added":
-                item = event.get("item")
-                if isinstance(item, dict):
-                    output_items[int(event.get("output_index", len(output_items)))] = item
-            elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-                delta = event.get("delta") or ""
-                reasoning_parts.append(delta)
-                if delta and on_thinking is not None:
-                    on_thinking(delta)
-            elif kind == "response.reasoning_summary_part.done":
-                reasoning_parts.append("\n\n")
-                if on_thinking is not None:
-                    on_thinking("\n\n")
-            elif kind in ("response.output_text.delta", "response.refusal.delta"):
-                delta = event.get("delta") or ""
-                text_parts.append(delta)
-                if delta and on_content is not None:
-                    on_content(delta)
-            elif kind == "response.function_call_arguments.delta":
-                index = int(event.get("output_index", 0))
-                item = output_items.setdefault(index, {"type": "function_call", "arguments": ""})
-                item["arguments"] = (item.get("arguments") or "") + (event.get("delta") or "")
-            elif kind == "response.function_call_arguments.done":
-                index = int(event.get("output_index", 0))
-                item = output_items.setdefault(index, {"type": "function_call"})
-                item["arguments"] = event.get("arguments") or item.get("arguments") or "{}"
-            elif kind == "response.output_item.done":
-                item = event.get("item")
-                if isinstance(item, dict):
-                    output_items[int(event.get("output_index", len(output_items)))] = item
-            elif kind in ("response.completed", "response.done", "response.incomplete"):
-                value = event.get("response")
-                if isinstance(value, dict):
-                    terminal = value
-                break
-            elif kind == "response.failed":
-                response = event.get("response")
-                response = response if isinstance(response, dict) else {}
-                error = response.get("error")
-                error = error if isinstance(error, dict) else {}
-                raise ProviderError(
-                    error.get("message") or "OpenAI Codex response failed",
-                    code=error.get("code"),
-                )
-            elif kind == "error":
-                error = event.get("error") if isinstance(event.get("error"), dict) else event
-                raise ProviderError(
-                    error.get("message") or "OpenAI Codex stream failed",
-                    code=error.get("code"),
-                )
-
-        if should_stop is not None and should_stop():
-            from ene.utils.interrupt import RequestInterrupted
-
-            raise RequestInterrupted()
-        if terminal is None:
-            # Preserve a cleanly ended partial stream so the backend can append
-            # it and continue from that exact point. Transport exceptions still
-            # raise and use the normal retry path.
-            output = [output_items[index] for index in sorted(output_items)]
-            message = _canonical_message(
-                output,
-                self._model,
-                "".join(text_parts),
-                "".join(reasoning_parts),
-            )
-            # The accumulated output items may themselves be incomplete. Replay
-            # the canonical partial text instead of treating this state as an
-            # opaque completed Codex response.
-            message.provider_state = None
-            return CompletionResult(message, None, None)
-        output = terminal.get("output")
-        if not isinstance(output, list) or (not output and output_items):
-            output = [output_items[index] for index in sorted(output_items)]
-        message = _canonical_message(
-            output,
-            self._model,
-            "".join(text_parts),
-            "".join(reasoning_parts),
-        )
-        status = terminal.get("status")
-        if status == "incomplete":
-            finish_reason = "length"
-            # Replay partial output canonically on the continuation request; the
-            # terminal output items, including any tool calls, are incomplete.
-            # The backend will resolve those calls without executing them.
-            message.provider_state = None
-        elif message.tool_calls:
-            finish_reason = "tool_calls"
-        else:
-            finish_reason = "stop"
-        return CompletionResult(message, _response_usage(terminal), finish_reason)
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._response.close()
-        finally:
-            self._release()
 
 
 class OpenAICodexProvider(LLMProvider):
@@ -502,7 +189,10 @@ class OpenAICodexProvider(LLMProvider):
         except BaseException:
             self._release(client)
             raise
-        return _CodexCompletionStream(response, request.model, lambda: self._release(client))
+        return ResponsesCompletionStream(
+            _iter_sse(response), request.model, response.close,
+            lambda: self._release(client),
+        )
 
     def complete(self, request: CompletionRequest) -> CompletionResult:
         stream = self.open_stream(replace(request, stream=True))

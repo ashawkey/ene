@@ -15,6 +15,7 @@ class ProviderSettings:
     api_key: str = ""
     base_url: str = ""
     reasoning_style: str | None = None
+    api: str = "chat_completions"
 
 
 ProviderFactory = Callable[[ProviderSettings], LLMProvider]
@@ -30,6 +31,8 @@ def register_provider(name: str, factory: ProviderFactory) -> None:
 
 def create_provider(name: str, settings: ProviderSettings) -> LLMProvider:
     """Create a configured provider or fail with the available provider names."""
+    if settings.api not in ("chat_completions", "responses"):
+        raise ValueError("api must be 'chat_completions' or 'responses'")
     factory = _FACTORIES.get(name)
     if factory is None:
         available = ", ".join(sorted(_FACTORIES))

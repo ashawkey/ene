@@ -50,6 +50,10 @@ class ContextManager:
         return self._char_cache
 
     @property
+    def image_count(self) -> int:
+        return sum(message.image_count for message in self.messages)
+
+    @property
     def total_chars(self) -> int:
         """Character total of the whole prompt payload, system prompt included.
 
@@ -77,11 +81,21 @@ class ContextManager:
             self._char_cache -= message.chars
         return True
 
-    def get(self, include_system: bool = True) -> list[Message]:
+    def get(
+        self, include_system: bool = True, *, include_images: bool = True,
+    ) -> list[Message]:
         messages: list[Message] = []
         if include_system:
             messages.append(self.system_prompt)
         messages.extend(self.messages)
+        if not include_images:
+            # Project a text-only request without discarding saved image bytes.
+            messages = [
+                message.with_text(
+                    (message.text + "\n[Images omitted for a text-only model.]").lstrip()
+                ) if message.image_count else message
+                for message in messages
+            ]
         return messages
 
     def replace_messages(self, new_messages: list[Message]) -> None:
@@ -97,6 +111,9 @@ class ContextManager:
 # ---------------------------------------------------------------------------
 
 DEFAULT_CHARS_PER_TOKEN = 3.3  # conservative for code-heavy workloads
+# Planning allowance, not a provider billing formula. Image costs depend on
+# model, resolution, and detail; encoded byte length is not a token count.
+ESTIMATED_IMAGE_TOKENS = 2_048
 
 # Layer 1: how much of the window one tool result may occupy, as
 # (window ratio, floor, ceiling). Proactive tools are called repeatedly and can
@@ -223,7 +240,8 @@ class TokenEstimator:
     average each time real token counts are observed from the API. The most
     recent observation is also kept as an anchor: character counting cannot see
     tool schemas, per-message wire framing, or provider-side prompt additions,
-    so only the *delta* since that observation is estimated from characters.
+    so only the *delta* since that observation is estimated. Images have a
+    separate planning allowance and never calibrate the text ratio.
     """
 
     EMA_ALPHA = 0.15  # smoothing factor (higher = faster adaptation)
@@ -233,7 +251,7 @@ class TokenEstimator:
     def __init__(self, initial: float = DEFAULT_CHARS_PER_TOKEN):
         self._ratio = initial
         self._calibrated = False
-        self._anchor: tuple[int, int] | None = None  # (prompt_chars, prompt_tokens)
+        self._anchor: tuple[int, int, int] | None = None  # (chars, tokens, images)
 
     @property
     def chars_per_token(self) -> float:
@@ -255,23 +273,31 @@ class TokenEstimator:
         else:
             self._ratio = (1 - self.EMA_ALPHA) * self._ratio + self.EMA_ALPHA * observed
 
-    def observe(self, prompt_chars: int, prompt_tokens: int) -> None:
-        """Record a ground-truth prompt measurement reported by the API."""
+    def observe(self, prompt_chars: int, prompt_tokens: int, image_count: int = 0) -> None:
+        """Anchor on real usage without calibrating text ratios on image costs."""
         if prompt_tokens <= 0:
             return
-        self.calibrate(prompt_chars, prompt_tokens)
-        self._anchor = (prompt_chars, prompt_tokens)
+        if not image_count:
+            self.calibrate(prompt_chars, prompt_tokens)
+        self._anchor = (prompt_chars, prompt_tokens, image_count)
 
-    def prompt_tokens(self, prompt_chars: int) -> int:
+    def prompt_tokens(self, prompt_chars: int, image_count: int = 0) -> int:
         """Estimate the prompt tokens a request of *prompt_chars* would cost.
 
         *prompt_chars* must be measured on the same basis as :meth:`observe`
         (system prompt included), otherwise the anchor and the delta disagree.
         """
+        estimate = self.chars_to_tokens(prompt_chars) + image_count * ESTIMATED_IMAGE_TOKENS
         if self._anchor is None:
-            return self.chars_to_tokens(prompt_chars)
-        anchor_chars, anchor_tokens = self._anchor
-        return max(0, anchor_tokens + self.chars_to_tokens(prompt_chars - anchor_chars))
+            return estimate
+        anchor_chars, anchor_tokens, anchor_images = self._anchor
+        if image_count < anchor_images:
+            # The provider did not report per-image costs. After removing
+            # images, re-estimate rather than subtracting an invented cost
+            # from measured usage (which can even make the result negative).
+            return estimate
+        return max(0, anchor_tokens + self.chars_to_tokens(prompt_chars - anchor_chars)
+                   + (image_count - anchor_images) * ESTIMATED_IMAGE_TOKENS)
 
     def chars_to_tokens(self, chars: int) -> int:
         """Convert a character count to an estimated token count."""
@@ -285,7 +311,17 @@ class TokenEstimator:
 
 
 def estimate_context_chars(messages: list[Message]) -> int:
+    """Text/state characters only, for text ratio calibration."""
     return sum(message.chars for message in messages)
+
+
+def _message_budget_chars(message: Message, chars_per_token: float) -> float:
+    """Text plus an image allowance in the policy's character-budget units."""
+    return message.chars + message.image_count * ESTIMATED_IMAGE_TOKENS * chars_per_token
+
+
+def _context_budget_chars(messages: list[Message], chars_per_token: float) -> float:
+    return sum(_message_budget_chars(message, chars_per_token) for message in messages)
 
 
 # ---------------------------------------------------------------------------
@@ -726,7 +762,7 @@ def _prunable_range(
     used = 0
     size_end = 0
     for i in range(len(messages) - 1, -1, -1):
-        used += messages[i].chars
+        used += _message_budget_chars(messages[i], chars_per_token)
         if used >= protected_chars:
             size_end = i
             break
@@ -883,7 +919,7 @@ def prune_context(
         return messages
 
     if used_tokens is None:
-        used_tokens = int(estimate_context_chars(messages) / chars_per_token)
+        used_tokens = int(_context_budget_chars(messages, chars_per_token) / chars_per_token)
     trigger = eviction_trigger_tokens(context_length, max_output_tokens)
     if used_tokens < trigger:
         return messages
@@ -1052,7 +1088,7 @@ def needs_compaction(
     if context_length <= 0:
         return False
     if used_tokens is None:
-        used_tokens = int(estimate_context_chars(messages) / chars_per_token)
+        used_tokens = int(_context_budget_chars(messages, chars_per_token) / chars_per_token)
     return used_tokens > compaction_trigger_tokens(context_length, max_output_tokens)
 
 
@@ -1228,7 +1264,7 @@ class CompactionState:
 def _first_user_text(messages: list[Message]) -> str:
     """The opening request, skipping a summary standing in for earlier turns."""
     for msg in messages:
-        if msg.is_user and not _is_summary(msg):
+        if msg.is_user_input and not _is_summary(msg):
             return msg.text[:_FIRST_REQUEST_CHAR_LIMIT]
     return ""
 
@@ -1261,7 +1297,7 @@ def _keep_recent_split_limit(
     ) * chars_per_token
     used = 0
     for i in range(len(messages) - 1, -1, -1):
-        used += messages[i].chars
+        used += _message_budget_chars(messages[i], chars_per_token)
         if used >= keep_chars:
             return i
     return 0
@@ -1277,7 +1313,7 @@ def _yields_enough(
     the caller's floor would suppress on the next round anyway, so it is cheaper
     to notice here than after paying for the summarization.
     """
-    freed = sum(message.chars for message in messages[:split_index])
+    freed = _context_budget_chars(messages[:split_index], chars_per_token)
     written_back = COMPACTION_SUMMARY_MAX_TOKENS * chars_per_token
     min_yield = context_length * COMPACTION_MIN_YIELD_RATIO * chars_per_token
     return freed - written_back >= min_yield
@@ -1327,8 +1363,13 @@ def compact_context(
             return messages, state
 
     if context_length > 0:
+        budget_tokens = int(_context_budget_chars(messages, chars_per_token) / chars_per_token)
         if used_tokens is None:
-            used_tokens = int(estimate_context_chars(messages) / chars_per_token)
+            used_tokens = budget_tokens
+        elif any(message.image_count for message in messages):
+            # Removing images invalidates the measured anchor: per-image usage
+            # is unknown. Free enough for the post-compaction estimate as well.
+            used_tokens = max(used_tokens, budget_tokens)
         # Only message characters can be freed, but the overhead the anchor
         # accounts for (system prompt, tool schemas) still has to come out of
         # the target — so convert the token shortfall back into characters.
@@ -1341,7 +1382,7 @@ def compact_context(
             cumulative = 0
             split_index = 1
             for i in range(0, len(messages)):
-                cumulative += messages[i].chars
+                cumulative += _message_budget_chars(messages[i], chars_per_token)
                 if cumulative >= chars_to_free:
                     split_index = i + 1
                     break

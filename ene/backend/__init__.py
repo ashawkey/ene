@@ -235,6 +235,7 @@ class LLMAgent(
         max_output_tokens: int | None = None,
         terminal_prompts: bool = True,
         session_name: str = "",
+        api: str = "chat_completions",
     ):
 
         self.model = model
@@ -245,6 +246,7 @@ class LLMAgent(
             api_key=api_key,
             base_url=base_url,
             reasoning_style=self.profile.reasoning,
+            api=api,
         )
         self.provider = create_provider(provider_name, self._provider_settings)
         self._active_compaction_provider = None
@@ -334,7 +336,6 @@ class LLMAgent(
         self._process_status_sink = None
         self.tool_executor.set_process_status_callback(self._process_status_changed)
         self.context = ContextManager(self.system_prompt)
-        self._pending_images: list[dict[str, str]] = []
 
         self.round_id = 0
         self._session_id: str | None = None  # set by chat_loop
@@ -386,20 +387,6 @@ class LLMAgent(
             supports_image=self.profile.supports_image_input,
         )
 
-    def _messages_with_pending_images(self) -> list[Message]:
-        messages = self.context.get()
-        if not self._pending_images:
-            return messages
-
-        content: list[TextPart | ImagePart] = []
-        for image in self._pending_images:
-            content.extend((
-                TextPart(f"Image returned by read_image: {image['file']}"),
-                ImagePart({"url": image["url"]}),
-            ))
-        messages.append(Message.user(content))
-        return messages
-
     def _build_system_prompt(self) -> str:
         """Build the system prompt via the active persona."""
         ctx = PersonaContext(
@@ -442,7 +429,13 @@ class LLMAgent(
         the system prompt, tool schemas, and provider framing that character
         counting alone cannot see.
         """
-        return self.token_estimator.prompt_tokens(self.context.total_chars)
+        image_count = self.context.image_count
+        if image_count and not self.profile.supports_image_input:
+            messages = self.context.get(include_images=False)
+            return self.token_estimator.prompt_tokens(estimate_context_chars(messages))
+        return self.token_estimator.prompt_tokens(
+            self.context.total_chars, image_count,
+        )
 
     def _process_status_changed(self, running: int, finished: int) -> None:
         """Publish process counts plus live activity, if any."""
@@ -567,13 +560,11 @@ class LLMAgent(
                 f"context: ~{ctx_tokens}tok / {self.context_length}tok [{ctx_pct:.0f}%])"
             )
 
-        had_pending_images = bool(self._pending_images)
-
         def build_request() -> tuple[list[Message], CompletionRequest]:
             # Repair any malformed tool-call arguments in the history so a
             # broken call can never be re-sent and rejected by the provider.
             sanitize_unparseable_tool_calls(self.context)
-            messages = self._messages_with_pending_images()
+            messages = self.context.get(include_images=self.profile.supports_image_input)
             return messages, CompletionRequest(
                 model=self.model,
                 messages=messages,
@@ -635,13 +626,13 @@ class LLMAgent(
         message = result.message
         usage = result.usage or self._estimate_usage(message)
         finish_reason = result.finish_reason
-        self._pending_images.clear()
         self._accumulate_usage(usage)
-        # Only a real provider count is worth anchoring on; images are excluded
-        # because their token cost is invisible to character counting.
-        if result.usage is not None and not had_pending_images:
+        # Anchor on real usage, including images, but keep their costs out of
+        # the text-only ratio calibration.
+        if result.usage is not None:
             self.token_estimator.observe(
-                estimate_context_chars(messages), usage.prompt_tokens
+                estimate_context_chars(messages), usage.prompt_tokens,
+                sum(sent.image_count for sent in messages),
             )
 
         if self.verbose:
@@ -767,6 +758,7 @@ class LLMAgent(
             ProviderSettings(
                 api_key=model_conf.get("api_key", ""),
                 base_url=model_conf.get("base_url", ""),
+                api=model_conf.get("api", "chat_completions"),
                 reasoning_style=profile.reasoning,
             ),
         )
@@ -863,8 +855,7 @@ class LLMAgent(
 
     def _estimate_usage(self, message) -> ProviderUsage:
         """Build rough provider-neutral usage when an API omits it."""
-        prompt_chars = estimate_context_chars(self.context.get())
-        prompt_tokens = self.token_estimator.chars_to_tokens(prompt_chars)
+        prompt_tokens = self._context_tokens()
         completion_chars = len(message.text)
         for tool_call in message.tool_calls or []:
             completion_chars += len(tool_call.arguments)
@@ -888,6 +879,7 @@ class LLMAgent(
 
         t_all = time.monotonic()
         interrupted = False
+        image_content: list[TextPart | ImagePart] = []
         for i, tool_call in enumerate(tool_calls):
             function_name = tool_call.name
 
@@ -940,10 +932,10 @@ class LLMAgent(
                     result = self.tool_executor.execute(function_name, function_args)
             image_url = result.pop("image_url", None)
             if image_url and result.get("success"):
-                self._pending_images.append({
-                    "file": function_args["file"],
-                    "url": image_url,
-                })
+                image_content.extend((
+                    TextPart(f"Image returned by read_image: {function_args['file']}"),
+                    ImagePart({"url": image_url}),
+                ))
             result_text = format_tool_result(result)
 
             success = result.get("success", False)
@@ -1061,6 +1053,12 @@ class LLMAgent(
             ):
                 interrupted = True
 
+        # Keep all tool replies adjacent to their assistant call before adding
+        # the images. Persist them so follow-ups, retries, and saved sessions
+        # retain the same visual evidence as the first request.
+        if image_content:
+            self.context.add(Message.user(image_content, display_content=""))
+
         total_elapsed = time.monotonic() - t_all
         if self.verbose and len(tool_calls) > 1:
             self.console.debug(f"All {len(tool_calls)} tool calls completed in {total_elapsed:.1f}s")
@@ -1158,14 +1156,12 @@ class LLMAgent(
                 self._last_finish_reason = "stop"
                 message = self.call_api()
             except RequestInterrupted:
-                self._pending_images.clear()
                 self._last_turn_outcome = TurnOutcome.USER_INTERRUPTED
                 self.console.system("Request cancelled.")
                 self._last_interrupted = True
                 self._interrupt_reverts_prompt = not turn_has_response
                 return None
             except RuntimeError as e:
-                self._pending_images.clear()
                 self._last_turn_outcome = TurnOutcome.FAILED
                 self._last_error = str(e)
                 self._failure_reverts_prompt = not turn_has_response
@@ -1184,6 +1180,16 @@ class LLMAgent(
                     self.console.response(content)
 
             finish_reason = self._last_finish_reason
+            if finish_reason == "content_filter":
+                self._last_turn_outcome = TurnOutcome.FAILED
+                self._last_error = "Response was stopped by the provider's content filter."
+                self.console.warn(self._last_error)
+                if message.tool_calls:
+                    self._resolve_unexecuted_tool_calls(message)
+                elif not content.strip() and not message.provider_state:
+                    self.context.drop_last(message)
+                return content or None
+
             # An assistant turn with neither text nor tool calls is unfinished
             # whatever the provider reported: the model spent the round on
             # reasoning alone (or the visible part was dropped) and the task is
@@ -1243,7 +1249,6 @@ class LLMAgent(
                 # The user cancelled a tool mid-round. Stop the agentic loop
                 # and return to the prompt instead of feeding the (partial)
                 # tool results back to the model for another iteration.
-                self._pending_images.clear()
                 self.console.system("Turn interrupted.")
                 self._last_interrupted = True
                 self._last_turn_outcome = outcome
@@ -1301,7 +1306,6 @@ class LLMAgent(
         self._session_revision_id = None
         self.context.replace_messages([])
         self.context.compaction_state = CompactionState()
-        self._pending_images.clear()
         self.round_id = 0
         self.token_totals = {key: 0 for key in self.token_totals}
         self.tool_compaction_totals = {key: 0 for key in self.tool_compaction_totals}

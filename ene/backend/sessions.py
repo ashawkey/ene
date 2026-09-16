@@ -365,7 +365,6 @@ class SessionMixin:
         self._session_id = session_id
         self._session_store = target_store
         self._session_revision_id = target_store.head_id
-        self._pending_images.clear()
         self.tool_executor.shutdown_processes(clear=True)
         self._install_change_tracker()
         self._set_rewind_draft(candidate["prompt"])
@@ -686,7 +685,7 @@ class SessionMixin:
         msgs = compact_replay(
             self.context.messages,
             is_user=lambda msg: (
-                msg.is_user
+                msg.is_user_input
                 and not msg.text.startswith(SUMMARY_MARKER)
             ),
             is_assistant=lambda msg: msg.is_assistant,

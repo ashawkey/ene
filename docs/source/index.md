@@ -37,6 +37,38 @@ openai:
 ```
 
 The alias (`fast` or `my_model` above) is what you pass to `--model`.
+Startup `--model`, the interactive `/model` command, and Python's
+`run_agent(model_alias=...)` also accept a unique prefix of a configured alias.
+For example, `gpt-6` selects `gpt-6-astra` when that is the only matching alias.
+An exact alias always wins; an ambiguous prefix produces an error listing its
+matches. Matching is case-sensitive.
+
+API-key models use Chat Completions by default. Set `api: responses` on an
+individual model to use an OpenAI-compatible Responses endpoint instead:
+
+```yaml
+openai:
+  gpt-6:
+    provider: openai
+    api: responses # optional; defaults to chat_completions
+    model: azure/openai/gpt-6-astra
+    api_key: replace-with-your-api-key
+    base_url: https://inference-api.nvidia.com
+    reasoning_effort: high
+```
+
+Use the model ID and base URL supplied by your service. Ene appends `/responses`
+to the base URL; for OpenAI's public API use `https://api.openai.com/v1` and
+`model: gpt-6-astra`. The only supported `api` values are `chat_completions` and
+`responses`. The setting also applies to `/model` switches, the Python API,
+batch jobs, and models selected for recap or compaction.
+
+Responses mode supports streaming, images, function calls, and structured JSON
+output. Ene uses `store: false` and carries returned output items, including
+encrypted reasoning when the service supplies it, in local conversation and
+session history. Gateway support for individual features can vary. The
+`openai-codex` subscription provider always uses Responses independently of this
+API-key setting.
 
 ### ChatGPT Plus/Pro subscription
 
@@ -68,7 +100,7 @@ Choose one of the offered browser, manual-redirect, or device-code flows. OAuth 
 
 ## List configured models
 
-List resolved aliases, providers, context windows, and reasoning settings:
+List resolved aliases, providers, APIs, context windows, and reasoning settings:
 
 ```bash
 ene models
@@ -130,7 +162,7 @@ else:
     print(result.outcome, result.error)
 ```
 
-Responses that truncate during a tool call or remain unfinished after automatic continuations return `TurnOutcome.FAILED`, with `success=False` and an explanatory `error`. Any final partial text is retained in `response`.
+Responses that truncate during a tool call, are stopped by a provider content filter, or remain unfinished after automatic continuations return `TurnOutcome.FAILED`, with `success=False` and an explanatory `error`. Content-filtered responses stop without executing tool calls or automatically continuing. Any final partial text is retained in `response`.
 
 ## Persistent live sessions
 

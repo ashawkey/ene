@@ -2,6 +2,7 @@
 
 from .openai_codex import OpenAICodexProvider
 from .openai_compatible import OpenAICompatibleProvider
+from .openai_responses import OpenAIResponsesProvider
 from .registry import (
     ProviderSettings,
     create_provider,
@@ -18,7 +19,13 @@ from .types import (
     ProviderUsage,
 )
 
-register_provider("openai", OpenAICompatibleProvider)
+def _openai_provider(settings: ProviderSettings) -> LLMProvider:
+    if settings.api == "responses":
+        return OpenAIResponsesProvider(settings)
+    return OpenAICompatibleProvider(settings)
+
+
+register_provider("openai", _openai_provider)
 register_provider("openai-codex", OpenAICodexProvider)
 
 __all__ = [
@@ -29,6 +36,7 @@ __all__ = [
     "LLMProvider",
     "OpenAICodexProvider",
     "OpenAICompatibleProvider",
+    "OpenAIResponsesProvider",
     "ProviderError",
     "ProviderSettings",
     "ProviderUsage",

@@ -24,7 +24,7 @@ from rich.table import Table
 from ene.backend import LLMAgent
 from ene.backend.sessions import _session_choice_labels
 from ene.config import CONFIG_PATH, conf
-from ene.models import REASONING_EFFORTS, ReasoningEffort, resolve_model_profile
+from ene.models import REASONING_EFFORTS, ReasoningEffort, resolve_model_alias, resolve_model_profile
 from ene.providers import provider_names
 from ene.ui import AgentConsole
 
@@ -81,6 +81,7 @@ def get_agent(args: Args) -> "LLMAgent | None":
                 raise ValueError(f"No models found in config: {CONFIG_PATH}")
             args.model = next(iter(openai_conf))
 
+        args.model = resolve_model_alias(args.model, openai_conf)
         model_conf = model_config(args.model)
         for purpose in ("recap", "summary"):
             config_key = f"{purpose}_model"
@@ -101,6 +102,7 @@ def get_agent(args: Args) -> "LLMAgent | None":
             model=model_conf.get("model", args.model),
             api_key=model_conf.get("api_key", ""),
             base_url=model_conf.get("base_url", ""),
+            api=model_conf.get("api", "chat_completions"),
             provider_name=provider_name,
             model_alias=args.model,
             verbose=args.verbose,
@@ -195,6 +197,7 @@ def cmd_models():
     table.add_column("Name", style="cyan", no_wrap=True)
     table.add_column("Model")
     table.add_column("Provider", style="dim")
+    table.add_column("API", style="dim")
     table.add_column("Base URL", style="dim")
     table.add_column("Context", style="green", justify="right")
     table.add_column("Thinking")
@@ -208,6 +211,8 @@ def cmd_models():
             name,
             model_id,
             model_conf.get("provider", "openai"),
+            "responses" if model_conf.get("provider") == "openai-codex"
+            else model_conf.get("api", "chat_completions"),
             model_conf.get("base_url", "N/A"),
             ctx,
             f"{profile.reasoning or '-'} / {model_conf.get('reasoning_effort', 'high')}",

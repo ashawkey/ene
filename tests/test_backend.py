@@ -384,6 +384,7 @@ def test_recap_uses_configured_alias_and_closes_temporary_provider(monkeypatch):
             "provider": "openai",
             "model": "cheap-model",
             "api_key": "cheap-key",
+            "api": "responses",
             "base_url": "cheap-url",
         },
     })
@@ -403,6 +404,7 @@ def test_recap_uses_configured_alias_and_closes_temporary_provider(monkeypatch):
     assert output[-1][0] == "Recap: Remember the task."
     assert created[0][0] == "openai"
     assert created[0][1].api_key == "cheap-key"
+    assert created[0][1].api == "responses"
     assert requests[0].model == "cheap-model"
     assert closed == [True]
 
@@ -436,6 +438,7 @@ def test_compaction_uses_configured_summary_alias_and_closes_provider(monkeypatc
             "provider": "openai",
             "model": "cheap-model",
             "api_key": "cheap-key",
+            "api": "responses",
             "base_url": "cheap-url",
         },
     })
@@ -461,6 +464,7 @@ def test_compaction_uses_configured_summary_alias_and_closes_provider(monkeypatc
 
     assert created[0][0] == "openai"
     assert created[0][1].api_key == "cheap-key"
+    assert created[0][1].api == "responses"
     assert requests[0].model == "cheap-model"
     assert requests[0].reasoning_effort == "low"
     assert requests[0].max_output_tokens == 8_000
@@ -1304,7 +1308,6 @@ def _skill_invocation_agent(tmp_path, name="general-skill"):
     agent._session_id = "test"
     agent._session_revision_id = None
     agent._compaction_floor_tokens = None
-    agent._pending_images = []
     agent._last_interrupted = False
     agent.verbose = False
     agent._operation = lambda _label: nullcontext()
@@ -1498,7 +1501,6 @@ def test_cancelled_initial_request_restores_context_and_message_draft():
     agent._session_id = "test"
     agent._session_revision_id = "before-round"
     agent._compaction_floor_tokens = 123
-    agent._pending_images = []
     agent._last_interrupted = False
     agent.verbose = False
     agent.tool_executor = NS()
@@ -1565,7 +1567,6 @@ def test_failed_initial_request_restores_context_and_message_draft():
     agent._session_id = "test"
     agent._session_revision_id = "before-round"
     agent._compaction_floor_tokens = 123
-    agent._pending_images = []
     agent._last_interrupted = False
     agent.verbose = False
     agent.tool_executor = NS()
@@ -1635,7 +1636,6 @@ def test_cancelled_exec_preserves_its_partial_result_in_round_context(tmp_path):
     agent._session_id = "test"
     agent._session_revision_id = "before-round"
     agent._compaction_floor_tokens = None
-    agent._pending_images = []
     agent._last_interrupted = False
     agent.verbose = False
     agent.presence = NS(refresh=lambda: [])

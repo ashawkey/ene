@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ene.config import CONFIG_PATH, conf
 from ene.backend import LLMAgent
-from ene.models import ReasoningEffort
+from ene.models import ReasoningEffort, resolve_model_alias
 from ene.providers import provider_names
 from ene.ui import AgentConsole
 from ene.utils.interrupt import TurnOutcome
@@ -63,10 +63,7 @@ def run_agent(
     if not isinstance(model_configs, dict) or not model_configs:
         raise ValueError(f"No models found in config: {CONFIG_PATH}")
 
-    alias = model_alias or next(iter(model_configs))
-    if alias not in model_configs:
-        available = ", ".join(model_configs)
-        raise ValueError(f"Model '{alias}' not found in config. Available: {available}")
+    alias = resolve_model_alias(model_alias or next(iter(model_configs)), model_configs)
 
     model_conf = model_configs[alias]
     provider_name = model_conf.get("provider", "openai")
@@ -79,6 +76,7 @@ def run_agent(
         model=model_conf.get("model", alias),
         api_key=model_conf.get("api_key", ""),
         base_url=model_conf.get("base_url", ""),
+        api=model_conf.get("api", "chat_completions"),
         provider_name=provider_name,
         model_alias=alias,
         verbose=verbose,

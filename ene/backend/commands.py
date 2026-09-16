@@ -13,7 +13,7 @@ from ene.context import (
     build_tool_name_index,
 )
 from ene.messages import Message
-from ene.models import REASONING_EFFORTS, resolve_model_profile
+from ene.models import REASONING_EFFORTS, resolve_model_alias, resolve_model_profile
 from ene.providers import (
     AuthInteraction,
     CompletionRequest,
@@ -235,7 +235,7 @@ class AgentCommandsMixin:
             requests.append(original)
 
         for message in self.context.messages:
-            if not message.is_user or message.text.startswith(SUMMARY_MARKER):
+            if not message.is_user_input or message.text.startswith(SUMMARY_MARKER):
                 continue
             text = message.display.strip()
             if text and text not in requests:
@@ -288,6 +288,7 @@ class AgentCommandsMixin:
         provider = create_provider(provider_name, ProviderSettings(
             api_key=model_conf.get("api_key", ""),
             base_url=model_conf.get("base_url", ""),
+            api=model_conf.get("api", "chat_completions"),
             reasoning_style=profile.reasoning,
         ))
         return provider, model, True
@@ -927,9 +928,10 @@ class AgentCommandsMixin:
             self.console.print("\n".join(lines))
             return
 
-        target = parts[1].strip()
-        if target not in openai_conf:
-            self.console.error(f"Model '{target}' not found in config. Use /model to list available models.")
+        try:
+            target = resolve_model_alias(parts[1].strip(), openai_conf)
+        except ValueError as e:
+            self.console.error(str(e))
             return
 
         if target == self.model_alias:
@@ -943,6 +945,7 @@ class AgentCommandsMixin:
         settings = ProviderSettings(
             api_key=model_conf.get("api_key", ""),
             base_url=model_conf.get("base_url", ""),
+            api=model_conf.get("api", "chat_completions"),
             reasoning_style=profile.reasoning,
         )
         try:
@@ -991,6 +994,7 @@ class AgentCommandsMixin:
             settings = ProviderSettings(
                 api_key=model_conf.get("api_key", ""),
                 base_url=model_conf.get("base_url", ""),
+                api=model_conf.get("api", "chat_completions"),
                 reasoning_style=profile.reasoning,
             )
         else:
@@ -1058,4 +1062,3 @@ class AgentCommandsMixin:
         finally:
             if temporary and provider is not None:
                 provider.close()
-

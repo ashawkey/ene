@@ -12,7 +12,7 @@ import pytest
 
 from ene.backend.batch import BatchCompletionMixin
 from ene.messages import Message
-from ene.providers import CompletionResult, ProviderUsage
+from ene.providers import CompletionResult, ProviderSettings, ProviderUsage
 from ene.skills import BUNDLED_SKILLS_DIR, load_skill_tools
 from ene.tools import ToolExecutor
 
@@ -300,7 +300,10 @@ def test_direct_completion_uses_fresh_context_provider_and_parses_json(monkeypat
         def cancel(self):
             pass
 
-    monkeypatch.setattr("ene.backend.batch.create_provider", lambda *args: Provider())
+    settings = ProviderSettings(api="responses")
+    created = []
+    monkeypatch.setattr("ene.backend.batch.create_provider",
+                        lambda name, supplied: created.append((name, supplied)) or Provider())
     usage = []
     agent = NS(
         profile=NS(supports_image_input=True),
@@ -309,7 +312,7 @@ def test_direct_completion_uses_fresh_context_provider_and_parses_json(monkeypat
         max_output_tokens=100,
         reasoning_effort="high",
         provider_name="openai",
-        _provider_settings=object(),
+        _provider_settings=settings,
         _batch_provider_lock=threading.Lock(),
         _batch_providers=set(),
         _session_id="session",
@@ -322,6 +325,7 @@ def test_direct_completion_uses_fresh_context_provider_and_parses_json(monkeypat
     )
 
     assert result["result"] == {"label": "yes"}
+    assert created == [("openai", settings)]
     request = requests[0]
     assert request.messages == [Message.system("Classify"), Message.user("item")]
     assert request.tools == [] and request.stream is False

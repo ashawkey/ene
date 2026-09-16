@@ -27,6 +27,7 @@ from ene.live import (
     update_identity,
     update_record,
 )
+from ene.models import resolve_model_alias
 from ene.providers import provider_names
 from ene.replay import HiddenMessages, compact_replay, hidden_message
 from ene.tools.process_manager import format_process_status, process_status_snapshot
@@ -216,7 +217,7 @@ class Worker:
         except Exception:
             return
         for message in reversed(messages):
-            if message.is_user:
+            if message.is_user_input:
                 text = " ".join(message.display.split())
                 with self._state_lock:
                     self._last_user_message = text[:PREVIEW_LIMIT]
@@ -367,6 +368,10 @@ class Worker:
             if not models:
                 raise LiveError(f"No models found in config: {CONFIG_PATH}")
             alias = next(iter(models))
+        try:
+            alias = resolve_model_alias(alias, models)
+        except ValueError as exc:
+            raise LiveError(str(exc)) from exc
         model_conf = models.get(alias)
         if not isinstance(model_conf, dict):
             raise LiveError(f"Model '{alias}' not found in config: {CONFIG_PATH}")
@@ -378,6 +383,7 @@ class Worker:
             model=model_conf.get("model", alias),
             api_key=model_conf.get("api_key", ""),
             base_url=model_conf.get("base_url", ""),
+            api=model_conf.get("api", "chat_completions"),
             provider_name=provider,
             model_alias=alias,
             verbose=bool(options.get("verbose")),

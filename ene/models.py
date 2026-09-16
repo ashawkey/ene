@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -50,6 +50,19 @@ MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
 ]
 
 DEFAULT_PROFILE = ModelProfile()
+
+
+def resolve_model_alias(name: str, aliases: Iterable[str]) -> str:
+    """Resolve an exact configured alias or an unambiguous, case-sensitive prefix."""
+    available = list(aliases)
+    if name in available:
+        return name
+    matches = [alias for alias in available if name and alias.startswith(name)]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise ValueError(f"Ambiguous model '{name}'. Matches: {', '.join(matches)}")
+    raise ValueError(f"Model '{name}' not found in config. Available: {', '.join(available)}")
 
 
 def resolve_model_profile(model_id: str, model_alias: str = "") -> ModelProfile:

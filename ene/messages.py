@@ -169,8 +169,9 @@ class Message:
     ``role`` is one of the ``ROLE_*`` constants. ``content`` is plain text,
     a list of content parts (multimodal user messages), or ``None``.
     ``display_content`` carries the user-facing form when it differs from what
-    the model sees. ``provider_state`` is opaque provider state (OpenAI Codex
-    response items) replayed verbatim on continuation requests.
+    the model sees; an empty display marks a hidden, synthetic user message.
+    ``provider_state`` is opaque provider state (OpenAI Responses response items)
+    replayed verbatim on continuation requests.
     """
 
     role: str
@@ -246,6 +247,11 @@ class Message:
         return self.role == ROLE_USER
 
     @property
+    def is_user_input(self) -> bool:
+        """User-role content intended for the transcript, not a hidden payload."""
+        return self.is_user and self.display_content != ""
+
+    @property
     def is_assistant(self) -> bool:
         return self.role == ROLE_ASSISTANT
 
@@ -271,6 +277,13 @@ class Message:
     def display(self) -> str:
         """User-facing text: ``display_content`` when present, else ``text``."""
         return self.display_content if isinstance(self.display_content, str) else self.text
+
+    @property
+    def image_count(self) -> int:
+        """Number of images, independent of their encoded byte length."""
+        if not isinstance(self.content, list):
+            return 0
+        return sum(isinstance(part, ImagePart) for part in self.content)
 
     @property
     def chars(self) -> int:

@@ -31,7 +31,8 @@ def test_session_choices_align_counts_and_truncate_preview_to_width():
     assert all(len(label) <= 55 for label in labels)
 
 
-def test_get_agent_passes_token_limits(monkeypatch):
+@pytest.mark.parametrize("api_mode", ["chat_completions", "responses"])
+def test_get_agent_passes_token_limits(monkeypatch, api_mode):
     monkeypatch.delitem(conf, "recap_model", raising=False)
     monkeypatch.delitem(conf, "summary_model", raising=False)
     created = []
@@ -43,6 +44,7 @@ def test_get_agent_passes_token_limits(monkeypatch):
     monkeypatch.setitem(conf, "openai", {
         "test": {
             "model": "test-model",
+            "api": api_mode,
             "api_key": "key",
             "base_url": "url",
             "context_length": 200_000,
@@ -55,6 +57,7 @@ def test_get_agent_passes_token_limits(monkeypatch):
 
     assert agent is not None
     assert created[0]["provider_name"] == "openai"
+    assert created[0]["api"] == api_mode
     assert created[0]["context_length"] == 200_000
     assert created[0]["max_output_tokens"] == 16_000
 

@@ -15,7 +15,7 @@ Session options are:
 
 | Option | Meaning |
 |---|---|
-| `--model ALIAS` | Select a model alias from `~/.ene.yaml`. |
+| `--model ALIAS` | Select a model alias or unique alias prefix from `~/.ene.yaml`; exact matches take priority. |
 | `--persona NAME` | Start with a discovered persona. |
 | `--verbose` | Show detailed output. |
 | `--stream` / `--no-stream` | Enable or disable response-token streaming; streaming is the default. |
@@ -57,7 +57,7 @@ The agent supports the following slash commands while chatting:
 | `/usage` | Show token usage for this session |
 | `/ps [label\|process-id] [tail-chars]`; `/ps stop <label\|process-id>` | List managed background processes, inspect recent output, or stop one process |
 | `/agents` | List Ene agents working in this workspace, including this session |
-| `/model [name]` | Show or switch LLM model mid-session |
+| `/model [name]` | Show or switch LLM model mid-session; accepts an exact alias or unique alias prefix |
 | `/login [provider\|model-alias]` | Authenticate an OAuth provider; defaults to the current provider |
 | `/logout [provider\|model-alias]` | Remove stored OAuth credentials |
 | `/auth [provider\|model-alias]` | Show authentication status |

@@ -23,6 +23,19 @@ The agent has access to the following tools:
 | `wait_processes` | Block until a selected managed process exits, optionally writes output, or an optional timeout expires; omit the timeout for ordinary finite jobs |
 | `stop_process` | Stop a managed background process and its child process tree |
 
+Images loaded with `read_image` remain in conversation history for subsequent
+tool rounds and follow-up questions. Saved sessions retain the image bytes, so
+resuming does not require the original file. Images remain available until their
+messages are removed by context compaction, rewind, or clearing the conversation.
+Repeated requests to image-capable models include the retained images and their
+image-token costs. Switching to a text-only model sends a text placeholder instead;
+the saved image bytes remain available when switching back. Image tool payloads
+are not treated as user prompts in session previews, replay, or rewind.
+Context sizing uses reported prompt usage when available and a 2,048-token
+planning allowance per added or unmeasured image; actual costs vary by model,
+resolution, and detail. Image costs are kept separate from text calibration and
+included when deciding which older messages to compact.
+
 Managed background process tools are built into ene so permitted model calls,
 the `/ps` command, and the live terminal/web status use the same process
 registry. Like other built-in model tools, their advertisement is subject to

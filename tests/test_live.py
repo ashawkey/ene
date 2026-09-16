@@ -1905,3 +1905,43 @@ def test_update_identity_renames_and_rejects_live_conflicts(monkeypatch, tmp_pat
         live.update_identity(
             second["runtime_id"], name="other", workspace=str(tmp_path), conversation_id="one"
         )
+
+
+@pytest.mark.parametrize('api_mode', ['chat_completions', 'responses'])
+@pytest.mark.parametrize('alias', ['', 'gpt-6', 'gpt-6-astra'])
+def test_worker_startup_resolves_model_and_forwards_api(monkeypatch, tmp_path, api_mode, alias):
+    from ene.providers import OpenAIResponsesProvider
+
+    monkeypatch.setattr(live_worker, 'conf', {'openai': {
+        'gpt-6-astra': {'model': 'gpt-6-astra', 'api': api_mode},
+    }})
+    created = []
+
+    def make_agent(**kwargs):
+        from ene.providers import ProviderSettings, create_provider
+        created.append(kwargs)
+        return create_provider(kwargs['provider_name'], ProviderSettings(api=kwargs['api']))
+
+    monkeypatch.setattr(live_worker, 'LLMAgent', make_agent)
+    worker = Worker({'runtime_id': 'test', 'token': 'test', 'workspace': str(tmp_path),
+                     'options': {'model': alias}})
+    provider = worker._make_agent()
+    assert isinstance(provider, OpenAIResponsesProvider) == (api_mode == 'responses')
+    assert created[0]['model_alias'] == 'gpt-6-astra'
+    assert created[0]['api'] == api_mode
+    provider.close()
+
+
+@pytest.mark.parametrize(('alias', 'error'), [
+    ('gpt', "Ambiguous model 'gpt'. Matches: gpt-6-astra, gpt-5"),
+    ('missing', "Model 'missing' not found"),
+])
+def test_worker_startup_rejects_unresolved_alias(monkeypatch, tmp_path, alias, error):
+    monkeypatch.setattr(live_worker, 'conf', {'openai': {
+        'gpt-6-astra': {}, 'gpt-5': {},
+    }})
+    monkeypatch.setattr(live_worker, 'LLMAgent', lambda **kwargs: pytest.fail('created agent'))
+    worker = Worker({'runtime_id': 'test', 'token': 'test', 'workspace': str(tmp_path),
+                     'options': {'model': alias}})
+    with pytest.raises(live.LiveError, match=error):
+        worker._make_agent()

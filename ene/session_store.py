@@ -339,7 +339,7 @@ class SessionStore:
         last_user_message = ""
         for message_id in reversed(revision["messageIds"]):
             message = self.messages.get(message_id)
-            if message is not None and message.is_user:
+            if message is not None and message.is_user_input:
                 last_user_message = message.display.replace("\n", " ").strip()
                 break
         return {
@@ -663,7 +663,7 @@ class SessionStore:
         """Last user message in a revision, collapsed to a single line."""
         for message_id in reversed(self.revisions[revision_id]["messageIds"]):
             message = self.messages.get(message_id)
-            if message is None or not message.is_user:
+            if message is None or not message.is_user_input:
                 continue
             return " ".join(message.display.split())
         return ""

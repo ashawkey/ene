@@ -36,7 +36,10 @@ def model_config(monkeypatch):
     })
 
 
-def test_run_agent_constructs_exec_agent_and_closes(monkeypatch, model_config, tmp_path):
+@pytest.mark.parametrize("api_mode", ["chat_completions", "responses"])
+@pytest.mark.parametrize("alias_input", ["test", "tes"])
+def test_run_agent_constructs_exec_agent_and_closes(monkeypatch, model_config, tmp_path, api_mode, alias_input):
+    monkeypatch.setitem(conf["openai"]["test"], "api", api_mode)
     created = []
 
     class FakeAgent:
@@ -60,7 +63,7 @@ def test_run_agent_constructs_exec_agent_and_closes(monkeypatch, model_config, t
 
     result = run_agent(
         "inspect this",
-        model_alias="test",
+        model_alias=alias_input,
         persona="coder",
         work_dir=tmp_path,
         console=console,
@@ -75,6 +78,7 @@ def test_run_agent_constructs_exec_agent_and_closes(monkeypatch, model_config, t
     assert console.suppressed_calls == 1
     assert created[0].closed
     assert created[0].kwargs["exec_mode"] is True
+    assert created[0].kwargs["api"] == api_mode
     assert created[0].kwargs["model_alias"] == "test"
     assert created[0].kwargs["persona"] == "coder"
     assert created[0].kwargs["work_dir"] == str(tmp_path)
@@ -159,3 +163,10 @@ def test_run_agent_validates_task_and_model(model_config):
         run_agent("  ", model_alias="test")
     with pytest.raises(ValueError, match="Model 'missing' not found"):
         run_agent("task", model_alias="missing")
+
+
+def test_run_agent_rejects_ambiguous_alias_before_constructing_agent(monkeypatch, model_config):
+    monkeypatch.setitem(conf["openai"], "test-other", {"model": "other"})
+    monkeypatch.setattr(api, "LLMAgent", lambda **kwargs: pytest.fail("constructed an ambiguous model"))
+    with pytest.raises(ValueError, match="Ambiguous model 'tes'. Matches: test, test-other"):
+        run_agent("task", model_alias="tes")
