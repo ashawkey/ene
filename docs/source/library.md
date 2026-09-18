@@ -74,6 +74,17 @@ Each installed resource records its last synchronized tree in `.ene-lib.json`.
 This base allows Ene to distinguish local-only changes, remote-only changes, and conflicts even on another machine.
 
 A normal update uploads local-only changes and downloads remote-only changes.
+Each completed resource is shown in an aligned status row:
+
+```text
+gitlab-mr              up-to-date
+gitlab-review-service  local --> remote
+another-skill          local <-- remote
+```
+
+`local` is the project copy; `remote` is the library copy. The arrow indicates
+which copy receives the changes; `up-to-date` means the copies already match.
+
 If both copies changed, it leaves both copies unchanged so you can merge the desired changes into the project-local resource. Validate the merged copy, then run:
 
 ```bash

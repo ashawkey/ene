@@ -171,15 +171,19 @@ def main(argv: list[str] | None = None) -> int:
                     detail = ", ".join(issue["name"] for issue in errors)
                     raise LibraryError(f"cannot update invalid local {args.kind}s: {detail}")
                 names = sorted(skills)
+            name_width = max((len(name) for name in names), default=0)
+            statuses = {
+                "current": ("up-to-date", "dim"),
+                "pulled": ("local <-- remote", "green"),
+                "pushed": ("local --> remote", "green"),
+            }
             with batch_session(repo):
                 for name in names:
                     action = update_resource(repo, name, args.kind, force=args.force)
-                    if action == "current":
-                        console.print(f"[cyan]{name}[/cyan] is already up to date.")
-                    elif action == "pulled":
-                        console.print(f"Updated local [cyan]{name}[/cyan] from the library.")
-                    else:
-                        console.print(f"Updated library [cyan]{name}[/cyan] from local.")
+                    status, style = statuses[action]
+                    row = Text(f"{name:<{name_width}}  ", style="cyan")
+                    row.append(status, style=style)
+                    console.print(row)
             return 0
 
         if args.command == "remove":
