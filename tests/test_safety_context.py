@@ -1194,3 +1194,40 @@ def _tool_call_msg(name, args_json):
         content=None,
         tool_calls=[ToolCall("t1", name, args_json)],
     )
+
+
+@pytest.mark.parametrize('status, text', [
+    (400, 'content_length_limit: Request content length exceeded 32 MB limit.'),
+    (413, 'Request rejected'),
+])
+def test_payload_overflow_without_images_compacts_once_then_fails(status, text):
+    from ene.providers.types import ProviderError
+
+    compactions = []
+    calls = []
+
+    def completion(request):
+        calls.append(request)
+        raise ProviderError(text, status_code=status)
+
+    with pytest.raises(RuntimeError, match='HTTP body-size limit is separate'):
+        LLMAgent.call_api(_overflow_agent(completion, compactions))
+    assert compactions == ['Request byte limit reported by the API']
+    assert len(calls) == 2
+
+
+def test_payload_size_text_in_rate_limit_is_not_compacted():
+    from ene.providers.types import ProviderError
+
+    compactions = []
+    calls = []
+
+    def completion(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise ProviderError('payload too large for rate limit', status_code=429)
+        return CompletionResult(Message.assistant('ok'), ProviderUsage(10, 1, 11), 'stop')
+
+    LLMAgent.call_api(_overflow_agent(completion, compactions))
+    assert compactions == []
+    assert len(calls) == 2

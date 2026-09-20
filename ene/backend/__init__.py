@@ -109,6 +109,22 @@ def _is_context_overflow_error(exc: Exception) -> bool:
     return any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS)
 
 
+def _is_payload_overflow_error(exc: Exception) -> bool:
+    """HTTP body-size limits are independent of the model's token window."""
+    if getattr(exc, "status_code", None) == 413:
+        return True
+    text = str(exc).lower()
+    return getattr(exc, "code", None) == "content_length_limit" or any(
+        marker in text for marker in (
+            "content_length_limit",
+            "request content length exceeded",
+            "request body too large",
+            "request entity too large",
+            "payload too large",
+        )
+    )
+
+
 def _is_fatal_api_error(exc: Exception) -> bool:
     """Whether *exc* is a permanent client error that retrying cannot fix.
 
@@ -430,9 +446,12 @@ class LLMAgent(
         counting alone cannot see.
         """
         image_count = self.context.image_count
-        if image_count and not self.profile.supports_image_input:
-            messages = self.context.get(include_images=False)
-            return self.token_estimator.prompt_tokens(estimate_context_chars(messages))
+        if image_count:
+            messages = self.context.get(include_images=self.profile.supports_image_input)
+            return self.token_estimator.prompt_tokens(
+                estimate_context_chars(messages),
+                sum(message.image_count for message in messages),
+            )
         return self.token_estimator.prompt_tokens(
             self.context.total_chars, image_count,
         )
@@ -594,19 +613,40 @@ class LLMAgent(
                 raise  # user cancelled — never retry, let get_response roll back
             except Exception as e:
                 if _is_fatal_api_error(e):
-                    # An oversized prompt is the one permanent error the client
-                    # can fix by itself: the estimate was wrong. Compact once
-                    # and retry. Checked inside the fatal branch so a retryable
-                    # rate limit that happens to mention tokens cannot match.
-                    if not overflow_recovered and _is_context_overflow_error(e):
+                    # Size errors are repairable only after changing the payload.
+                    # Keep recovery bounded, and never classify a retryable rate
+                    # limit by incidental mentions of tokens or payload size.
+                    payload_overflow = _is_payload_overflow_error(e)
+                    if not overflow_recovered and (
+                        payload_overflow or _is_context_overflow_error(e)
+                    ):
                         overflow_recovered = True
-                        if self._run_compaction("Context overflow reported by the API"):
+                        shrank_images = (
+                            payload_overflow
+                            and any(message.image_count for message in messages)
+                            and self.context.shrink_image_payload()
+                        )
+                        if shrank_images:
+                            self.console.system(
+                                "Request byte limit reported by the API — "
+                                "omitting older images from requests (saved history retained)"
+                            )
+                        reason = (
+                            "Request byte limit reported by the API"
+                            if payload_overflow else "Context overflow reported by the API"
+                        )
+                        if shrank_images or self._run_compaction(reason):
                             messages, request = build_request()
                             continue
                     # Permanent client error — retrying cannot help. Surface it
                     # as RuntimeError so get_response ends the turn gracefully.
                     status = getattr(e, "status_code", "?")
-                    raise RuntimeError(f"API request rejected (HTTP {status}): {e}") from e
+                    hint = (
+                        " Reduce image sizes or use /clear to start a new session; "
+                        "the HTTP body-size limit is separate from the token window."
+                        if payload_overflow else ""
+                    )
+                    raise RuntimeError(f"API request rejected (HTTP {status}): {e}{hint}") from e
                 retry_count += 1
                 self.console.system(
                     f"[Retry {retry_count}] {e} — retrying in {wait_time:.1f}s…"

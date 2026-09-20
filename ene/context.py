@@ -16,12 +16,67 @@ from __future__ import annotations
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from ene.messages import Message, ToolCall
+from ene.messages import ContentPart, ImagePart, Message, TextPart, ToolCall
 from ene.ui import AgentConsole
 from ene.utils.interrupt import RequestInterrupted
+
+
+# Base64 bytes are not tokens. Leave room below common 32 MB HTTP body limits
+# for text, tool schemas, and provider framing. This is not a total-body limit.
+MAX_IMAGE_PAYLOAD_BYTES = 24 * 1024 * 1024
+
+
+def _inline_image_bytes(part: ContentPart) -> int:
+    if not isinstance(part, ImagePart):
+        return 0
+    url = part.image_url
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return 0
+    return len(url) if url.isascii() else len(url.encode("utf-8"))
+
+
+def _image_payload_sizes(messages: list[Message]) -> list[int]:
+    return [size for message in messages if isinstance(message.content, list)
+            for part in message.content if (size := _inline_image_bytes(part))]
+
+
+def limit_image_payload(messages: list[Message], max_bytes: int) -> list[Message]:
+    """Project out oldest inline images without changing the saved history."""
+    sizes = _image_payload_sizes(messages)
+    remaining = sum(sizes)
+    if remaining <= max_bytes:
+        return messages
+    if sizes[-1] > MAX_IMAGE_PAYLOAD_BYTES:
+        raise RuntimeError(
+            "The newest image exceeds the request image-byte budget; "
+            "resize or compress it, then retry in a new session (/clear)."
+        )
+    # A budget learned from older, smaller images must not prevent sending a
+    # new, larger image. Always keep the newest, subject to the default cap.
+    max_bytes = max(max_bytes, sizes[-1])
+    result = []
+    for message in messages:
+        if remaining <= max_bytes or not isinstance(message.content, list):
+            result.append(message)
+            continue
+        parts = []
+        for part in message.content:
+            size = _inline_image_bytes(part)
+            if size and remaining > max_bytes:
+                remaining -= size
+                parts.append(TextPart(
+                    "[Older image omitted to fit the request byte limit; "
+                    "use read_image to inspect it again if needed.]"
+                ))
+            else:
+                parts.append(part)
+        result.append(replace(message, content=parts))
+    return result
 
 
 class ContextManager:
@@ -34,6 +89,7 @@ class ContextManager:
     def __init__(self, system_prompt: str):
         self.system_prompt = Message.system(system_prompt)
         self.messages: list[Message] = []
+        self.image_payload_budget = MAX_IMAGE_PAYLOAD_BYTES
         # Facts compaction has already summarized the evidence away for; see
         # CompactionState. Empty until the first pass.
         self.compaction_state = CompactionState()
@@ -96,7 +152,17 @@ class ContextManager:
                 ) if message.image_count else message
                 for message in messages
             ]
+        else:
+            messages = limit_image_payload(messages, self.image_payload_budget)
         return messages
+
+    def shrink_image_payload(self) -> bool:
+        """Reduce sent image bytes after a body-size rejection, keeping the newest."""
+        sizes = _image_payload_sizes(self.get())
+        if len(sizes) <= 1:
+            return False
+        self.image_payload_budget = max(sizes[-1], sum(sizes) // 2)
+        return True
 
     def replace_messages(self, new_messages: list[Message]) -> None:
         # A same-object call is a no-op (content unchanged) so the cache stays

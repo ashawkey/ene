@@ -27,8 +27,19 @@ Images loaded with `read_image` remain in conversation history for subsequent
 tool rounds and follow-up questions. Saved sessions retain the image bytes, so
 resuming does not require the original file. Images remain available until their
 messages are removed by context compaction, rewind, or clearing the conversation.
-Repeated requests to image-capable models include the retained images and their
-image-token costs. Switching to a text-only model sends a text placeholder instead;
+Repeated requests to image-capable models include retained images and their
+image-token costs, subject to a separate byte budget. Inline image data is capped
+at 24 MiB per request to leave headroom below common 32 MB HTTP body limits.
+Older images are replaced with text placeholders in outgoing requests when
+necessary; their saved bytes are not deleted. The newest image is kept (an image
+larger than 24 MiB must be resized or compressed). A gateway body-size
+rejection (`content_length_limit` or HTTP 413) triggers one recovery attempt:
+reduce older image payloads, or try context compaction if images cannot shrink.
+The reduced image budget applies to subsequent requests in the live context,
+while still preserving the newest image.
+If recovery fails, reduce attachment sizes or use `/clear` to start a new session;
+raising `context_length` does not raise the gateway's byte limit.
+Switching to a text-only model sends a text placeholder instead;
 the saved image bytes remain available when switching back. Image tool payloads
 are not treated as user prompts in session previews, replay, or rewind.
 Context sizing uses reported prompt usage when available and a 2,048-token

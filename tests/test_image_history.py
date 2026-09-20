@@ -285,3 +285,131 @@ def test_image_allowance_is_separate_from_text_calibration():
     # Removing an image whose real cost was less than the allowance must not
     # subtract the allowance from the measured count and erase text usage.
     assert estimator.prompt_tokens(4000, 0) == 1000
+
+
+def test_image_byte_budget_omits_oldest_without_changing_saved_history():
+    from ene.messages import RawPart, TextPart
+
+    context = ContextManager('system')
+    context.image_payload_budget = 2 * len(URL)
+    messages = [Message.user([
+        TextPart(f'image {i}'), ImagePart({'url': URL}), RawPart({'other': i}),
+    ], display_content='') for i in range(3)]
+    for message in messages:
+        context.add(message)
+
+    projected = context.get()
+    assert len(_images(projected)) == 2
+    assert 'Older image omitted' in projected[1].text
+    assert projected[1].content[-1] is messages[0].content[-1]
+    assert projected[1].display_content == ''
+    assert projected[-2:] == messages[-2:]
+    assert _images(context.messages) == [{'url': URL}] * 3
+    assert context.messages == messages
+
+
+def test_image_byte_budget_boundary_and_oversized_newest(monkeypatch):
+    context = ContextManager('system')
+    message = Message.user([ImagePart(URL)])
+    context.add(message)
+    context.image_payload_budget = len(URL)
+    assert context.get()[-1] is message
+    assert not context.shrink_image_payload()
+    context.image_payload_budget -= 1
+    # An adaptive budget must not hide the newest image, but the default cap
+    # still rejects one image that is too large to send by itself.
+    assert _images(context.get()) == [URL]
+    monkeypatch.setattr('ene.context.MAX_IMAGE_PAYLOAD_BYTES', len(URL) - 1)
+    with pytest.raises(RuntimeError, match='resize or compress'):
+        context.get()
+    assert not _images(context.get(include_images=False))
+
+
+def test_image_byte_budget_handles_multiple_parts_and_remote_urls():
+    from ene.messages import TextPart
+
+    context = ContextManager('system')
+    remote = ImagePart({'url': 'https://example.com/image.png'})
+    context.add(Message.user([
+        ImagePart(URL), TextPart('compare'), remote, ImagePart({'url': URL}),
+    ]))
+    context.image_payload_budget = len(URL)
+    projected = context.get()[-1]
+    assert _images([projected]) == [remote.image_url, {'url': URL}]
+    assert 'compare' in projected.text
+    assert context.image_count == 3
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('status', [400, 413])
+def test_payload_overflow_retries_with_fewer_image_bytes(tmp_path, stream, status):
+    from ene.providers.types import ProviderError
+
+    agent = _agent(tmp_path)
+    agent.stream = stream
+    for _ in range(3):
+        agent.context.add(Message.user([ImagePart({'url': URL})]))
+    original = list(agent.context.messages)
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        if len(requests) == 1:
+            raise ProviderError(
+                'litellm.BadRequestError: Azure_aiException - '
+                '{"error":{"code":"content_length_limit",'
+                '"message":"Request content length exceeded 32 MB limit."}}',
+                status_code=status,
+            )
+        return CompletionResult(Message.assistant('ok'), ProviderUsage(100, 1, 101), 'stop')
+
+    agent._blocking_completion = agent._stream_completion = complete
+    agent._run_compaction = lambda _: pytest.fail('Images should shrink without token compaction')
+    assert LLMAgent.call_api(agent).text == 'ok'
+    assert [len(_images(request.messages)) for request in requests] == [3, 1]
+    assert agent.context.messages[:3] == original
+    # A lower gateway limit is remembered for later calls in this live context.
+    LLMAgent.call_api(agent)
+    assert len(_images(requests[-1].messages)) == 1
+
+
+def test_payload_overflow_with_one_image_gives_actionable_failure(tmp_path):
+    from ene.providers.types import ProviderError
+
+    agent = _agent(tmp_path)
+    agent.context.add(Message.user([ImagePart(URL)]))
+    calls = []
+
+    def complete(request):
+        calls.append(request)
+        raise ProviderError('too big', status_code=413)
+
+    agent._blocking_completion = complete
+    agent._run_compaction = lambda _: False
+    with pytest.raises(RuntimeError, match='HTTP body-size limit is separate'):
+        LLMAgent.call_api(agent)
+    assert len(calls) == 1
+    assert _images(agent.context.messages) == [URL]
+
+
+def test_three_large_images_fit_under_32mb_after_request_projection(tmp_path):
+    agent = _agent(tmp_path)
+    large_url = 'data:image/png;base64,' + 'a' * (8 * 1024 * 1024 * 4 // 3)
+    for _ in range(3):
+        agent.context.add(Message.user([ImagePart({'url': large_url})]))
+    # Token pressure alone cannot see this >32 MB payload.
+    assert LLMAgent._context_tokens(agent) < 10_000
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        body = OpenAICompatibleProvider(ProviderSettings())._kwargs(request)
+        assert len(json.dumps(body).encode('utf-8')) < 32_000_000
+        return CompletionResult(Message.assistant('ok'), ProviderUsage(5000, 1, 5001), 'stop')
+
+    agent._blocking_completion = complete
+    LLMAgent.call_api(agent)
+    assert len(requests) == 1
+    assert len(_images(requests[0].messages)) == 2
+    assert agent.context.image_count == 3
+    assert 5000 <= LLMAgent._context_tokens(agent) < 5100
