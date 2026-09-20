@@ -105,6 +105,41 @@ def test_ctrl_c_exit_hint_uses_system_message(monkeypatch):
     system_message.assert_called_once_with("press Ctrl+C again to exit")
 
 
+@pytest.mark.parametrize("persistent", [False, True])
+def test_ctrl_z_undoes_input_edits(persistent):
+    terminal = object.__new__(TerminalInput)
+    terminal._persistent = persistent
+    bindings = terminal._create_keybindings()
+    binding = next(b for b in bindings.bindings if b.keys == (Keys.ControlZ,))
+    buffer = Buffer()
+    event = SimpleNamespace(current_buffer=buffer)
+
+    # Undo itself must not create another snapshot or clear the redo stack.
+    assert not binding.save_before(event)
+    binding.handler(event)  # Nothing to undo yet.
+    assert buffer.text == ""
+
+    buffer.save_to_undo_stack()
+    buffer.insert_text("hello\nworld")
+    buffer.save_to_undo_stack()
+    buffer.delete_before_cursor(count=5)
+
+    binding.handler(event)
+    assert buffer.text == "hello\nworld"
+    assert buffer.cursor_position == len(buffer.text)
+    binding.handler(event)
+    assert buffer.text == ""
+    assert buffer.cursor_position == 0
+    binding.handler(event)
+    assert buffer.text == ""
+
+    buffer.redo()
+    assert buffer.text == "hello\nworld"
+    buffer.reset()
+    binding.handler(event)
+    assert buffer.text == ""  # A new prompt cannot undo a previous message.
+
+
 def test_ctrl_k_kills_persistent_session():
     terminal = object.__new__(TerminalInput)
     terminal._persistent = True

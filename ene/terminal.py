@@ -686,6 +686,10 @@ class TerminalInput:
         def _(event):
             event.current_buffer.insert_text("\n")
 
+        @kb.add("c-z", filter=~is_searching, save_before=lambda event: False)
+        def _(event):
+            event.current_buffer.undo()
+
         @kb.add("c-c", filter=~is_searching)
         def _(event):
             buf = event.current_buffer

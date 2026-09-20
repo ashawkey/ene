@@ -103,6 +103,7 @@ Prefix a command with `!` to run it directly without involving the model:
 |-----|--------|
 | `Enter` | Send message |
 | `Escape` → `Enter` | Insert a newline |
+| `Ctrl+Z` | Undo an edit in the current input (does not retract sent messages) |
 | `Ctrl+C` (non-empty prompt) | Clear the current input |
 | `Ctrl+C` (empty prompt, twice) | Exit the agent |
 | `Ctrl+C` / `Esc` (while Ene is working) | Cancel the current operation |
