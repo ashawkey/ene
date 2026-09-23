@@ -66,7 +66,9 @@ batch jobs, and models selected for recap or compaction.
 Responses mode supports streaming, images, function calls, and structured JSON
 output. Ene uses `store: false` and carries returned output items, including
 encrypted reasoning when the service supplies it, in local conversation and
-session history. Gateway support for individual features can vary. The
+session history. Replayed items retain API field names and omit fields the
+service did not return, including defaults added by newer OpenAI SDKs.
+Gateway support for individual features can vary. The
 `openai-codex` subscription provider always uses Responses independently of this
 API-key setting.
 

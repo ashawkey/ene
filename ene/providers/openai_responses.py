@@ -36,7 +36,11 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
         self._activate(client)
         try:
             response = client.responses.create(**self._kwargs(request))
-            return response_result(response.model_dump(), request.model, self._state_key)
+            # Replay API field names without introducing SDK-only defaults.
+            return response_result(
+                response.model_dump(by_alias=True, exclude_unset=True),
+                request.model, self._state_key,
+            )
         finally:
             self._release(client)
 
@@ -51,7 +55,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
             self._release(client)
             raise
         return ResponsesCompletionStream(
-            (event.model_dump() for event in raw_stream),
+            (event.model_dump(by_alias=True, exclude_unset=True) for event in raw_stream),
             request.model, raw_stream.close, lambda: self._release(client),
             state_key=self._state_key,
         )

@@ -69,26 +69,35 @@ def test_api_selection_defaults_and_validation():
             create_provider('openai', ProviderSettings(api=invalid))
 
 
-@pytest.mark.parametrize('streaming', [False, True])
-def test_responses_tool_round_trip_with_images_and_encrypted_state(monkeypatch, streaming):
+@pytest.mark.parametrize(('streaming', 'fallback_output'), [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize('tool_fields', [{}, {'async': False}, {'async': True}, {'async': None}])
+def test_responses_tool_round_trip_with_images_and_encrypted_state(
+    monkeypatch, streaming, fallback_output, tool_fields,
+):
     requests = []
+    original_output = [OUTPUT[0], {**OUTPUT[1], **tool_fields}]
 
     def handler(request):
         assert request.url == 'https://gateway.test/prefix/responses'
         assert request.headers['authorization'] == 'Bearer test-key'
         body = json.loads(request.content)
         requests.append(body)
-        output = OUTPUT if len(requests) == 1 else [
+        output = original_output if len(requests) == 1 else [
             {'type': 'message', 'id': 'msg_1', 'role': 'assistant', 'status': 'completed',
              'content': [{'type': 'output_text', 'text': 'Red.', 'annotations': []}]},
         ]
         response = _response(output)
         if body['stream']:
-            return _sse([
+            events = [
                 {'type': 'response.reasoning_summary_text.delta', 'delta': 'Inspecting.'},
                 {'type': 'response.output_text.delta', 'delta': 'Red.' if len(requests) > 1 else ''},
-                {'type': 'response.completed', 'response': response},
-            ])
+            ]
+            if fallback_output:
+                events.extend(
+                    {'type': 'response.output_item.done', 'output_index': index, 'item': item}
+                    for index, item in enumerate(response.pop('output'))
+                )
+            return _sse([*events, {'type': 'response.completed', 'response': response}])
         return httpx.Response(200, json=response)
 
     provider, clients = _provider(monkeypatch, handler)
@@ -132,8 +141,10 @@ def test_responses_tool_round_trip_with_images_and_encrypted_state(monkeypatch, 
     assert 'timeout' not in first
     assert 'provider_state' not in json.dumps(second)
     replayed = second['input'][1:3]
-    assert replayed[0]['encrypted_content'] == 'opaque-reasoning'
-    assert replayed[1]['call_id'] == 'call_1'
+    # Replay wire fields exactly: no SDK-only names (async_) or unset defaults.
+    # Explicit false/null values must survive, as must encrypted reasoning.
+    assert 'async_' not in replayed[1]
+    assert replayed == original_output
     assert second['input'][3] == {'type': 'function_call_output', 'call_id': 'call_1', 'output': 'Image loaded'}
     assert second['input'][-1]['content'][-1] == {
         'type': 'input_image', 'image_url': 'data:image/png;base64,AA==', 'detail': 'original',
