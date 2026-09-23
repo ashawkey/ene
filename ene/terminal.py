@@ -686,21 +686,29 @@ class TerminalInput:
         def _(event):
             event.current_buffer.insert_text("\n")
 
+        # CSI-u encodes Command (Super) as modifier 9. Terminals that intercept
+        # Command shortcuts must instead map them to the corresponding Ctrl key.
+        @kb.add("escape", *"[122;9u", filter=~is_searching, save_before=lambda event: False)
         @kb.add("c-z", filter=~is_searching, save_before=lambda event: False)
         def _(event):
             event.current_buffer.undo()
 
+        @kb.add("escape", *"[114;9u", filter=~is_searching, save_before=lambda event: False)
+        @kb.add("c-r", filter=~is_searching, save_before=lambda event: False)
+        def _(event):
+            event.current_buffer.redo()
+
         @kb.add("c-c", filter=~is_searching)
         def _(event):
             buf = event.current_buffer
+            if buf.text:
+                # Clear a draft before cancelling, even while the agent is busy.
+                buf.reset()
+                self._last_ctrl_c = 0.0
+                return
             if self._busy:
                 if self._cancel is not None:
                     self._cancel()
-                return
-            if buf.text:
-                # Non-empty prompt: Ctrl+C just clears what's typed.
-                buf.reset()
-                self._last_ctrl_c = 0.0
                 return
             # Empty prompt: arm on first press, quit on a second within 1s.
             now = time.monotonic()

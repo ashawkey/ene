@@ -90,6 +90,35 @@ def test_terminal_does_not_disable_cursor_position_reporting(monkeypatch):
     assert "output" not in kwargs
 
 
+@pytest.mark.parametrize("busy", [False, True])
+@pytest.mark.parametrize("text", ["draft\nprompt", "   "])
+def test_ctrl_c_clears_draft_before_cancelling(busy, text):
+    terminal = object.__new__(TerminalInput)
+    terminal._busy = busy
+    terminal._cancel = Mock()
+    terminal._last_ctrl_c = 123.0
+    terminal._system_message = Mock()
+    bindings = terminal._create_keybindings()
+    handler = next(b.handler for b in bindings.bindings if b.keys == (Keys.ControlC,))
+    buffer = Buffer(document=Document(text, cursor_position=len(text)))
+    app = Mock()
+    event = SimpleNamespace(current_buffer=buffer, app=app)
+
+    handler(event)
+
+    assert buffer.text == ""
+    assert buffer.cursor_position == 0
+    assert terminal._last_ctrl_c == 0.0
+    terminal._cancel.assert_not_called()
+    terminal._system_message.assert_not_called()
+    app.exit.assert_not_called()
+
+    if busy:
+        handler(event)  # Only the second press, with no draft, cancels the agent.
+        terminal._cancel.assert_called_once_with()
+        app.exit.assert_not_called()
+
+
 def test_ctrl_c_exit_hint_uses_system_message(monkeypatch):
     system_message = Mock()
     terminal = object.__new__(TerminalInput)
@@ -106,17 +135,24 @@ def test_ctrl_c_exit_hint_uses_system_message(monkeypatch):
 
 
 @pytest.mark.parametrize("persistent", [False, True])
-def test_ctrl_z_undoes_input_edits(persistent):
+@pytest.mark.parametrize("undo_keys,redo_keys", [
+    ((Keys.ControlZ,), (Keys.ControlR,)),
+    ((Keys.Escape, *"[122;9u"), (Keys.Escape, *"[114;9u")),
+])
+def test_undo_redo_input_edits(persistent, undo_keys, redo_keys):
     terminal = object.__new__(TerminalInput)
     terminal._persistent = persistent
     bindings = terminal._create_keybindings()
-    binding = next(b for b in bindings.bindings if b.keys == (Keys.ControlZ,))
+    undo = next(b for b in bindings.bindings if b.keys == undo_keys)
+    redo = next(b for b in bindings.bindings if b.keys == redo_keys)
     buffer = Buffer()
     event = SimpleNamespace(current_buffer=buffer)
 
-    # Undo itself must not create another snapshot or clear the redo stack.
-    assert not binding.save_before(event)
-    binding.handler(event)  # Nothing to undo yet.
+    # Neither operation should create a snapshot or clear the redo stack.
+    assert not undo.save_before(event)
+    assert not redo.save_before(event)
+    undo.handler(event)
+    redo.handler(event)
     assert buffer.text == ""
 
     buffer.save_to_undo_stack()
@@ -124,20 +160,84 @@ def test_ctrl_z_undoes_input_edits(persistent):
     buffer.save_to_undo_stack()
     buffer.delete_before_cursor(count=5)
 
-    binding.handler(event)
+    undo.handler(event)
     assert buffer.text == "hello\nworld"
     assert buffer.cursor_position == len(buffer.text)
-    binding.handler(event)
+    undo.handler(event)
     assert buffer.text == ""
     assert buffer.cursor_position == 0
-    binding.handler(event)
+    undo.handler(event)
     assert buffer.text == ""
 
-    buffer.redo()
+    redo.handler(event)
     assert buffer.text == "hello\nworld"
+    assert buffer.cursor_position == len(buffer.text)
+    redo.handler(event)
+    assert buffer.text == "hello\n"
+    assert buffer.cursor_position == len(buffer.text)
+    redo.handler(event)
+    assert buffer.text == "hello\n"
+
+    undo.handler(event)
+    buffer.save_to_undo_stack()
+    buffer.insert_text("!")
+    redo.handler(event)
+    assert buffer.text == "hello\nworld!"  # Editing invalidates the redo branch.
+
+    undo.handler(event)
     buffer.reset()
-    binding.handler(event)
-    assert buffer.text == ""  # A new prompt cannot undo a previous message.
+    redo.handler(event)
+    undo.handler(event)
+    assert buffer.text == ""  # A new prompt cannot restore a previous message.
+
+
+def test_undo_redo_bindings_leave_history_search_unchanged(monkeypatch):
+    terminal = object.__new__(TerminalInput)
+    bindings = terminal._create_keybindings()
+    keys = {
+        (Keys.ControlZ,), (Keys.ControlR,),
+        (Keys.Escape, *"[122;9u"), (Keys.Escape, *"[114;9u"),
+    }
+    layout = SimpleNamespace(is_searching=False)
+    monkeypatch.setattr(
+        "prompt_toolkit.filters.app.get_app", lambda: SimpleNamespace(layout=layout)
+    )
+    for binding in bindings.bindings:
+        if binding.keys in keys:
+            assert binding.filter()
+            layout.is_searching = True
+            assert not binding.filter()
+            layout.is_searching = False
+
+
+@pytest.mark.parametrize("undo,redo", [
+    ("\x1a", "\x12"),
+    ("\x1b[122;9u", "\x1b[114;9u"),
+    ("\x1a", "\x1b[114;9u"),
+    ("\x1b[122;9u", "\x12"),
+])
+def test_undo_redo_terminal_sequences(undo, redo):
+    import asyncio
+
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    async def run():
+        terminal = object.__new__(TerminalInput)
+        terminal._busy = False
+        with create_pipe_input() as pipe:
+            session = PromptSession(
+                input=pipe, output=DummyOutput(),
+                key_bindings=terminal._create_keybindings(),
+            )
+            # Undo a paste, replace it, then round-trip undo/redo. This checks
+            # actual parsing and dispatch, not just direct handler calls.
+            pipe.send_text("\x1b[200~discard\x1b[201~" + undo)
+            pipe.send_text("\x1b[200~hello\nworld\x1b[201~" + undo + redo + "\r")
+            return await asyncio.wait_for(session.prompt_async(), timeout=5)
+
+    assert asyncio.run(run()) == "hello\nworld"
 
 
 def test_ctrl_k_kills_persistent_session():
