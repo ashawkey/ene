@@ -104,16 +104,17 @@ Prefix a command with `!` to run it directly without involving the model:
 | `Enter` | Send message |
 | `Escape` → `Enter` | Insert a newline |
 | `Ctrl+Z` / `Cmd+Z` (macOS, see below) | Undo an edit in the current input (does not retract sent messages) |
-| `Ctrl+R` / `Cmd+R` (macOS, see below) | Redo an undone input edit |
+| `Ctrl+R` | Search input history backward |
+| `Ctrl+S` (persistent session) | Switch sessions |
 | `Ctrl+C` (non-empty prompt) | Clear the current input, even while Ene is working; do not cancel the operation |
 | `Ctrl+C` (empty prompt, idle, twice) | Exit the agent |
 | `Ctrl+C` (empty prompt, while Ene is working) | Cancel the current operation |
 | `Esc` (while Ene is working) | Cancel the current operation, regardless of input |
 | `Up` (empty prompt with a queued message) | Move the queued message back into the editor |
 
-Undo/redo applies only to the current unsent input. A new edit clears the redo history. `Ctrl+R` now means redo in the editor; use `Ctrl+S` to enter history search, where `Ctrl+R` still searches backward.
+Undo applies only to the current unsent input.
 
-On macOS, `Ctrl+Z` and `Ctrl+R` work directly. Command keys depend on the terminal: Ene accepts CSI-u `Cmd+Z` (`ESC [ 122 ; 9 u`) and `Cmd+R` (`ESC [ 114 ; 9 u`) when forwarded. If your terminal intercepts them, configure its key mappings to send `Ctrl+Z` (hex `1a`) for `Cmd+Z` and `Ctrl+R` (hex `12`) for `Cmd+R`. For example, in iTerm2's profile key mappings, use **Send Hex Code** with `0x1a` and `0x12`. Ene cannot receive Command shortcuts reserved by the terminal or OS.
+On macOS, `Ctrl+Z` works directly. Command keys depend on the terminal: Ene accepts CSI-u `Cmd+Z` (`ESC [ 122 ; 9 u`) when forwarded. If your terminal intercepts it, configure its key mapping to send `Ctrl+Z` (hex `1a`) for `Cmd+Z`. For example, in iTerm2's profile key mappings, use **Send Hex Code** with `0x1a`. Ene cannot receive Command shortcuts reserved by the terminal or OS.
 
 ## Working while a round is active
 
