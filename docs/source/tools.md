@@ -1,6 +1,6 @@
 # Tools
 
-The agent has access to the following tools:
+Built-in tools (availability depends on the model and persona):
 
 | Tool | Description |
 |------|-------------|
@@ -15,70 +15,56 @@ The agent has access to the following tools:
 | `glob_files` | Find files matching a glob pattern (gitignore-aware) |
 | `grep_files` | Search file contents using ripgrep regex (gitignore-aware) |
 | `web_search` | Search the web via DuckDuckGo |
-| `web_fetch` | Fetch and parse content from a URL with an interruptible 30-second overall timeout; honors `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SOCKS_PROXY`, and `NO_PROXY` from the environment |
+| `web_fetch` | Fetch readable URL content; interruptible 30-second timeout; honors proxy environment variables |
 | `remove_file` | Remove a file or directory |
 | `load_skill` | Load the full prompt instructions for a skill by name |
 | `start_process` | Start a managed background process with file-backed output and live status |
 | `inspect_processes` | Inspect one or all managed background processes, with an optional bounded log tail for one process |
-| `wait_processes` | Block until a selected managed process exits, optionally writes output, or an optional timeout expires; omit the timeout for ordinary finite jobs |
+| `wait_processes` | Wait for process exit, optional output, or a timeout; omit timeout for finite jobs |
 | `stop_process` | Stop a managed background process and its child process tree |
 
-Images loaded with `read_image` remain in conversation history for subsequent
-tool rounds and follow-up questions. Saved sessions retain the image bytes, so
-resuming does not require the original file. Images remain available until their
-messages are removed by context compaction, rewind, or clearing the conversation.
-Repeated requests to image-capable models include retained images and their
-image-token costs, subject to a separate byte budget. Inline image data is capped
-at 24 MiB per request to leave headroom below common 32 MB HTTP body limits.
-Older images are replaced with text placeholders in outgoing requests when
-necessary; their saved bytes are not deleted. The newest image is kept (an image
-larger than 24 MiB must be resized or compressed). A gateway body-size
-rejection (`content_length_limit` or HTTP 413) triggers one recovery attempt:
-reduce older image payloads, or try context compaction if images cannot shrink.
-The reduced image budget applies to subsequent requests in the live context,
-while still preserving the newest image.
-If recovery fails, reduce attachment sizes or use `/clear` to start a new session;
-raising `context_length` does not raise the gateway's byte limit.
-Switching to a text-only model sends a text placeholder instead;
-the saved image bytes remain available when switching back. Image tool payloads
-are not treated as user prompts in session previews, replay, or rewind.
-Context sizing uses reported prompt usage when available and a 2,048-token
-planning allowance per added or unmeasured image; actual costs vary by model,
-resolution, and detail. Image costs are kept separate from text calibration and
-included when deciding which older messages to compact.
+`web_fetch` honors `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SOCKS_PROXY`, and `NO_PROXY`.
 
-Managed background process tools are built into ene so permitted model calls,
-the `/ps` command, and the live terminal/web status use the same process
-registry. Like other built-in model tools, their advertisement is subject to
-the active persona's tool policy; `/ps` and live status remain available to the
-UI.
+## Images
 
-While jobs are active, the terminal shows running and finished counts followed by
-one line per running process. The Web UI presents the same activity as individual
-rows in the composer dock. Both include the managed ID, label, automatically
-formatted runtime, and latest log line. Managed IDs are short session-local
-numbers (`1`, `2`, ...). Use `/ps` to list all jobs with their latest output,
-`/ps <label|process-id> [tail-chars]` for details and recent output, or
-`/ps stop <label|process-id>` to stop one manually. Combined
-output is stored in `.ene/processes/<process-id>-<unique-suffix>.log`.
+- `read_image` retains images across turns and saved sessions; the original file is not needed to resume.
+- Images remain until compaction, rewind, or clearing removes their messages. They are not user prompts in previews or replay.
+- Image-capable requests resend retained images and incur their token costs. Text-only models receive placeholders; switching back restores image access.
 
-Processes are live-session-scoped. They survive terminal detach and session switching, but are terminated on explicit exit or `ene kill`. The bundled `monitor` skill adds an active-monitoring workflow. For periodic monitoring, call the core `wait` tool first and put the inspection or status calls after it in the same sequential tool-call batch; do not group the wait and checks in parallel.
+### Limits and recovery
+
+- **24 MiB inline-image budget per request.** Older images become outgoing text placeholders; saved bytes remain intact.
+- The newest image is kept. Resize or compress any image larger than 24 MiB.
+- `content_length_limit` or HTTP 413 triggers one recovery attempt: shrink older image payloads, or compact context if they cannot shrink. The reduced budget persists in the live context, preserving the newest image.
+- If recovery fails, reduce attachments or use `/clear`. Increasing `context_length` cannot raise a gateway's byte limit.
+- Context sizing uses reported prompt usage plus a **2,048-token allowance** per added or unmeasured image. Actual costs vary; image costs are separate from text calibration and count toward compaction.
+
+## Background processes
+
+- Model tools, `/ps`, and terminal/Web UI status share one registry. Persona policy limits model tools, not `/ps` or live status.
+- Processes survive detach and session switching; explicit exit or `ene kill` terminates them.
+- Status shows each running process's session-local ID (`1`, `2`, …), label, runtime, and latest log line. The terminal also shows running/finished counts; the Web UI uses composer-dock rows.
+- Logs: `.ene/processes/<process-id>-<unique-suffix>.log`.
+
+| Command | Action |
+|---|---|
+| `/ps` | List jobs and latest output |
+| `/ps <label\|process-id> [tail-chars]` | Inspect details and recent output |
+| `/ps stop <label\|process-id>` | Stop a job |
+
+Use the bundled `monitor` skill for active monitoring. For periodic checks, call `wait` **before** inspection in the same sequential tool-call batch, never in parallel.
 
 ## Skill-provided tools
 
-A trusted skill may ship executable Python in a root `tools.py` (a module-level `TOOLS` list of `{schema, run, describe, describe_output}` entries; both descriptors are optional). `describe(arguments)` returns a `ToolCallDescription` for the call
-label. `describe_output(result)` returns a concise string for the successful
-result; failures use the standard error formatter. This keeps each skill's
-call and result semantics beside its tools while the shared UI owns rendering.
-The full result still goes to the model, while the concise output is persisted
-for consistent live and replay display. A skill's tools are registered on its first load and remain available for that session. `/skills reload` removes tools only when their skill is no longer discovered; use `/clear` or restart Ene to reload an edited `tools.py`. A schema collision or broken `tools.py` fails the skill load instead of partially registering its tools.
+**Install only trusted skills:** a root `tools.py` executes Python in Ene's process.
 
-The bundled **batch** skill uses the agent's already configured provider to
-run direct, tool-free model requests without exposing credentials to the skill.
-It adds bounded parallelism, structured output, durable JSONL results, and
-resume support. See its
-[batch instructions](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/batch/SKILL.md)
-for the workflow.
+- Define a module-level `TOOLS` list with `{schema, run, describe, describe_output}` entries; both descriptors are optional.
+- `describe(arguments)` returns a `ToolCallDescription` label.
+- `describe_output(result)` returns a short success summary for live/replay display; failures use the standard formatter. The model receives the full result.
+- Tools register on first skill load and remain for the session. A collision or broken `tools.py` fails the load without partial registration.
+- `/skills reload` removes tools only for skills no longer discovered. Use `/clear` or restart to reload edited Python.
+
+The [batch skill](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/batch/SKILL.md) adds parallel, tool-free requests through the configured provider, without exposing credentials to the skill. It supports structured output and resumable JSONL results.
 
 | Tool | Description |
 |------|-------------|

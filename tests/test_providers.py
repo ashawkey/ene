@@ -282,14 +282,32 @@ def test_openai_provider_stream_is_closed_and_normalized(monkeypatch):
     assert client.close_calls == 1
 
 
-@pytest.mark.parametrize("model, alias", [
-    ("gpt-6-astra", ""), ("openai/GPT-6-ASTRA", ""), ("custom", "gpt-6-astra"),
-])
-def test_astra_model_profile(model, alias):
-    profile = resolve_model_profile(model, alias)
+@pytest.mark.parametrize("model", ["gpt-6-astra", "openai/GPT-6-ASTRA"])
+def test_astra_model_profile(model):
+    profile = resolve_model_profile(model)
     assert profile.context_length == 1_050_000
     assert profile.max_output_tokens == 128_000
     assert profile.supports_image_input is True
     assert profile.reasoning == "openai-astra"
     assert reasoning_kwargs(profile.reasoning, "max") == {"reasoning_effort": "max"}
     assert reasoning_kwargs(profile.reasoning, "none") == {"reasoning_effort": "low"}
+
+
+@pytest.mark.parametrize("model", [
+    "gpt-6-sol", "azure/openai/GPT-6-SOL", "gpt-6-luna", "openai/GPT-6-LUNA",
+])
+def test_gpt6_sol_and_luna_model_profiles(model):
+    from ene.context import compaction_trigger_tokens
+
+    profile = resolve_model_profile(model)
+    assert profile.context_length == 1_050_000
+    assert profile.max_output_tokens == 128_000
+    assert profile.supports_image_input is True
+    assert profile.reasoning == "openai-6"
+    for effort in ("none", "low", "medium", "high", "xhigh", "max"):
+        assert reasoning_kwargs(profile.reasoning, effort) == {"reasoning_effort": effort}
+    assert reasoning_kwargs(profile.reasoning, "minimal") == {"reasoning_effort": "low"}
+    trigger = compaction_trigger_tokens(profile.context_length, profile.max_output_tokens)
+    assert trigger == 892_500
+    assert trigger < 922_000
+    assert trigger + profile.max_output_tokens < profile.context_length

@@ -283,7 +283,7 @@ class AgentCommandsMixin:
                 f"Recap model '{alias}' not found under 'openai' in the configuration"
             )
         model = model_conf.get("model", alias)
-        profile = resolve_model_profile(model, alias)
+        profile = resolve_model_profile(model)
         provider_name = model_conf.get("provider", "openai")
         provider = create_provider(provider_name, ProviderSettings(
             api_key=model_conf.get("api_key", ""),
@@ -940,7 +940,7 @@ class AgentCommandsMixin:
 
         model_conf = openai_conf[target]
         model = model_conf.get("model", target)
-        profile = resolve_model_profile(model, target)
+        profile = resolve_model_profile(model)
         provider_name = model_conf.get("provider", "openai")
         settings = ProviderSettings(
             api_key=model_conf.get("api_key", ""),
@@ -990,7 +990,7 @@ class AgentCommandsMixin:
         if model_conf is not None:
             provider_name = model_conf.get("provider", "openai")
             model = model_conf.get("model", target)
-            profile = resolve_model_profile(model, target)
+            profile = resolve_model_profile(model)
             settings = ProviderSettings(
                 api_key=model_conf.get("api_key", ""),
                 base_url=model_conf.get("base_url", ""),

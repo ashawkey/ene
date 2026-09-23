@@ -132,6 +132,7 @@ def test_unknown_context_length_never_forces_compaction():
     [
         (128_000, 32_000),   # typical window
         (1_000_000, 64_000),  # large window, ratio governs
+        (1_050_000, 128_000),  # GPT-6
         (258_000, 128_000),  # gpt-5: reserve drags the trigger to its floor
         (32_000, 16_000),    # small window, huge output cap
     ],
@@ -148,6 +149,7 @@ def test_eviction_always_gets_a_pass_before_compaction(context_length, max_outpu
     [
         (128_000, 32_000),   # typical window
         (1_000_000, 64_000),  # large window, ratio governs
+        (1_050_000, 128_000),  # GPT-6
         (258_000, 128_000),  # gpt-5: reserve drags the trigger to its floor
         (32_000, 16_000),    # small window, huge output cap
     ],

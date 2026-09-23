@@ -256,7 +256,7 @@ class LLMAgent(
 
         self.model = model
         self.model_alias = model_alias
-        self.profile = resolve_model_profile(model, model_alias)
+        self.profile = resolve_model_profile(model)
         self.provider_name = provider_name
         self._provider_settings = ProviderSettings(
             api_key=api_key,
@@ -792,7 +792,7 @@ class LLMAgent(
                 f"Summary model '{alias}' not found under 'openai' in the configuration"
             )
         model = model_conf.get("model", alias)
-        profile = resolve_model_profile(model, alias)
+        profile = resolve_model_profile(model)
         provider = create_provider(
             model_conf.get("provider", "openai"),
             ProviderSettings(

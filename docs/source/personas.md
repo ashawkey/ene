@@ -1,15 +1,25 @@
 # Personas
 
-A persona owns the agent's identity, complete system prompt, and advertised tool surface. Bundled personas live under `ene/bundled_personas/`; custom personas are discovered from `./.ene/personas/` and `~/.ene/personas/`. Bundled names are reserved, and project personas take precedence over personal personas.
+Personas define the agent's identity, system prompt, and advertised tools.
+
+Discovery order (first match wins):
+
+1. Bundled: `ene/bundled_personas/` — names are reserved.
+2. Project: `./.ene/personas/`.
+3. Personal: `~/.ene/personas/`.
 
 | Persona | Tools | Purpose |
 |---------|-------|---------|
 | `coder` | all | The default coding agent (project-aware, full tool access) |
 | `chat` | `web_search`, `web_fetch` | General chatbot without file/shell access |
 | `reviewer` | selected file, shell, web, and skill tools | Evidence-grounded academic paper reviewer |
-| `orchestrator` | selected file, managed-process, and skill tools | One bounded implementation or code-review work item, optionally grouping related small issues, through fresh background implementor/reviewer agents until independent review passes |
+| `orchestrator` | selected file, managed-process, and skill tools | Delegate one bounded implementation/review task to fresh background agents until independent review passes |
 
-Each persona is a directory containing `PERSONA.md`:
+An orchestrator task may group related small issues.
+
+## Create a persona
+
+Each persona directory contains `PERSONA.md`:
 
 ```markdown
 ---
@@ -28,11 +38,17 @@ You are a terminal-based coding assistant.
 {{ene:current-context}}
 ```
 
-`tools` is required and is either `all` or a YAML list of built-in tool names; use `[]` for no tools. `skills` is also required: `bundled` is either `all` or an explicit list of bundled skill names advertised through `{{ene:skills}}`, while `local` controls both project and personal `.ene/skills`. This skill policy limits automatic prompt discovery, not explicit user loads through `/skills <name>`. A persona must include `load_skill` in `tools` to load a skill or expose its tools.
+- **`tools` (required):** `all`, a list of built-in tool names, or `[]` for none. Include `load_skill` to load skills or expose their tools.
+- **`skills` (required):** `bundled` accepts `all` or a name list; `local` controls project and personal skills. This filters automatic discovery, not explicit `/skills <name>` loads.
+- **Markers:** whole-line `{{ene:autonomous-mode}}`, `{{ene:skills}}`, `{{ene:project-instructions}}`, and `{{ene:current-context}}`. Expansion happens once; embedded marker-like text is not interpreted.
 
-Supported whole-line markers are `autonomous-mode`, `skills`, `project-instructions`, and `current-context`, each prefixed with `ene:` as above. Markers are expanded once, so marker-like text inside project instructions is not interpreted.
+### Project instructions
 
-Project instructions normally come from `./AGENTS.md`. If `./.ene/AGENTS.md` exists, it replaces that file; a line containing exactly `@AGENTS.md` imports the root file at that position, allowing local instructions to extend it. No other import paths are supported.
+- Default: `./AGENTS.md`.
+- Override: `./.ene/AGENTS.md`, when present.
+- To extend rather than replace the root file, include a line containing exactly `@AGENTS.md` in the override. No other imports are supported.
+
+## Select a persona
 
 ```bash
 ene --persona o
@@ -44,8 +60,7 @@ ene --persona o
 | `/persona <name-or-prefix>` | Switch persona and restart the conversation; a unique prefix such as `o` selects `orchestrator` |
 | `/persona reload` | Re-scan persona directories; restart if the active persona changed |
 
-`--persona` accepts the same unique prefixes, so `ene --persona o` starts with `orchestrator`. Exact names take precedence; ambiguous prefixes report their matches.
-
-The active persona name and content digest are saved with the session. Resume warns if its content changed and fails clearly if it is no longer installed. Tool whitelists enforce which built-in tools are advertised to the model; interactive slash commands remain available.
-
-Use the bundled [persona-creator skill](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/persona-creator/SKILL.md) to create and validate a persona. Use the [Library](library.md) to synchronize personas between projects.
+- `--persona` also accepts unique prefixes: `o` selects `orchestrator`. Exact names win; ambiguous prefixes list matches.
+- Sessions save the persona name and content digest. Resume warns on changed content and fails if the persona is missing.
+- Tool restrictions apply to model tools, not interactive slash commands.
+- Create and validate with [persona-creator](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/persona-creator/SKILL.md); synchronize through the [Library](library.md).

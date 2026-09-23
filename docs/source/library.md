@@ -1,9 +1,9 @@
 # Library
 
-`ene lib` synchronizes reusable skills and personas through a Git repository.
-It manages authored resources under the current project's `./.ene/skills/` and `./.ene/personas/`.
+`ene lib` synchronizes project skills and personas through Git.
 
-The bundled [library skill](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/library/SKILL.md) lets the agent operate this feature for you.
+- Local resources: `./.ene/skills/` and `./.ene/personas/`.
+- For agent-assisted management, use the [library skill](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/library/SKILL.md).
 
 ## Configure the repository
 
@@ -13,8 +13,9 @@ Set an accessible repository URL in `~/.ene.yaml`:
 ene_lib: git@github.com:username/ene-resources.git
 ```
 
-The repository uses its `main` branch and stores resources under `skills/<name>/` and `personas/<name>/`.
-Ene uses your existing Git and SSH credentials. An empty repository is initialized by the first upload.
+- Branch: `main`; directories: `skills/<name>/` and `personas/<name>/`.
+- Authentication: your existing Git/SSH credentials.
+- Empty repositories initialize on first upload.
 
 ## Typical workflow
 
@@ -35,23 +36,18 @@ ene lib update
 
 ## Commands
 
-Skills are the default resource kind:
+| Command | Effect |
+|---|---|
+| `ene lib list [pattern]` | List remote names/descriptions; `--local` lists project copies |
+| `ene lib install <name> ...` | Install without overwriting existing local resources |
+| `ene lib update [name ...]` | Synchronize selected installed resources, or all when omitted |
+| `ene lib upload <name> ...` | Publish project resources; `--force` replaces remote copies |
+| `ene lib remove <name> ...` | Delete remote resources; `--local` deletes only project copies |
 
-```bash
-ene lib list [pattern]
-ene lib list [pattern] --local
-ene lib install <name> [<name> ...]
-ene lib update [<name> ...]
-ene lib update <name> --force
-ene lib upload <name> [<name> ...]
-ene lib upload <name> --force
-ene lib remove <name> [<name> ...]
-ene lib remove <name> --local
-```
+- Default kind: skills. Add `--kind persona` for personas.
+- Add `--verbose` for Git operation details.
 
-Add `--verbose` to any library command to show Git operation details.
-
-Add `--kind persona` to operate on personas:
+Examples:
 
 ```bash
 ene lib list --kind persona
@@ -59,22 +55,14 @@ ene lib install my-coder --kind persona
 ene lib upload my-coder --kind persona
 ```
 
-- `list` shows remote resources and descriptions; `--local` lists project resources.
-- `install` copies a remote resource into the project and never overwrites an existing local resource.
-- `update` synchronizes selected installed resources, or all installed resources when no names are supplied.
-- `upload` publishes project resources. `--force` replaces an existing remote resource.
-- `remove` deletes remote resources. `--local` deletes only project copies.
-
-Remote resources are not available to an agent until installed.
-After installing or updating a skill, run `/skills reload`; for a persona, run `/persona reload`.
+- Remote resources must be installed before an agent can use them.
+- After install/update, run `/skills reload` or `/persona reload`.
 
 ## Synchronization and conflicts
 
-Each installed resource records its last synchronized tree in `.ene-lib.json`.
-This base allows Ene to distinguish local-only changes, remote-only changes, and conflicts even on another machine.
-
-A normal update uploads local-only changes and downloads remote-only changes.
-Each completed resource is shown in an aligned status row:
+- `.ene-lib.json` records each resource's last synchronized tree to detect conflicts across machines.
+- Normal updates upload local-only changes and download remote-only changes.
+- `local` is the project copy; `remote` is the library. Arrows show the destination; `up-to-date` means both match:
 
 ```text
 gitlab-mr              up-to-date
@@ -82,14 +70,14 @@ gitlab-review-service  local --> remote
 another-skill          local <-- remote
 ```
 
-`local` is the project copy; `remote` is the library copy. The arrow indicates
-which copy receives the changes; `up-to-date` means the copies already match.
+If both copies changed, Ene leaves them untouched:
 
-If both copies changed, it leaves both copies unchanged so you can merge the desired changes into the project-local resource. Validate the merged copy, then run:
+1. Merge the desired changes into the project copy and validate it.
+2. Force synchronization:
 
-```bash
-ene lib update <name> --force
-```
+   ```bash
+   ene lib update <name> --force
+   ```
 
 Repository checkouts are cached under `~/.ene/library/`.
 

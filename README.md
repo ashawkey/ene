@@ -12,23 +12,21 @@
     <a href="https://ene.kiui.moe/">Documentation</a>
 </p>
 
-An experimental agent harness for personal use.  
-It's as powerful as other modern agents, but also pythonic and educational for you to understand what happens behind each tool/skill.
+An experimental, Python-first coding agent with transparent context, tools, and skills.
 
 ## Features
 
-- **Nothing is Unknown**: Explicit context and system prompt, no unexpected memory: You know the agent.
-- **Skill-first Design**: Hierarchical skill loading makes the core small, but capacity large. Memory is also skill.
-- **Optimized Bundled Skills**: Plan, review, clean up, create skills, background processes, pdf-reading, ... 
-- **Personal Skill Library**: Use a github repository to easily synchronize your skills.
-- **Terminal-Native & Web UI**: Native terminal experience, while also attached to a modern web UI.
+- **Transparent context:** inspect the system prompt and conversation; no hidden memory.
+- **Skills on demand:** planning, reviews, monitoring, PDFs, and reusable lessons.
+- **Personal library:** synchronize skills and personas through Git.
+- **Terminal and Web UI:** work locally or attach from a browser.
 
 ## Quick Start
 
 ```bash
 pip install ene-agent
 
-# or from github source
+# Or install from GitHub
 pip install git+https://github.com/ashawkey/ene.git
 ```
 
@@ -42,22 +40,13 @@ openai: # openai-compatible
     api_key: ... # your API key
 ```
 
-It also supports codex subscription login, please check the documentation for details.
-
 ```bash
-ene [NAME] # start a new, optionally named session
-ene resume # resume a previous session (alias: r)
-
-ene models # list available models
-ene list # list live sessions (aliases: ls, l)
-ene attach [NAME_OR_ID] # attach to a live session (alias: a)
-ene kill [NAME_OR_ID] # terminate one or interactively select sessions (alias: k)
-ene status # check the status of the .ene folder
-ene clean # remove disposable data such as tool results and scratch files
-ene clean --history # also remove saved conversation sessions
-ene hub # start web UI hub (need to run in background)
-ene update # update to the latest source code from github
-ene lib # skill library management
+ene [NAME]  # start a session; name is optional
+ene resume  # resume a saved conversation
+ene attach  # attach to a live session
 ```
 
-WARNING: it has the same permission as the shell user and NO safety guard, use at your own risk.
+- [Model setup and ChatGPT subscription login](https://ene.kiui.moe/#configure-a-model)
+- [CLI commands](https://ene.kiui.moe/commands/) · [Web UI](https://ene.kiui.moe/web-ui/) · [Skill library](https://ene.kiui.moe/library/)
+
+**Tools run automatically with your shell permissions, without a safety boundary.** Use an OS sandbox or container to constrain them.

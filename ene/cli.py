@@ -204,7 +204,7 @@ def cmd_models():
 
     for name, model_conf in openai_conf.items():
         model_id = model_conf.get("model", name)
-        profile = resolve_model_profile(model_id, name)
+        profile = resolve_model_profile(model_id)
         context_length = model_conf.get("context_length", profile.context_length)
         ctx = f"{context_length // 1000}K"
         table.add_row(

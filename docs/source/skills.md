@@ -1,11 +1,11 @@
 # Skills
 
-Skills are reusable prompt packages that give Ene focused procedures, domain knowledge, and optional tools. They are compatible with the open [Agent Skills](https://agentskills.io) format and add Ene-specific optional `tools.py` support.
+Skills package reusable workflows, knowledge, and optional tools in the [Agent Skills](https://agentskills.io) format.
 
-Ene advertises only each skill's name and description in the system prompt.
-When a task matches, the model is instructed to reuse complete skill instructions already in context and call `load_skill` only when they are missing or incomplete, such as after compaction.
-Repeated loads still return the full instructions; this prompt guidance reduces redundant loads rather than enforcing deduplication.
-This progressive disclosure keeps the normal prompt small while making detailed workflows available on demand.
+- The system prompt lists only names and descriptions; full instructions load on demand.
+- The model reuses instructions already in context and calls `load_skill` when missing or incomplete, including after compaction.
+- Repeated loads still return full instructions; reuse is prompt guidance, not enforced deduplication.
+- Ene adds optional Python tools through `tools.py`.
 
 ## Find and invoke skills
 
@@ -15,7 +15,8 @@ Skills are discovered from three locations, in this precedence order:
 2. project skills under `./.ene/skills/`;
 3. personal skills under `~/.ene/skills/`.
 
-Bundled names therefore cannot be overridden. Malformed skills and lower-precedence copies shadowed by the same name are reported at startup and by `/skills reload`.
+- Bundled names cannot be overridden.
+- Startup and `/skills reload` report malformed skills and shadowed copies.
 
 | Command | Effect |
 |---|---|
@@ -25,13 +26,13 @@ Bundled names therefore cannot be overridden. Malformed skills and lower-precede
 | `/<skill-name> <task>` | Apply a skill to the supplied task. |
 | `/<skill-name>` | Run its declared default invocation, or ask for a task. |
 
-Built-in slash commands take precedence over skills with the same name. Loaded-skill state is saved with the session and included in usage summaries.
-
-See [Bundled Skills](bundled-skills.md) for the workflows included with Ene.
+- Built-in slash commands win name conflicts.
+- Sessions save loaded-skill state; usage summaries include it.
+- See [Bundled Skills](bundled-skills.md) for included workflows.
 
 ## Create a custom skill
 
-A skill is a directory containing `SKILL.md`. It may also include scripts, references, assets, or native tools:
+Create a directory under `./.ene/skills/` (project) or `~/.ene/skills/` (personal):
 
 ```text
 .ene/skills/
@@ -43,9 +44,7 @@ A skill is a directory containing `SKILL.md`. It may also include scripts, refer
     tools.py       # optional skill-provided tools
 ```
 
-Use `./.ene/skills/` for a project-specific skill or `~/.ene/skills/` for a personal skill shared across local projects.
-
-Every `SKILL.md` starts with YAML frontmatter followed by Markdown instructions:
+Start `SKILL.md` with YAML frontmatter and Markdown instructions:
 
 ```markdown
 ---
@@ -60,21 +59,19 @@ description: Prepare and validate a release. Use when publishing a new version.
 3. Build and validate the release artifacts.
 ```
 
-`name` and `description` are required.
-The description should state what the skill does and when it should activate because it is the metadata the model uses to select the skill.
-Optional Agent Skills fields such as `license`, `compatibility`, and `metadata` are parsed but not used. `allowed-tools` is accepted for compatibility but is not enforced; the active persona controls Ene's tool surface.
+### Authoring rules
 
-Keep the common workflow in `SKILL.md`. Put lengthy conditional material in `references/`, repeatable deterministic operations in `scripts/`, and templates in `assets/`. Reference these files by paths relative to the skill directory.
+- **Required:** `name` and `description`. Describe both the task and when to activate it.
+- **Compatibility fields:** `license`, `compatibility`, and `metadata` are parsed but unused. `allowed-tools` is not enforced; personas control tools.
+- **Keep instructions focused:** common workflow in `SKILL.md`, conditional detail in `references/`, deterministic programs in `scripts/`, templates in `assets/`. Use skill-relative paths.
+- **Trust Python:** `tools.py` runs in-process when loaded. Install only trusted skills; see [Skill-provided tools](tools.md#skill-provided-tools).
+- **Default invocation:** add `## Default invocation` only for a safe, unambiguous task-free workflow. Otherwise Ene asks what to do.
 
-A root `tools.py` can define structured tools that are registered only while the skill is loaded. Because Ene imports and executes this Python in-process, install only skills you trust. See [Skill-provided tools](tools.md#skill-provided-tools) for the runtime behavior.
-
-Add a `## Default invocation` section only when `/<skill-name>` without task text can safely run one clearly defined workflow.
-Otherwise Ene loads the skill and asks the user what to do.
-
-The bundled [skill-creator instructions](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/skill-creator/SKILL.md) provide the complete authoring and validation workflow:
+Use [skill-creator](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/skill-creator/SKILL.md) for authoring and validation:
 
 ```text
 /skill-creator Create a project skill for validating release artifacts.
 ```
 
-After adding or editing a skill, run `/skills reload`. To share custom skills and personas through Git, use the [Library](library.md).
+- Run `/skills reload` after adding or editing a skill.
+- Share skills and personas through the [Library](library.md).

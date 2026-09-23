@@ -1,7 +1,9 @@
 # Ene documentation
 
-The documentation site is built from Markdown in `source/` with the custom npm static-site
-builder in this directory.
+- Source: Markdown in `source/`.
+- Builder: custom npm static site.
+- Navigation and metadata: `site.config.ts`.
+- Generated output: `dist/`.
 
 ## Build locally
 
@@ -12,14 +14,12 @@ npm run build
 npm run serve
 ```
 
-The preview is available at `http://127.0.0.1:4174/ene/`, matching the GitHub Pages project
-subpath. Use `npm run dev` to rebuild automatically while editing.
-
-Navigation and metadata are configured in `site.config.ts`. The generated site is written to
-`dist/`.
+- Preview: `http://127.0.0.1:4174/ene/` (matches the GitHub Pages subpath).
+- Live rebuild: `npm run dev`.
+- Writing style: short bullets, focused examples, and minimal prose; see `../AGENTS.md`.
 
 ## Deployment
 
-`.github/workflows/docs.yaml` builds and deploys the documentation when a GitHub release is
-created. It can also be started manually with `workflow_dispatch`; ordinary pushes do not
-publish documentation. GitHub Pages must use **GitHub Actions** as its publishing source.
+- Workflow: `.github/workflows/docs.yaml`.
+- Triggers: GitHub release creation or manual `workflow_dispatch`, not ordinary pushes.
+- GitHub Pages publishing source: **GitHub Actions**.

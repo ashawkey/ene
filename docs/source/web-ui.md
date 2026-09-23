@@ -1,17 +1,14 @@
 # Web UI
 
-Ene's Web UI turns `ene hub` into a standalone entry point: start the hub, then create, attach to, and detach from live sessions entirely in the browser.
+Start `ene hub` to create and manage live sessions from your browser.
 
 ## Architecture
 
-The Web UI uses a **hub + live worker** design:
-
-- One `ene hub` process owns the HTTP port, serves the UI, authenticates browsers, and manages live sessions.
-- Each session runs in its own detached worker process and working directory, exactly as it does for the terminal.
-- The hub attaches to a worker the same way a terminal does. A session has **one owner at a time**: either a terminal or the hub, never both.
-- Every attached session appears as a separate browser tab. Sessions owned by a terminal, or not attached at all, are listed separately in the sidebar.
-
-The hub binds to `0.0.0.0`, so devices on the same network can reach it using the machine's hostname or IP address.
+- **Hub:** serves HTTP, authenticates browsers, and manages sessions.
+- **Workers:** one detached process and working directory per session, shared with the terminal interface.
+- **Ownership:** one terminal or hub per session, never both.
+- **Tabs:** attached sessions appear as UI tabs; others remain in the sidebar.
+- **Network:** binds to `0.0.0.0`, reachable by hostname or IP from other devices.
 
 ## Start the hub
 
@@ -27,50 +24,60 @@ Start the hub in a dedicated terminal:
 ene hub --web-port 8765
 ```
 
-The command prints browser URLs using both the machine's local IPv4 address and fully qualified domain name (FQDN), followed by the access token. If `ene_web_token` is absent, Ene generates a temporary token for that hub process. Starting a second hub on a port that already has one is refused.
+1. Open a printed URL (local IPv4 or fully qualified hostname) and enter the printed token.
+2. Keep the hub terminal running while using the UI.
 
-Open either printed URL—such as `http://192.168.1.25:8765` or `http://ene.example.com:8765`—and enter the token. A successful login creates an httponly browser session cookie. Signing out or reaching the login's expiry closes all WebSocket connections for that login, including those in other tabs; separately authenticated browsers remain signed in. Keep the hub terminal running while using the Web UI.
+- Without `ene_web_token`, Ene generates a temporary token for that hub process.
+- A second hub cannot use an occupied hub port.
+- Login creates an httponly cookie. Logout or expiry closes that login's WebSocket connections across tabs; other authenticated browsers stay signed in.
 
 ## Create a session
 
 Select **+ New session** in the sidebar to open the session dialog:
 
-- **Working directory** — type a path or browse the filesystem. Recently used workspaces are offered as shortcuts, and hidden directories can be shown with a toggle.
-- **Name** — an optional live-session name, as with `ene new NAME`.
-- **Model**, **Persona**, **Reasoning effort** — the same choices as the corresponding command-line flags. Personas are read from the selected workspace, so its project personas are included.
-- **Resume conversation** — optionally continue a saved conversation from that workspace instead of starting a new one. Conversations that are already live cannot be selected twice.
+- **Working directory:** type or browse a path; recent-workspace shortcuts and a hidden-directory toggle are available.
+- **Name:** optional, as with `ene new NAME`.
+- **Model / Persona / Reasoning effort:** CLI-equivalent choices, including the selected workspace's personas.
+- **Resume conversation:** continue a saved conversation; already-live conversations cannot be selected twice.
 
-The hub starts the worker, attaches to it, and focuses the new tab. Failures—an unknown model, a duplicate session name—are reported in the dialog.
+The hub starts and attaches the worker, then focuses its tab. Errors appear in the dialog.
 
 ## Attach and detach
 
 The sidebar lists every live session on the machine:
 
-- Sessions owned by this hub appear as tabs with a state dot and a **×** control.
-- Detached sessions can be attached with a single click.
-- Sessions attached in a terminal are marked `terminal` and cannot be selected. Detach them there first (`/detach`, or `Ctrl+D`).
-
-Selecting **×** detaches the session: the worker keeps running and the tab disappears, leaving the session available to a terminal or another browser. Detaching never stops a session.
-
-To stop a session, send `/exit` (or `/quit`) in the composer. The worker shuts down and the session leaves the list.
-
-Attaching from a terminal to a session the hub owns is refused immediately with a message pointing back to the Web UI; run **×** in the browser first.
+- **Attach:** click a detached session.
+- **Detach:** select **×** on its tab. The worker keeps running and becomes available elsewhere.
+- **Terminal-owned:** marked `terminal`; run `/detach` or Ctrl+D there before attaching in the browser.
+- **Hub-owned:** terminal attachment is refused; select **×** in the browser first.
+- **Stop:** send `/exit` or `/quit`. The worker shuts down and leaves the list.
 
 ## Browser behavior
 
-The browser shows the conversation, tool activity, interactive selections, queued message, and process status of every attached session. Live agent activity is docked above the composer, so it stays visible while the conversation scrolls. Each running background process gets its own row with its managed ID, label, runtime, and latest output; long process lists scroll within the dock. Only one message can be queued while a round is active; a message the agent refuses is reported rather than silently dropped.
+- **Activity:** conversation, tools, selections, queued input, and process status are visible per session.
+- **Process dock:** stays above the composer; scrollable rows show ID, label, runtime, and latest output.
+- **Queue:** one message per active round; refusals are reported, not silently dropped.
 
-Typing `/` at the start of an empty composer opens slash-command suggestions, including discovered skills. Continue typing to filter them, use Up/Down to select, and press Tab or Enter to complete; press Enter again to run the completed command. Typing `@` at the start of a word similarly searches paths and filenames relative to the session workspace. When no completion menu is open, Up/Down recalls previously submitted messages for that browser session and restores the unfinished draft after the newest entry.
+### Composer shortcuts
 
-If the browser loses its hub connection, it shows a reconnecting state, preserves draft input, and disables actions until the connection recovers. Reloading the page or closing the tab does not detach a session—only **×** does. Stopping the hub releases its attachments, leaving every session running and available to a terminal.
+- `/` at an empty composer's start: suggest commands and skills.
+- `@` at a word's start: search workspace paths and filenames.
+- With suggestions open: type to filter, Up/Down to select, Tab/Enter to complete; Enter again sends.
+- Without suggestions: Up/Down recalls browser-session input history, restoring the draft after the newest entry.
+
+### Connection lifecycle
+
+- Disconnect: show reconnecting status, preserve drafts, and disable actions until recovery.
+- Reload or close the browser tab: sessions stay attached. Use **×** to detach.
+- Stop the hub: release attachments; workers keep running and can be attached from a terminal.
 
 ## Network and remote access
 
-The hub listens on all network interfaces for access from trusted devices on the same network. Browser access requires the Ene token, but a signed-in browser can browse the filesystem and start agents in any directory, so treat the token as equivalent to shell access. Use a long random token and only run the hub on trusted networks.
+- **Treat the token as shell access:** signed-in browsers can browse files and start agents in any directory.
+- Use a long random token and run the hub only on trusted networks.
+- For remote access, use a protected tunnel or reverse proxy.
 
-For access beyond the local network, use a tunnel or reverse proxy and protect it as well.
-
-For example, with Cloudflare Tunnel:
+Cloudflare Tunnel example:
 
 ```bash
 # One-time authentication and tunnel creation.

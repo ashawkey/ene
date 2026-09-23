@@ -14,7 +14,7 @@ class ModelProfile:
     """Properties of a model family that affect API behaviour."""
 
     context_length: int = 128_000
-    # "openai" | "openai-astra" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
+    # "openai" | "openai-astra" | "openai-6" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
     reasoning: str | None = None
     supports_image_input: bool = False
     # Max output tokens per request. Reasoning tokens count against this budget,
@@ -27,6 +27,8 @@ class ModelProfile:
 # Matching is case-insensitive substring; first hit wins.
 MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
     ("gpt-6-astra", ModelProfile(context_length=1_050_000, reasoning="openai-astra", supports_image_input=True, max_output_tokens=128_000)),
+    ("gpt-6-sol", ModelProfile(context_length=1_050_000, reasoning="openai-6", supports_image_input=True, max_output_tokens=128_000)),
+    ("gpt-6-luna", ModelProfile(context_length=1_050_000, reasoning="openai-6", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt-5", ModelProfile(context_length=258_000, reasoning="openai", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt", ModelProfile(supports_image_input=True)),
     ("gemini", ModelProfile(context_length=1_000_000, reasoning="gemini", supports_image_input=True, max_output_tokens=64_000)),
@@ -65,13 +67,12 @@ def resolve_model_alias(name: str, aliases: Iterable[str]) -> str:
     raise ValueError(f"Model '{name}' not found in config. Available: {', '.join(available)}")
 
 
-def resolve_model_profile(model_id: str, model_alias: str = "") -> ModelProfile:
-    """Resolve a model ID, falling back to its configured alias."""
-    for candidate in (model_id, model_alias):
-        lower = candidate.lower()
-        for pattern, profile in MODEL_CATALOG:
-            if pattern in lower:
-                return profile
+def resolve_model_profile(model_id: str) -> ModelProfile:
+    """Resolve capabilities from the actual API model ID, never a display alias."""
+    lower = model_id.lower()
+    for pattern, profile in MODEL_CATALOG:
+        if pattern in lower:
+            return profile
     return DEFAULT_PROFILE
 
 
@@ -82,6 +83,9 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
     if style == "openai-astra":
         # Astra always reasons and supports a native max level.
         return {"reasoning_effort": "low" if effort in ("none", "minimal") else effort}
+    if style == "openai-6":
+        # Sol and Luna allow no reasoning and support a native max level.
+        return {"reasoning_effort": "low" if effort == "minimal" else effort}
     if style == "openai":
         # Older OpenAI models use xhigh for Ene's max level.
         return {"reasoning_effort": "xhigh" if effort == "max" else effort}

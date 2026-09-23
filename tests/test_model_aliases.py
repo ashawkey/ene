@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from ene import cli, config
+from ene.backend import LLMAgent
 from ene.backend.commands import AgentCommandsMixin
 from ene.models import resolve_model_alias
 from ene.providers import OpenAIResponsesProvider
@@ -84,3 +85,44 @@ def test_switch_resolves_prefix_and_preserves_state_on_ambiguity(monkeypatch):
     AgentCommandsMixin._cmd_model(agent, '/model gpt-6')
     assert agent.provider is previous
     assert notices[-1] == "Already using model 'gpt-6-astra'."
+
+
+@pytest.mark.parametrize('alias, model_conf, context_length, max_output, reasoning', [
+    ('claude', {'model': 'azure/openai/GPT-6-SOL'}, 1_050_000, 128_000, 'openai-6'),
+    ('gpt-6-astra', {'model': 'custom-deployment'}, 128_000, 32_000, None),
+    ('gpt-6-sol', {}, 1_050_000, 128_000, 'openai-6'),
+    ('small', {'model': 'gpt-6-luna', 'context_length': 200_000,
+               'max_output_tokens': 16_000}, 200_000, 16_000, 'openai-6'),
+])
+def test_model_budgets_use_api_id_at_startup_switch_and_listing(
+    monkeypatch, tmp_path, alias, model_conf, context_length, max_output, reasoning,
+):
+    monkeypatch.setattr(config, 'conf', {'openai': {alias: model_conf}})
+    monkeypatch.setattr(cli, 'conf', config.conf)
+    model = model_conf.get('model', alias)
+    agent = LLMAgent(
+        api_key='', base_url='', model=model, model_alias=alias, work_dir=str(tmp_path),
+        terminal_prompts=False,
+        context_length=model_conf.get('context_length'),
+        max_output_tokens=model_conf.get('max_output_tokens'),
+    )
+    try:
+        assert agent.context_length == context_length
+        assert agent.max_output_tokens == max_output
+        assert agent.profile.reasoning == reasoning
+        # Switch through the same config path used by /model.
+        agent.model_alias = 'previous'
+        agent._cmd_model(f'/model {alias}')
+        assert agent.model == model
+        assert agent.context_length == context_length
+        assert agent.max_output_tokens == max_output
+        assert agent.profile.reasoning == reasoning
+    finally:
+        agent.close()
+
+    tables = []
+    monkeypatch.setattr(cli, 'AgentConsole', lambda: NS(table=tables.append))
+    cli.cmd_models()
+    columns = {column.header: column._cells for column in tables[0].columns}
+    assert columns['Model'] == [model]
+    assert columns['Context'] == [f'{context_length // 1000}K']

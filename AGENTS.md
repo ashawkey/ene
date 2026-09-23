@@ -1,7 +1,9 @@
 # Project
 
-Ene is a Python 3.10+ terminal-first AI coding agent. It provides an interactive CLI, a one-shot Python API, reusable skills and personas, rewindable sessions, and a FastAPI-served React Web UI.
+Ene is a Python 3.10+ terminal-first AI coding agent.
 
+- Interfaces: interactive CLI, one-shot Python API, and FastAPI-served React Web UI.
+- Features: reusable skills/personas and rewindable sessions.
 - `pyproject.toml` is authoritative for Python metadata, runtime dependencies, package data, and the `ene` console entry point. Use an editable install for development: `python -m pip install -e .`.
 - `ene/frontend/package-lock.json` is authoritative for frontend dependencies; use npm rather than another JavaScript package manager.
 - The supported public Python imports are exported from `ene/__init__.py`: `run_agent`, `AgentRunResult`, and `TurnOutcome`.
@@ -42,7 +44,10 @@ Install Python test tooling separately; the project does not define a developmen
 - Documentation checks matching CI: `cd docs && npm ci && npm run typecheck && npm run build`
 - Documentation subpath preview: `cd docs && npm run serve` (serves at `/ene/`)
 
-Run the smallest tests covering the changed subsystem. For cross-cutting changes to the agent loop, context policy, tools, sessions, or hub protocol, run all directly affected test modules; use the full suite when the impact is broad. Frontend changes require tests, typechecking, and a production build. Documentation dependencies are locked in `docs/package-lock.json`.
+- Run the smallest tests covering the changed subsystem.
+- For cross-cutting agent-loop, context, tool, session, or hub changes, run all directly affected modules; use the full suite for broad impact.
+- Frontend changes require tests, typechecking, and a production build.
+- Documentation dependencies are locked in `docs/package-lock.json`.
 
 # Change discipline
 
@@ -50,3 +55,12 @@ Run the smallest tests covering the changed subsystem. For cross-cutting changes
 - Preserve Python 3.10 compatibility and the public exports in `ene/__init__.py` unless an API change is intentional.
 - Update focused tests with behavior changes. Update `docs/source/` when user-facing CLI, configuration, skill/persona, API, tool, rewind, or Web UI behavior changes.
 - Do not hand-edit hashed files in `ene/frontend/dist/`; regenerate them with the frontend build.
+
+# Documentation style
+
+- Keep `README.md` and `docs/` clean, minimal, and scannable. Lead with the task or command; omit filler and repeated explanations.
+- Prefer short bullets with one point each; use numbered lists for ordered steps and tables for compact references.
+- Keep paragraphs to one or two short sentences. Split dense details under descriptive headings; do not hide paragraphs in bullets or table cells.
+- Use one focused example per workflow. Preserve exact commands, paths, defaults, and safety caveats when shortening text.
+- Document each detail in one place and link to it elsewhere. Keep getting-started content focused; put edge cases and internals in reference sections.
+- Revise existing sections for feature changes rather than appending explanatory paragraphs. Run the documentation checks after edits.

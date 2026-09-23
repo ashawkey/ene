@@ -2,15 +2,10 @@
 
 ## Install
 
-Ene requires Python 3.10 or newer.
+Requires Python 3.10+.
 
 ```bash
 pip install ene-agent
-```
-
-Confirm that the CLI is available:
-
-```bash
 ene --help
 ```
 
@@ -36,15 +31,21 @@ openai:
     reasoning_effort: high # optional; defaults to high
 ```
 
-The alias (`fast` or `my_model` above) is what you pass to `--model`.
-Startup `--model`, the interactive `/model` command, and Python's
-`run_agent(model_alias=...)` also accept a unique prefix of a configured alias.
-For example, `gpt-6` selects `gpt-6-astra` when that is the only matching alias.
-An exact alias always wins; an ambiguous prefix produces an error listing its
-matches. Matching is case-sensitive.
+- **Select an alias:** `--model fast`, `/model fast`, or `run_agent(model_alias="fast")`.
+- **Unique prefixes work:** `gpt-6` selects `gpt-6-astra` if unambiguous. Matching is case-sensitive; exact aliases win, and ambiguous prefixes list their matches.
+- **Defaults follow the model ID**, not the alias. Model-family matching is case-insensitive and accepts provider prefixes.
+- Omitting `model` sends the alias as the ID; unknown IDs use conservative defaults.
+- **Override budgets** per model with `context_length` and `max_output_tokens`.
 
-API-key models use Chat Completions by default. Set `api: responses` on an
-individual model to use an OpenAI-compatible Responses endpoint instead:
+#### GPT-6 budgets
+
+- [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol), and [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna): **1,050,000 total context tokens**, **128,000 output tokens**, and 922,000 maximum input tokens.
+- Ene reserves output headroom; default compaction starts near **892,500 input tokens**.
+- For Sol/Luna reasoning with tool calls, use `api: responses`. Their Chat Completions function calling requires `reasoning_effort: none`.
+
+#### Responses API
+
+API-key models default to `api: chat_completions`. To use Responses instead:
 
 ```yaml
 openai:
@@ -57,20 +58,11 @@ openai:
     reasoning_effort: high
 ```
 
-Use the model ID and base URL supplied by your service. Ene appends `/responses`
-to the base URL; for OpenAI's public API use `https://api.openai.com/v1` and
-`model: gpt-6-astra`. The only supported `api` values are `chat_completions` and
-`responses`. The setting also applies to `/model` switches, the Python API,
-batch jobs, and models selected for recap or compaction.
-
-Responses mode supports streaming, images, function calls, and structured JSON
-output. Ene uses `store: false` and carries returned output items, including
-encrypted reasoning when the service supplies it, in local conversation and
-session history. Replayed items retain API field names and omit fields the
-service did not return, including defaults added by newer OpenAI SDKs.
-Gateway support for individual features can vary. The
-`openai-codex` subscription provider always uses Responses independently of this
-API-key setting.
+- Use your service's model ID and base URL; Ene appends `/responses`. For OpenAI, use `https://api.openai.com/v1` and `model: gpt-6-astra`.
+- Supported `api` values: `chat_completions` and `responses`. The choice also applies to model switches, Python, batch, recap, and compaction.
+- Responses supports streaming, images, function calls, and structured JSON; gateway support varies.
+- Ene sends `store: false` and saves returned items locally, including supplied encrypted reasoning. Replay preserves API field names without adding unreturned SDK defaults.
+- `openai-codex` always uses Responses, independently of this setting.
 
 ### ChatGPT Plus/Pro subscription
 
@@ -98,7 +90,9 @@ ene --model codex
 /login openai-codex
 ```
 
-Choose one of the offered browser, manual-redirect, or device-code flows. OAuth credentials are stored in `~/.ene/auth.json`. Use `/auth` to check login status and `/logout` to remove the credentials.
+- Choose browser, manual-redirect, or device-code authentication.
+- Credentials are stored in `~/.ene/auth.json`.
+- Use `/auth` to check status and `/logout` to remove credentials.
 
 ## List configured models
 
@@ -108,12 +102,8 @@ List resolved aliases, providers, APIs, context windows, and reasoning settings:
 ene models
 ```
 
-When `--model` is omitted, the first configured entry is used.
-
-Subagents launched through `exec_command` or `start_process` inherit the
-session's model and reasoning effort automatically (via `ENE_MODEL_ALIAS` and
-`ENE_REASONING_EFFORT` in the child environment), so a delegated agent runs
-with the same configuration as the parent unless explicitly overridden.
+- Without `--model`, Ene uses the first configured entry.
+- Subagents launched through `exec_command` or `start_process` inherit the session's model and effort via `ENE_MODEL_ALIAS` and `ENE_REASONING_EFFORT`, unless overridden.
 
 ## CLI
 
@@ -128,15 +118,10 @@ Useful commands during a session include:
 | Command | Purpose |
 |---|---|
 | `/help` | Show interactive commands. |
-| `/context [user\|assistant\|id]` | List context messages, filter by role, or inspect one in full (`-1` is the newest). |
-| `/usage` | Show token usage. |
-| `/recap` | Summarize the current task in one sentence. |
-| `/export <path/filename>` | Export the last assistant response to a file. |
 | `/model` | Show or switch the active model. |
 | `/persona` | List or switch personas. |
 | `/skills` | List reusable skills. |
 | `/rewind` | Return conversation or code to an earlier prompt. |
-| `/fork [name]` | Start a new session from an earlier prompt boundary. |
 | `/exit` | Save and exit. |
 
 Prefix a shell command with `!` to run it directly without asking the model:
@@ -146,7 +131,7 @@ Prefix a shell command with `!` to run it directly without asking the model:
 !pytest -q
 ```
 
-Tool calls execute automatically. Ene has the same permissions as the shell user and is not a security boundary. Use an OS-level sandbox or container when commands must be constrained.
+**Tools execute automatically with your shell permissions.** Ene is not a security boundary; use an OS sandbox or container to constrain commands.
 
 See [CLI](commands.md) and [Tools](tools.md) for the complete interfaces.
 
@@ -164,11 +149,13 @@ else:
     print(result.outcome, result.error)
 ```
 
-Responses that truncate during a tool call, are stopped by a provider content filter, or remain unfinished after automatic continuations return `TurnOutcome.FAILED`, with `success=False` and an explanatory `error`. Content-filtered responses stop without executing tool calls or automatically continuing. Any final partial text is retained in `response`.
+- Truncated tool calls, content-filtered responses, and exhausted automatic continuations return `TurnOutcome.FAILED`, `success=False`, and an explanatory `error`.
+- Content filtering stops tool execution and automatic continuation.
+- Any final partial text remains in `response`.
 
 ## Persistent live sessions
 
-Interactive sessions run in detached workers and survive closing the terminal or shell. While attached, the terminal tab shows `◐ ene [name]` / `◑ ene [name]` while Ene is working and `✓ ene [name]` when it is ready; unnamed sessions use the workspace directory name. Terminal profiles configured to suppress application titles will ignore these updates.
+Interactive sessions run in detached workers and survive closing the terminal or shell.
 
 - Start with an optional name using `ene [name]` (equivalent to `ene new [name]`).
 - Detach without interruption using `/detach` or Ctrl+D.
@@ -176,27 +163,24 @@ Interactive sessions run in detached workers and survive closing the terminal or
 - List workers with `ene ls` (`ene l`).
 - Reattach with `ene attach [name]`, or choose with bare `ene attach` (`ene a`).
 - Switch sessions using `/switch` or Ctrl+S; cancelling the picker leaves the current attachment untouched.
-- Terminate the attached session with Ctrl+K, or use the `ene kill` (`ene k`) multi-select picker.
 - Use `/resume` to activate a stopped conversation in the current live worker.
 
-Resume, attach, and switch replay the latest 10 user turns and final assistant responses, omitting historical tool activity and warnings. Ctrl+K, double Ctrl+C at an idle prompt, and explicit `exit`/`quit` terminate the live session. Workers are not restarted after a machine reboot. Closing a terminal never stops the session: work continues in the detached worker even when the shell is closed mid-task, and a force-closed terminal (for example a killed shell) frees the attachment automatically after about 20 seconds of silence. Reattaching inside that window waits for the release instead of failing, so `ene attach` right after a force-close simply pauses for a moment and then connects.
+### Session lifecycle
+
+- **Stop:** Ctrl+K, double Ctrl+C at an idle prompt, or `/exit` / `/quit`. For multiple sessions, use the `ene kill` (`ene k`) picker.
+- Workers do not restart after reboot.
+- **Force-close:** work continues; the attachment releases after about 20 seconds of silence. Immediate reattachment waits for release.
+- **Terminal title:** `◐` / `◑ ene [name]` while working; `✓ ene [name]` when ready. Unnamed sessions use the workspace name; terminal profiles may suppress titles.
+- See [session attachment and replay](commands.md#attach-and-replay) for ownership and history display.
 
 ## Resume a session
 
-Sessions and other project-local Ene state are stored under `./.ene/`. Ene maintains `./.ene/.gitignore` with `*`, so this state is not committed accidentally.
-
-Choose a previous session interactively:
-
 ```bash
-ene resume
+ene resume             # choose interactively
+ene resume SESSION_ID  # resume directly
 ```
 
-Or resume a known session directly:
-
-```bash
-ene resume SESSION_ID
-```
-
-Within a running session, `/rewind` previews an earlier prompt boundary and lets you restore the conversation, tracked file changes, or both. The selected prompt returns to the editor so you can revise it before branching. `/fork [name]` uses the same prompt picker but starts a new, optionally named session at that conversation state, leaving both the old session and tracked files unchanged.
-
-When `write_file`, `edit_file`, or `multi_edit` writes through a symlink, rewind restores the target file and preserves the symlink. This also applies to targets outside the workspace and paths reached through a symlinked directory.
+- **Storage:** `./.ene/`; Ene maintains a `.gitignore` containing `*` to exclude local state.
+- **`/rewind`:** preview an earlier prompt and restore conversation, tracked files, or both. Edit the restored prompt before branching.
+- **`/fork [name]`:** start a new session at an earlier prompt without changing the old session or tracked files.
+- **Symlinks:** rewind restores targets written by `write_file`, `edit_file`, or `multi_edit`, preserving symlinks—even through symlinked directories or outside the workspace.
