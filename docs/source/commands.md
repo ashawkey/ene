@@ -37,6 +37,7 @@ See [Library](library.md) for `ene lib` workflows.
 
 ### Attach and replay
 
+- Ambiguous name or ID prefixes list all matching sessions. Copy an exact name (or the ID for an unnamed session) to retry `ene attach`; quote names containing spaces.
 - Replay shows the full conversation's prompts and final assistant responses, with omitted-message counts in place. `/resume` uses the same display.
 - Picker states: `● working`, `✓ done · needs review`, and `○ waiting`. Completed sessions appear first, newest status change first.
 - One owner per session: a terminal attachment waits briefly for another terminal to release it; Web UI ownership is refused immediately. Detach in the browser first.

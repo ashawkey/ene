@@ -247,6 +247,25 @@ def test_attach_uses_fuzzy_name_resolution(monkeypatch):
     assert attached == [record]
 
 
+def test_attach_shows_all_ambiguous_matches(monkeypatch):
+    errors = []
+    attached = []
+    monkeypatch.setattr("ene.live.list_records", lambda: [
+        {"runtime_id": "first-id", "name": "test"},
+        {"runtime_id": "second-id", "name": "team"},
+    ])
+    monkeypatch.setattr(cli.AgentConsole, "error", lambda self, msg: errors.append(msg))
+    monkeypatch.setattr(cli, "_attach_live", attached.append)
+
+    cli.cmd_attach("te")
+
+    assert errors == [
+        "Ambiguous live session: te\n"
+        "Use an exact name or ID from these matches:\n  test\n  team"
+    ]
+    assert attached == []
+
+
 def test_attach_switches_to_record_selected_before_detach(monkeypatch):
     current = {"runtime_id": "current"}
     other = {"runtime_id": "other"}

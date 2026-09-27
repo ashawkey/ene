@@ -300,7 +300,14 @@ def resolve(identifier: str, *, fuzzy_name: bool = False) -> dict[str, Any]:
         return record
     if not exact and not prefixes:
         raise LiveError(f"Live session not found: {identifier}")
-    raise LiveError(f"Ambiguous live session: {identifier}")
+    choices = "\n".join(
+        f"  {record.get('name') or record['runtime_id']}"
+        for record in prefixes
+    )
+    raise LiveError(
+        f"Ambiguous live session: {identifier}\n"
+        f"Use an exact name or ID from these matches:\n{choices}"
+    )
 
 
 def find_conversation(workspace: str, conversation_id: str) -> dict[str, Any] | None:

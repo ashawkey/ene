@@ -329,11 +329,37 @@ def test_resolve_fuzzy_name_rejects_ambiguous_prefix(monkeypatch):
     records = [
         {"runtime_id": "first-id", "name": "test", "status": "ready"},
         {"runtime_id": "second-id", "name": "team", "status": "ready"},
+        {"runtime_id": "third-id", "name": "other", "status": "ready"},
     ]
     monkeypatch.setattr(live, "list_records", lambda: records)
 
-    with pytest.raises(live.LiveError, match="Ambiguous live session: te"):
+    with pytest.raises(live.LiveError) as exc:
         live.resolve("te", fuzzy_name=True)
+
+    assert str(exc.value) == (
+        "Ambiguous live session: te\n"
+        "Use an exact name or ID from these matches:\n  test\n  team"
+    )
+    for record in records[:2]:
+        assert live.resolve(record["name"], fuzzy_name=True) is record
+
+
+@pytest.mark.parametrize("fuzzy_name", [False, True])
+def test_resolve_ambiguous_id_prefix_lists_names_and_unnamed_ids(monkeypatch, fuzzy_name):
+    records = [
+        {"runtime_id": "abc123", "name": "a full session name"},
+        {"runtime_id": "abc456", "name": ""},
+        {"runtime_id": "xyz789", "name": "unrelated"},
+    ]
+    monkeypatch.setattr(live, "list_records", lambda: records)
+
+    with pytest.raises(live.LiveError) as exc:
+        live.resolve("abc", fuzzy_name=fuzzy_name)
+
+    assert str(exc.value) == (
+        "Ambiguous live session: abc\n"
+        "Use an exact name or ID from these matches:\n  a full session name\n  abc456"
+    )
 
 
 def test_resolve_exact_name_wins_over_other_name_prefix(monkeypatch):
