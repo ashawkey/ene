@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from ene.backend import LLMAgent
-from ene.config import CONFIG_PATH, conf
+from ene.config import conf
 from ene.live import (
     REQUEST_TIMEOUT,
     TERMINAL_IDLE_TIMEOUT,
+    WORKER_API_KEY_ENV,
     LiveError,
     read_record,
     recv_frame,
@@ -27,8 +28,7 @@ from ene.live import (
     update_identity,
     update_record,
 )
-from ene.models import resolve_model_alias
-from ene.providers import provider_names
+from ene.model_config import resolve_session_model
 from ene.replay import HiddenMessages, compact_replay, hidden_message
 from ene.tools.process_manager import format_process_status, process_status_snapshot
 from ene.ui import AgentConsole
@@ -361,36 +361,19 @@ class Worker:
         return status
 
     def _make_agent(self) -> LLMAgent:
-        options = self.record.get("options", {})
-        alias = options.get("model", "")
-        models = conf.get("openai", {})
-        if not alias:
-            if not models:
-                raise LiveError(f"No models found in config: {CONFIG_PATH}")
-            alias = next(iter(models))
+        options = dict(self.record.get("options", {}))
+        api_key = os.environ.pop(WORKER_API_KEY_ENV, None)
+        if api_key is not None:
+            options["api_key"] = api_key
         try:
-            alias = resolve_model_alias(alias, models)
+            model_options = resolve_session_model(options, conf)
         except ValueError as exc:
             raise LiveError(str(exc)) from exc
-        model_conf = models.get(alias)
-        if not isinstance(model_conf, dict):
-            raise LiveError(f"Model '{alias}' not found in config: {CONFIG_PATH}")
-        provider = model_conf.get("provider", "openai")
-        if provider not in provider_names():
-            raise LiveError(f"Unknown provider: {provider}")
         console = AgentConsole(events=self.events, render_terminal=False)
         return LLMAgent(
-            model=model_conf.get("model", alias),
-            api_key=model_conf.get("api_key", ""),
-            base_url=model_conf.get("base_url", ""),
-            api=model_conf.get("api", "chat_completions"),
-            provider_name=provider,
-            model_alias=alias,
+            **model_options,
             verbose=bool(options.get("verbose")),
             stream=bool(options.get("stream", True)),
-            reasoning_effort=options.get("reasoning_effort") or model_conf.get("reasoning_effort", "high"),
-            context_length=model_conf.get("context_length"),
-            max_output_tokens=model_conf.get("max_output_tokens"),
             persona=options.get("persona") or "",
             console=console,
             events=self.events,
@@ -421,7 +404,7 @@ class Worker:
         )
         self.record = update_record(
             self.runtime_id,
-            model=self.agent.model_alias,
+            model=self.agent.model_alias or self.agent.model,
         )
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

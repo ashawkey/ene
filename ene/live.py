@@ -31,6 +31,8 @@ STOP_RECORD_GRACE = 30.0
 # session merely because status probes fail; only a definitively exited worker
 # is stale.
 MAX_FRAME_BYTES = 2 * 1024 * 1024
+# Private, one-time parent-to-worker credential handoff; never written to a record.
+WORKER_API_KEY_ENV = "_ENE_WORKER_API_KEY"
 
 # Attached terminals send a heartbeat ("ping") frame every
 # TERMINAL_PING_INTERVAL seconds. A force-killed shell leaves a half-open
@@ -366,10 +368,14 @@ def create_record(*, name: str, workspace: str, options: dict[str, Any]) -> dict
     return record
 
 
-def launch_worker(record: dict[str, Any]) -> dict[str, Any]:
+def launch_worker(record: dict[str, Any], *, api_key: str | None = None) -> dict[str, Any]:
     path = record_path(str(record["runtime_id"]))
     log_path = path.with_suffix(".log")
-    kwargs: dict[str, Any] = {}
+    env = os.environ.copy()
+    env.pop(WORKER_API_KEY_ENV, None)
+    if api_key is not None:
+        env[WORKER_API_KEY_ENV] = api_key
+    kwargs: dict[str, Any] = {"env": env}
     if os.name == "nt":
         kwargs["creationflags"] = (
             getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
@@ -407,9 +413,11 @@ def start_session(*, name: str, workspace: str, options: dict[str, Any]) -> dict
         existing = find_conversation(workspace, resume)
         if existing is not None:
             return existing
+    options = dict(options)
+    api_key = options.pop("api_key", None)
     record = create_record(name=name, workspace=workspace, options=options)
     try:
-        return launch_worker(record)
+        return launch_worker(record, api_key=api_key)
     except Exception:
         unlink_record(record_path(str(record["runtime_id"])))
         raise

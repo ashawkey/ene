@@ -252,11 +252,12 @@ class LLMAgent(
         terminal_prompts: bool = True,
         session_name: str = "",
         api: str = "chat_completions",
+        model_profile: str | None = None,
     ):
 
         self.model = model
         self.model_alias = model_alias
-        self.profile = resolve_model_profile(model)
+        self.profile = resolve_model_profile(model, model_profile)
         self.provider_name = provider_name
         self._provider_settings = ProviderSettings(
             api_key=api_key,

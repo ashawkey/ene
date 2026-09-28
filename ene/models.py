@@ -67,8 +67,14 @@ def resolve_model_alias(name: str, aliases: Iterable[str]) -> str:
     raise ValueError(f"Model '{name}' not found in config. Available: {', '.join(available)}")
 
 
-def resolve_model_profile(model_id: str) -> ModelProfile:
-    """Resolve capabilities from the actual API model ID, never a display alias."""
+def resolve_model_profile(model_id: str, profile_name: str | None = None) -> ModelProfile:
+    """Use an exact profile override, otherwise infer from the actual API model ID."""
+    if profile_name is not None:
+        for name, profile in MODEL_CATALOG:
+            if name == profile_name:
+                return profile
+        available = ", ".join(name for name, _ in MODEL_CATALOG)
+        raise ValueError(f"Unknown model profile '{profile_name}'. Available: {available}")
     lower = model_id.lower()
     for pattern, profile in MODEL_CATALOG:
         if pattern in lower:

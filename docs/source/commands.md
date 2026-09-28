@@ -11,11 +11,49 @@ The default model is the first entry in `~/.ene.yaml`.
 
 | Option | Meaning |
 |---|---|
-| `--model ALIAS` | Select a model alias or unique alias prefix from `~/.ene.yaml`; exact matches take priority. |
+| `--model NAME` | Select a configured alias or unique alias prefix; with `--base-url`, use the literal server model ID. |
+| `--base-url URL` | Use a temporary OpenAI-compatible endpoint without adding a YAML entry. Requires `--model`. |
+| `--api-key-env VAR` / `--api-key KEY` | Supply temporary endpoint credentials; mutually exclusive. Prefer an environment variable. |
+| `--api MODE` | Temporary endpoint API: `chat_completions` (default) or `responses`. |
+| `--model-profile NAME` | Select an exact catalog profile instead of inferring capabilities from the model ID; see `ene new --help` for names. |
+| `--context-length TOKENS` | Override the context window with a positive token count. |
+| `--max-output-tokens TOKENS` | Override the output limit with a positive token count. |
 | `--persona NAME` | Start with a discovered persona. |
 | `--verbose` | Show detailed output. |
 | `--stream` / `--no-stream` | Enable or disable response-token streaming; streaming is the default. |
 | `--reasoning-effort LEVEL` | Override effort with `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+
+### Temporary endpoints and model profiles
+
+```bash
+ene --base-url http://localhost:8000/v1 \
+    --model qwen-sft --model-profile qwen3.8-27b \
+    --context-length 32768 --max-output-tokens 4096
+```
+
+The server receives `qwen-sft`; the profile supplies reasoning behavior, image support, and default token limits. Set limits to match your deployment; the server must support the selected API and tool calling.
+
+**Connection and credentials**
+
+- Include `/v1` when your server requires it.
+- `--base-url` bypasses alias lookup and never inherits configured endpoint credentials.
+- Unauthenticated servers need no key flag; authenticated servers can use `--api-key-env VLLM_API_KEY` with that variable set.
+- `--api-key`, `--api-key-env`, and `--api` require `--base-url`.
+- Other user settings, including configured recap/summary models, still apply.
+
+Prefer `--api-key-env`: `--api-key` can expose secrets in shell history and process listings. Neither form writes the key to Ene's live records or saved conversations.
+
+**Profiles and lifetime**
+
+- Profile and token-limit overrides also work with configured aliases.
+- Token-limit precedence: CLI override → configured limit → profile default.
+- Without `--model-profile`, capabilities are inferred from the actual model ID.
+- Detach/attach retains temporary settings. Stopped conversations require the flags again with `ene resume ID`.
+- Resuming an already-live session attaches to its existing backend.
+- `/model ALIAS` replaces the temporary settings with that alias's configuration and inferred profile.
+- Temporary models are not added to `ene models` or the `/model` alias list.
+- `/new` and `/clear` from a temporary session use the default configured model, not its temporary connection.
+- Subagents do not inherit temporary endpoint or profile overrides; they use configured models.
 
 ## Top-level commands
 

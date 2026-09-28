@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from importlib.metadata import PackageNotFoundError, distribution
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -24,7 +24,8 @@ from rich.table import Table
 from ene.backend import LLMAgent
 from ene.backend.sessions import _session_choice_labels
 from ene.config import CONFIG_PATH, conf
-from ene.models import REASONING_EFFORTS, ReasoningEffort, resolve_model_alias, resolve_model_profile
+from ene.model_config import resolve_session_model
+from ene.models import MODEL_CATALOG, REASONING_EFFORTS, ReasoningEffort, resolve_model_profile
 from ene.providers import provider_names
 from ene.ui import AgentConsole
 
@@ -37,6 +38,13 @@ from ene.ui import AgentConsole
 class Args:
     """Terminal-based AI agent with tool-use, web access, and shell execution."""
     model: str = ""
+    base_url: str | None = None
+    api_key: str | None = None
+    api_key_env: str | None = None
+    api: str | None = None
+    model_profile: str | None = None
+    context_length: int | None = None
+    max_output_tokens: int | None = None
     persona: str = ""  # persona to run as (see /persona; default: coder)
     verbose: bool = False
     stream: bool = True  # stream the response token-by-token as it is generated
@@ -76,13 +84,8 @@ def get_agent(args: Args) -> "LLMAgent | None":
         return model_conf
 
     try:
-        if not args.model:
-            if not openai_conf:
-                raise ValueError(f"No models found in config: {CONFIG_PATH}")
-            args.model = next(iter(openai_conf))
-
-        args.model = resolve_model_alias(args.model, openai_conf)
-        model_conf = model_config(args.model)
+        model_options = resolve_session_model(asdict(args), conf)
+        args.model = model_options["model_alias"] or model_options["model"]
         for purpose in ("recap", "summary"):
             config_key = f"{purpose}_model"
             alias = conf.get(config_key)
@@ -95,21 +98,11 @@ def get_agent(args: Args) -> "LLMAgent | None":
         console.error(str(e))
         return None
 
-    provider_name = model_conf.get("provider", "openai")
-
     try:
         agent = LLMAgent(
-            model=model_conf.get("model", args.model),
-            api_key=model_conf.get("api_key", ""),
-            base_url=model_conf.get("base_url", ""),
-            api=model_conf.get("api", "chat_completions"),
-            provider_name=provider_name,
-            model_alias=args.model,
+            **model_options,
             verbose=args.verbose,
             stream=args.stream,
-            reasoning_effort=args.reasoning_effort or model_conf.get("reasoning_effort", "high"),
-            context_length=model_conf.get("context_length"),
-            max_output_tokens=model_conf.get("max_output_tokens"),
             persona=args.persona,
             console=console,
         )
@@ -469,6 +462,10 @@ def _attach_live(record: dict) -> None:
     while record is not None:
         def start_new(name: str) -> dict:
             options = dict(record.get("options", {}))
+            if options.get("base_url") is not None:
+                # A temporary connection belongs only to its original live session.
+                for key in ("model", "base_url", "api", "model_profile", "context_length", "max_output_tokens"):
+                    options.pop(key, None)
             options["resume"] = None
             return start_session(
                 name=name, workspace=record["workspace"], options=options
@@ -513,10 +510,22 @@ def cmd_chat(args: Args):
         "reasoning_effort": args.reasoning_effort,
         "resume": session_id,
     }
+    overrides = {
+        key: getattr(args, key)
+        for key in ("base_url", "api_key", "api_key_env", "api", "model_profile", "context_length", "max_output_tokens")
+        if getattr(args, key) is not None
+    }
+    options.update(overrides)
     try:
+        if overrides:
+            # Validate overrides before spawning; resolve an environment key only in memory.
+            model_options = resolve_session_model(options, conf)
+            options.pop("api_key_env", None)
+            if args.base_url is not None:
+                options["api_key"] = model_options["api_key"]
         record = start_session(name=args.name, workspace=os.getcwd(), options=options)
         _attach_live(record)
-    except LiveError as exc:
+    except (LiveError, ValueError) as exc:
         console.error(str(exc))
 
 
@@ -617,7 +626,15 @@ def cmd_kill(identifier: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 def _add_session_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", default="", help="model alias from ~/.ene.yaml")
+    parser.add_argument("--model", default="", help="configured alias, or server model ID with --base-url")
+    parser.add_argument("--base-url", help="temporary OpenAI-compatible endpoint (include /v1 if required)")
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument("--api-key", help="temporary endpoint API key (prefer --api-key-env)")
+    credentials.add_argument("--api-key-env", metavar="VAR", help="environment variable containing the endpoint API key")
+    parser.add_argument("--api", choices=("chat_completions", "responses"), help="temporary endpoint API (default: chat_completions)")
+    parser.add_argument("--model-profile", choices=[name for name, _ in MODEL_CATALOG], help="use an exact catalog profile instead of inferring from the model ID")
+    parser.add_argument("--context-length", type=int, help="override the context window in tokens (positive integer)")
+    parser.add_argument("--max-output-tokens", type=int, help="override the output token limit (positive integer)")
     parser.add_argument("--persona", default="", help="persona name or unique prefix to run as")
     parser.add_argument("--verbose", action="store_true", help="show detailed output")
     stream = parser.add_mutually_exclusive_group()
@@ -712,6 +729,13 @@ def main(argv: list[str] | None = None) -> int:
             name = args.name
         cmd_chat(Args(
             model=args.model,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            api_key_env=args.api_key_env,
+            api=args.api,
+            model_profile=args.model_profile,
+            context_length=args.context_length,
+            max_output_tokens=args.max_output_tokens,
             persona=args.persona,
             name=name,
             verbose=args.verbose,
