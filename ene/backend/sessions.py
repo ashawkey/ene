@@ -269,6 +269,16 @@ class SessionMixin:
             )
             return
 
+        # Restoring fails on a persona that no longer exists; find out before
+        # files or the durable head move, not halfway through the rewind.
+        saved_persona = target.get("persona")
+        if mode != "code" and saved_persona:
+            try:
+                get_persona(saved_persona, personas=self.personas, allow_prefix=False)
+            except ValueError as e:
+                self.console.error(f"Cannot rewind to revision {target_id[:10]}: {e}")
+                return
+
         if mode == "both":
             self._apply_code_plan(plan, target_id)
             data = store.checkout(target_id)

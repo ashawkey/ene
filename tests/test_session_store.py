@@ -374,6 +374,72 @@ def test_session_history_ignores_only_a_torn_final_record(tmp_path: Path):
         SessionStore(tmp_path, "session")
 
 
+def test_unterminated_final_record_is_not_read_before_the_next_write_drops_it(tmp_path: Path):
+    store = SessionStore(tmp_path, "session")
+    store.commit(
+        _state(1, "saved"), parent_id=None, code_parent_id=None, changes=[], reason="round"
+    )
+    store.rename("kept")
+    with store.history_path.open("ab") as f:
+        f.write(b'{"type":"session_metadata","sessionName":"torn","createdAt":0}')
+
+    assert SessionStore(tmp_path, "session").session_name == "kept"
+    store.rename("kept")  # truncates the tail; nothing that was read is lost
+    assert SessionStore(tmp_path, "session").session_name == "kept"
+
+
+def test_conversation_rewind_to_unchanged_parent_moves_durable_head(tmp_path: Path):
+    store = SessionStore(tmp_path, "session")
+    first = Message.user("first")
+    root, _, _ = store.commit(
+        {"round_id": 1, "messages": [first]},
+        parent_id=None, code_parent_id=None, changes=[], reason="round",
+    )
+    store.commit(
+        {"round_id": 2, "messages": [first, Message.user("second")]},
+        parent_id=root, code_parent_id=None, changes=[], reason="round",
+    )
+
+    revision, _, created = store.commit(
+        {"round_id": 1, "messages": [first]},
+        parent_id=root, code_parent_id=None, changes=[], reason="conversation-rewind",
+    )
+
+    assert (revision, created) == (root, False)
+    reloaded = SessionStore(tmp_path, "session")
+    assert reloaded.head_id == root
+    assert reloaded.summary()["round_id"] == 1
+
+
+def test_failed_append_does_not_mark_messages_as_stored(tmp_path: Path, monkeypatch):
+    import ene.session_store as session_store
+
+    store = SessionStore(tmp_path, "session")
+    first = Message.user("first")
+    root, _, _ = store.commit(
+        {"messages": [first]}, parent_id=None, code_parent_id=None, changes=[], reason="round"
+    )
+    second = Message.user("second")
+
+    def no_space(path, records):
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_store, "append_jsonl", no_space)
+        with pytest.raises(OSError):
+            store.commit(
+                {"messages": [first, second]},
+                parent_id=root, code_parent_id=None, changes=[], reason="round",
+            )
+
+    tip, _, _ = store.commit(
+        {"messages": [first, second, Message.user("third")]},
+        parent_id=root, code_parent_id=None, changes=[], reason="round",
+    )
+    restored = SessionStore(tmp_path, "session").materialize(tip)
+    assert [message.text for message in restored["messages"]] == ["first", "second", "third"]
+
+
 def test_code_revision_can_move_between_branches(tmp_path: Path):
     sessions = tmp_path / "sessions"
     work = tmp_path / "work"
@@ -657,3 +723,45 @@ def test_checkout_requires_a_saved_session(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="Save the session"):
         tracker.plan_checkout(None)
+
+
+@pytest.mark.parametrize("operation", ["edit_file", "multi_edit"])
+def test_rewind_restores_exact_original_bytes_after_edit(tmp_path, operation):
+    store, tracker, work = _session(tmp_path)
+    target = work / "crlf.txt"
+    original = b"\xef\xbb\xbfa\r\nb  \r\nc\r\n"
+    target.write_bytes(original)
+    executor = ToolExecutor(
+        console=AgentConsole(render_terminal=False), work_dir=str(work),
+        change_tracker=tracker, get_round_id=lambda: 1,
+    )
+    edit = {"old_text": "b\n", "new_text": "B\n"}
+    arguments = {"edits": [edit]} if operation == "multi_edit" else edit
+
+    assert executor.execute(operation, {"file": "crlf.txt", **arguments})["success"]
+    assert target.read_bytes() == b"\xef\xbb\xbfa\r\nB\r\nc\r\n"
+    _round(store, tracker, None, 1, "edit")
+
+    plan = tracker.plan_checkout(None)
+    assert not plan.dirty
+    tracker.apply_plan(plan)
+    assert target.read_bytes() == original
+
+
+def test_apply_plan_failure_names_already_restored_paths(tmp_path, monkeypatch):
+    store, tracker, work = _session(tmp_path)
+    _write(tracker, work, 1, "a.txt", "a\n")
+    _write(tracker, work, 1, "b.txt", "b\n")
+    _round(store, tracker, None, 1, "one")
+    plan = tracker.plan_checkout(None)
+    first_path = plan.steps[0][0]["path"]
+    apply = tracker._apply
+
+    def fail_second(record, *, forward):
+        if record.path != first_path:
+            raise OSError("disk full")
+        return apply(record, forward=forward)
+
+    monkeypatch.setattr(tracker, "_apply", fail_second)
+    with pytest.raises(RuntimeError, match=f"disk full. Already restored: {first_path}$"):
+        tracker.apply_plan(plan)

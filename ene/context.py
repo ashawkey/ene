@@ -14,12 +14,14 @@ for the cache invalidation it causes.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from ene.messages import ContentPart, ImagePart, Message, TextPart, ToolCall
+from ene.tools.formatting import result_text_failed
 from ene.ui import AgentConsole
 from ene.utils.interrupt import RequestInterrupted
 
@@ -751,8 +753,14 @@ def _identity_key(tool_name: str, arguments: dict[str, Any]) -> tuple | None:
     return (tool_name, *(str(arguments.get(field, "")) for field in fields))
 
 
+def _file_key(arguments: dict[str, Any]) -> str:
+    """Comparable spelling of a call's ``file`` so ``./a.py`` matches ``a.py``."""
+    path = str(arguments.get("file", ""))
+    return os.path.normpath(path) if path else ""
+
+
 def _written_path(tool_name: str, arguments: dict[str, Any]) -> str:
-    return str(arguments.get("file", "")) if tool_name in _WRITE_TOOLS else ""
+    return _file_key(arguments) if tool_name in _WRITE_TOOLS else ""
 
 
 def _call_digest(arguments: dict[str, Any]) -> str:
@@ -870,7 +878,8 @@ def _evictable_results(
         if key is not None:
             latest_identity[key] = i
         written = _written_path(name, arguments)
-        if written:
+        # A failed write left the file as it was, so earlier reads stay valid.
+        if written and not result_text_failed(msg.text or ""):
             latest_write[written] = i
         if start <= i < end and name in PRUNABLE_TOOLS:
             zone.append((i, name, arguments))
@@ -882,7 +891,7 @@ def _evictable_results(
         if key is not None and latest_identity.get(key, i) > i:
             reason = "superseded by a later identical call"
         elif name == "read_file":
-            path = str(arguments.get("file", ""))
+            path = _file_key(arguments)
             if path and latest_write.get(path, i) > i:
                 reason = "file modified after this read"
         evictable.append(_Evictable(i, name, arguments, reason))

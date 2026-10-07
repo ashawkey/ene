@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import queue
-import select
+import selectors
+import signal
 import socket
 import sys
 import threading
@@ -36,8 +37,18 @@ from ene.utils.io import AgentEvent, CancellationToken, EventHub, InputBroker, P
 
 
 ATTACH_EVENT_QUEUE_SIZE = 1000
+# Hard deadline for each shutdown phase (agent cancellation, then save/close)
+# before the watchdog force-exits a hung worker.
+SHUTDOWN_PHASE_TIMEOUT = 15.0
 # Longest last-user-message preview reported to session pickers.
 PREVIEW_LIMIT = 160
+
+
+def _wait_readable(sock: socket.socket, timeout: float) -> bool:
+    """Wait for input without select()'s FD_SETSIZE limit on descriptor numbers."""
+    with selectors.DefaultSelector() as selector:
+        selector.register(sock, selectors.EVENT_READ)
+        return bool(selector.select(timeout))
 
 
 def _replay_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -148,6 +159,8 @@ class Worker:
         self.server: socket.socket | None = None
         self._shutdown_lock = threading.Lock()
         self._shutdown_started = False
+        self._shutdown_deadline = 0.0
+        self._shutdown_done = threading.Event()
 
     def _request_stop(self) -> None:
         """Cancel active work and disconnect clients before worker shutdown."""
@@ -194,18 +207,29 @@ class Worker:
             except OSError:
                 pass
         if first_request:
+            self._extend_shutdown_deadline()
             threading.Thread(
                 target=self._force_exit_after_timeout,
                 name="ene-live-shutdown-watchdog",
                 daemon=True,
             ).start()
 
+    def _extend_shutdown_deadline(self) -> None:
+        """Start a fresh watchdog phase once shutdown has made progress."""
+        self._shutdown_deadline = time.monotonic() + SHUTDOWN_PHASE_TIMEOUT
+
     def _force_exit_after_timeout(self) -> None:
-        """Ensure an uninterruptible provider/tool call cannot orphan the worker."""
-        if not self.stop_event.wait(15):
-            return
-        time.sleep(15)
-        os._exit(1)
+        """Ensure an uninterruptible provider/tool call cannot orphan the worker.
+
+        Exits only when a shutdown phase overruns its deadline, or when a
+        lingering non-daemon thread keeps the process alive after cleanup.
+        """
+        while True:
+            remaining = self._shutdown_deadline - time.monotonic()
+            if remaining <= 0:
+                os._exit(0 if self._shutdown_done.is_set() else 1)
+                return
+            time.sleep(min(remaining, 0.5))
 
     def _seed_last_user_message(self) -> None:
         """Show a resumed conversation's last request before any new one runs."""
@@ -433,6 +457,7 @@ class Worker:
             self._request_stop()
             self._finish_agent(agent_thread)
             self._cleanup_record()
+            self._shutdown_done.set()
 
     def _finish_agent(self, agent_thread: threading.Thread) -> None:
         """Wait for cancellation to settle, then persist and close the agent.
@@ -443,6 +468,8 @@ class Worker:
         """
         agent_thread.join()
         assert self.agent is not None
+        # Cancellation settled; give save and process cleanup their own budget.
+        self._extend_shutdown_deadline()
         try:
             try:
                 self.agent.save_session(self.agent._session_id)
@@ -496,8 +523,7 @@ class Worker:
         try:
             # A client that connects and then dies without speaking would
             # otherwise park this thread on recv() for the worker's lifetime.
-            ready, _, _ = select.select([sock], [], [], REQUEST_TIMEOUT)
-            if not ready:
+            if not _wait_readable(sock, REQUEST_TIMEOUT):
                 return
             hello = recv_frame(sock)
             if hello.get("token") != self.token:
@@ -668,8 +694,7 @@ class Worker:
                     # keeps the deadline off the send path, where a terminal
                     # that briefly stops draining must stay attached until the
                     # bounded event queue decides otherwise.
-                    ready, _, _ = select.select([sock], [], [], TERMINAL_IDLE_TIMEOUT)
-                    if not ready:
+                    if not _wait_readable(sock, TERMINAL_IDLE_TIMEOUT):
                         return
                     action = recv_frame(sock)
                 except (OSError, EOFError, ValueError, LiveError, json.JSONDecodeError):
@@ -738,6 +763,22 @@ class Worker:
             sender.join(timeout=1)
 
 
+def _install_stop_signals(worker: Worker) -> None:
+    """Route SIGTERM/SIGHUP into the normal stop path.
+
+    The default action would kill the worker without saving the last round or
+    stopping tool processes, which run in their own sessions and would be
+    orphaned. The handler only sets the stop event: the accept loop notices it
+    within its poll interval and runs the same cleanup as a ``kill`` request.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for name in ("SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            signal.signal(signum, lambda *_: worker.stop_event.set())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
@@ -747,6 +788,7 @@ def main(argv: list[str] | None = None) -> int:
     if record is None:
         return 2
     worker = Worker(record)
+    _install_stop_signals(worker)
     try:
         worker.start()
     except BaseException as exc:

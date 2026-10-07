@@ -120,6 +120,10 @@ class OpenAICodexProvider(LLMProvider):
             try:
                 return refresh_openai_codex(current)
             except ProviderError as e:
+                if e.retryable:
+                    # Network failure: the refresh token is still good, so let
+                    # the agent loop retry instead of demanding a new login.
+                    raise
                 raise ProviderError(
                     "OpenAI Codex OAuth refresh failed; run /login openai-codex again.",
                     status_code=e.status_code,

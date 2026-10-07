@@ -1,5 +1,3 @@
-
-
 <p align="center">
     <picture>
     <img alt="logo" src="docs/public/favicon.svg" width="10%">

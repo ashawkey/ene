@@ -496,3 +496,30 @@ def test_astra_codex_reasoning(effort, expected):
         reasoning_effort=effort,
     ))
     assert body["reasoning"] == {"effort": expected, "summary": "auto"}
+
+
+@pytest.mark.parametrize("effort, expected", [
+    ("none", "none"), ("minimal", "low"), ("high", "high"), ("max", "max"),
+])
+def test_openai_6_codex_reasoning(effort, expected):
+    body = _build_body(CompletionRequest(
+        model="gpt-6-sol",
+        messages=[Message.user("inspect")],
+        reasoning_effort=effort,
+    ))
+    assert body["reasoning"] == {"effort": expected, "summary": "auto"}
+
+
+def test_oauth_refresh_network_error_stays_retryable(monkeypatch, tmp_path):
+    def refresh(current):
+        raise ProviderError("OpenAI Codex token refresh failed: timeout", retryable=True)
+
+    monkeypatch.setattr("ene.providers.openai_codex.refresh_openai_codex", refresh)
+    store = CredentialStore(tmp_path / "auth.json")
+    store.write_oauth("openai-codex", _credential(expires=time.time() - 1))
+    provider = OpenAICodexProvider(ProviderSettings(), store=store)
+
+    with pytest.raises(ProviderError) as info:
+        provider._resolve_credential()
+
+    assert info.value.retryable is True

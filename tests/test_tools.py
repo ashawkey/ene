@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import tracemalloc
+import types
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1571,3 +1572,204 @@ def test_replay_only_calls_a_result_failed_when_it_is_formatted_as_one():
     assert failed(format_tool_result({"success": False, "error": "boom", "stdout": "out"}))
     assert not failed("grep hit: raise ValueError('error')")
     assert not failed("")
+
+
+# ----- line endings, bounded reads, symlinks, web content types --------------
+
+
+def test_edits_preserve_crlf_bom_and_mode(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    target = tmp_path / "crlf.txt"
+    target.write_bytes(b"\xef\xbb\xbfa\r\nb\r\nc\r\n")
+    target.chmod(0o755)
+
+    assert te._edit_file("crlf.txt", "b\n", "B\nB2\n")["success"]
+    assert target.read_bytes() == b"\xef\xbb\xbfa\r\nB\r\nB2\r\nc\r\n"
+    assert te._multi_edit("crlf.txt", [{"old_text": "a", "new_text": "A"}])["success"]
+    assert target.read_bytes() == b"\xef\xbb\xbfA\r\nB\r\nB2\r\nc\r\n"
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o755
+
+    lf = tmp_path / "lf.txt"
+    lf.write_bytes(b"a\nb\n")
+    assert te._edit_file("lf.txt", "b", "B")["success"]
+    assert lf.read_bytes() == b"a\nB\n"
+
+
+def test_whitespace_tolerant_match_handles_trailing_newline():
+    content = "foo  \nbar"
+    spans = find_match(content, "foo\n")
+    assert spans == [(0, 6)]
+    assert apply_edit(content, "foo\n", "baz\n", False)[0] == "baz\nbar"
+    # A trailing newline must still be followed by a line break in the file.
+    assert find_match("bar\nfoo  ", "foo\n") == []
+
+
+def test_read_file_ignores_undecodable_bytes_outside_window(tmp_path):
+    target = tmp_path / "mixed.txt"
+    target.write_bytes(b"".join(b"line %d\r\n" % i for i in range(10)) + b"\xff\xfe\n")
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+
+    result = te._read_file("mixed.txt", limit=5)
+    assert result["success"]
+    assert result["content"].startswith("line 0\nline 1\n")
+    assert "5 of 11 lines shown" in result["content"]
+    assert not te._read_file("mixed.txt", offset=11)["success"]
+
+
+def test_write_failure_leaves_no_change_record(tmp_path):
+    tracker = types.SimpleNamespace(records=[])
+    tracker.track_write = lambda *args: tracker.records.append(args) or args
+    tracker.discard = lambda record: tracker.records.remove(record)
+    te = ToolExecutor(
+        console=_SilentConsole(), work_dir=str(tmp_path),
+        change_tracker=tracker, get_round_id=lambda: 1,
+    )
+    (tmp_path / "dir").mkdir()
+
+    with pytest.raises(OSError):
+        te._write_file("dir", "text")
+    assert tracker.records == []
+    assert te._write_file("ok.txt", "text")["success"]
+    assert len(tracker.records) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_remove_file_removes_symlinks_themselves(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "keep.txt").write_text("x")
+    (tmp_path / "dir-link").symlink_to(tmp_path / "real")
+    (tmp_path / "dangling").symlink_to(tmp_path / "missing")
+
+    assert te._remove_file("dir-link")["success"]
+    assert te._remove_file("dangling")["success"]
+    assert not os.path.lexists(tmp_path / "dir-link")
+    assert not os.path.lexists(tmp_path / "dangling")
+    assert (tmp_path / "real" / "keep.txt").exists()
+
+
+def test_glob_in_subdirectory_honors_parent_gitignore(tmp_path):
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep is not installed")
+    (tmp_path / ".gitignore").write_text("secret.py\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "secret.py").write_text("")
+    (tmp_path / "sub" / "ok.py").write_text("")
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+
+    assert te._glob_files("*.py", base_dir="sub")["matches"] == ["ok.py"]
+
+
+def test_exec_command_bounds_output_without_newlines(tmp_path, monkeypatch):
+    monkeypatch.setattr(command_tools, "MAX_PENDING_LINE_CHARS", 1000)
+    monkeypatch.setattr(command_tools, "MAX_STREAMING_BUFFER_CHARS", 5000)
+    blocks = []
+
+    class _StreamingConsole(_SilentConsole):
+        def stream_output(self, block):
+            blocks.append(block)
+
+    te = ToolExecutor(console=_StreamingConsole(), work_dir=str(tmp_path))
+    res = te._exec_command("python -c \"import sys; sys.stdout.write('x' * 200000)\"")
+    artifact = Path(res["_artifact_path"])
+    try:
+        assert len(artifact.read_text()) == 200_000
+    finally:
+        artifact.unlink(missing_ok=True)
+    assert res["original_output_chars"] == 200_000
+    assert res["stdout"].endswith("x" * 1000)
+    # Partial lines are passed on in bounded pieces rather than held whole.
+    assert max(len(line) for block in blocks for line in block.split("\n")) < 10_000
+
+
+@contextmanager
+def _proxied_response(monkeypatch, body: bytes, headers: dict):
+    """Serve *body* with *headers* for any URL fetched through a local proxy."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    for name in list(os.environ):
+        if name.lower().endswith("_proxy"):
+            monkeypatch.delenv(name)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{server.server_port}")
+        yield lambda: ToolExecutor(console=_SilentConsole())._web_fetch("http://example.test/x")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("content_type", ["application/json", "text/x-python", "text/plain"])
+def test_web_fetch_passes_non_html_text_through(monkeypatch, content_type):
+    source = "if a<b and b>0:\n    print('<p>')\n"
+    with _proxied_response(monkeypatch, source.encode(), {"Content-Type": content_type}) as fetch:
+        result = fetch()
+    assert result["success"]
+    assert result["content"] == source
+
+
+def test_web_fetch_html_keeps_line_breaks(monkeypatch):
+    page = b"<html><title>T</title><body><p>one</p>\n\n<p>two</p><script>x()</script></body></html>"
+    with _proxied_response(monkeypatch, page, {"Content-Type": "text/html"}) as fetch:
+        result = fetch()
+    assert result["content"] == "# T\n\none\ntwo"
+
+
+@pytest.mark.parametrize("content_type", ["image/png", "application/pdf", "application/zip"])
+def test_web_fetch_rejects_declared_binary_content(monkeypatch, content_type):
+    with _proxied_response(monkeypatch, b"%PDF-1.7 binary", {"Content-Type": content_type}) as fetch:
+        result = fetch()
+    assert not result["success"]
+    assert content_type in result["error"]
+    assert "exec_command" in result["error"]
+
+
+@pytest.mark.parametrize("content_type", [None, "application/octet-stream"])
+def test_web_fetch_sniffs_untyped_content(monkeypatch, content_type):
+    headers = {"Content-Type": content_type} if content_type else {}
+    with _proxied_response(monkeypatch, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", headers) as fetch:
+        assert not fetch()["success"]
+    with _proxied_response(monkeypatch, b"plain source\n", headers) as fetch:
+        result = fetch()
+    assert result["success"]
+    assert result["content"] == "plain source\n"
+
+
+def test_web_fetch_bounds_decompressed_size(monkeypatch):
+    import gzip
+
+    text = "hello gzip\n"
+    with _proxied_response(
+        monkeypatch, gzip.compress(text.encode()),
+        {"Content-Type": "text/plain", "Content-Encoding": "gzip"},
+    ) as fetch:
+        assert fetch()["content"] == text
+
+    bomb = gzip.compress(b"\0" * (tools.MAX_WEB_FETCH_BYTES * 4))
+    with _proxied_response(
+        monkeypatch, bomb, {"Content-Type": "text/plain", "Content-Encoding": "gzip"},
+    ) as fetch:
+        tracemalloc.start()
+        try:
+            result = fetch()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+    assert not result["success"]
+    assert "exceeds" in result["error"]
+    assert peak < tools.MAX_WEB_FETCH_BYTES * 3

@@ -31,6 +31,11 @@ from .constants import (
 from .process_util import _process_tree_alive, _terminate_process
 
 
+# Output without a line break is passed on once it grows this large, so a
+# command that never prints a newline cannot grow the pending buffer unbounded.
+MAX_PENDING_LINE_CHARS = 64 * 1024
+
+
 def _command_output_encoding() -> str:
     """Return the encoding configured for command subprocess output."""
     return "utf-8" if sys.platform == "win32" else locale.getpreferredencoding()
@@ -144,6 +149,10 @@ class CommandToolsMixin:
                 size_ref[0] += len(text)
                 while size_ref[0] > MAX_STREAMING_BUFFER_CHARS and len(lines_buf) > 1:
                     size_ref[0] -= len(lines_buf.popleft())
+                if size_ref[0] > MAX_STREAMING_BUFFER_CHARS:
+                    # A single retained entry still keeps only the tail.
+                    lines_buf[0] = lines_buf[0][-MAX_STREAMING_BUFFER_CHARS:]
+                    size_ref[0] = len(lines_buf[0])
                 encoded = text.encode("utf-8")
                 with artifact_lock:
                     if capture_stopped.is_set():
@@ -178,6 +187,9 @@ class CommandToolsMixin:
                             consume(decode_output_text(pending[start:match.end()]))
                             start = match.end()
                         pending = pending[start:]
+                        if len(pending) > MAX_PENDING_LINE_CHARS:
+                            consume(decode_output_text(pending))
+                            pending = b""
                     else:
                         pending += decoder.decode(raw)
                         start = 0
@@ -185,6 +197,9 @@ class CommandToolsMixin:
                             consume(pending[start:match.end()])
                             start = match.end()
                         pending = pending[start:]
+                        if len(pending) > MAX_PENDING_LINE_CHARS:
+                            consume(pending)
+                            pending = ""
                     flush_display()
                 if decoder is None:
                     if pending:

@@ -468,13 +468,18 @@ class SessionStore:
                 self.session_name = session_name
             truncate_torn_jsonl_tail(self.history_path)
             records: list[dict[str, Any]] = []
+            # New records enter the in-memory indexes only after the append
+            # succeeds: a failed write that leaves the file size unchanged would
+            # otherwise let the next commit reference messages never stored.
+            new_messages: dict[str, Message] = {}
             for mid, message in zip(message_ids, messages):
-                if mid not in self.messages:
+                if mid not in self.messages and mid not in new_messages:
                     record = {"type": "message", "id": mid, "message": message.to_wire()}
                     records.append(record)
-                    self.messages[mid] = message
+                    new_messages[mid] = message
 
             code_revision_id = code_parent_id
+            code_record = None
             if changes:
                 code_revision_id = uuid.uuid4().hex
                 code_record = {
@@ -485,7 +490,6 @@ class SessionStore:
                     "createdAt": time.time(),
                 }
                 records.append(code_record)
-                self.code_revisions[code_revision_id] = code_record
 
             if parent_id is not None:
                 current = self.revisions[parent_id]
@@ -495,7 +499,23 @@ class SessionStore:
                     and current.get("codeRevisionId") == code_revision_id
                 )
                 if unchanged:
-                    self.head_id = parent_id
+                    if parent_id != self.head_id:
+                        # Moving back to an existing revision (a conversation
+                        # rewind) must be durable, or reloading restores the
+                        # dropped rounds.
+                        append_jsonl(self.history_path, [{
+                            "type": "head",
+                            "revisionId": parent_id,
+                            "previousId": self.head_id,
+                            "reason": reason,
+                            "createdAt": time.time(),
+                        }])
+                        self._history_stat = self._stat_history()
+                        self.head_id = parent_id
+                        try:
+                            self._write_summary()
+                        except OSError:
+                            pass  # Derived metadata can be rebuilt from the durable history.
                     return parent_id, code_revision_id, False
 
             revision_id = uuid.uuid4().hex
@@ -520,6 +540,9 @@ class SessionStore:
             records.extend((_encode_revision(revision, parent), head))
             append_jsonl(self.history_path, records)
             self._history_stat = self._stat_history()
+            self.messages.update(new_messages)
+            if code_record is not None:
+                self.code_revisions[code_revision_id] = code_record
             self.revisions[revision_id] = revision
             self.revision_order.append(revision_id)
             self.head_id = revision_id

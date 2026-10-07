@@ -91,7 +91,19 @@ def test_launch_worker_uses_private_environment_not_argv_or_files(monkeypatch, t
     monkeypatch.setenv(live.WORKER_API_KEY_ENV, "stale-parent-value")
     record = live.create_record(name="", workspace=str(tmp_path), options={})
     launched = []
-    monkeypatch.setattr(live.subprocess, "Popen", lambda argv, **kwargs: launched.append((argv, kwargs)))
+
+    class FakeWorker:
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    def fake_popen(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return FakeWorker()
+
+    monkeypatch.setattr(live.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(live, "read_record", lambda path: {**record, "status": "ready"})
     monkeypatch.setattr(live, "probe", lambda record: {})
     live.launch_worker(record, api_key="temporary-secret")

@@ -103,8 +103,34 @@ _CONTEXT_OVERFLOW_MARKERS = (
 )
 
 
+# Error codes (or OpenAI error ``type``s) that are permanent even without an
+# HTTP status, as when a Responses stream fails mid-flight or an SSE ``error``
+# event surfaces from the OpenAI SDK after the 200 response has started.
+_PERMANENT_ERROR_CODES = frozenset({
+    "context_length_exceeded",
+    "content_length_limit",
+    "insufficient_quota",
+    "invalid_prompt",
+    "invalid_request_error",
+    "invalid_api_key",
+    "model_not_found",
+    "unsupported_parameter",
+    "unsupported_value",
+    "invalid_value",
+})
+
+
+def _error_codes(exc: Exception) -> set[str]:
+    return {
+        value for value in (getattr(exc, "code", None), getattr(exc, "type", None))
+        if isinstance(value, str)
+    }
+
+
 def _is_context_overflow_error(exc: Exception) -> bool:
     """Whether *exc* says the request exceeded the model's context window."""
+    if "context_length_exceeded" in _error_codes(exc):
+        return True
     text = str(exc).lower()
     return any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS)
 
@@ -131,6 +157,7 @@ def _is_fatal_api_error(exc: Exception) -> bool:
     Provider errors may declare retryability explicitly. Otherwise HTTP 4xx
     responses other than a few transient ones (rate limit, timeout, conflict)
     are fatal; connection errors, timeouts, and 5xx responses keep retrying.
+    Status-less errors with a known permanent ``code`` (or ``type``) are fatal.
 
     Programming errors (TypeError, ValueError, …) are always fatal so the
     agent does not spin forever retrying a request that can never succeed.
@@ -145,7 +172,8 @@ def _is_fatal_api_error(exc: Exception) -> bool:
         # fatal; network / I/O errors remain retryable.
         if isinstance(exc, (TypeError, ValueError, KeyError, AttributeError, AssertionError)):
             return True
-        return False
+        # In-stream provider errors carry a code instead of a status.
+        return bool(_error_codes(exc) & _PERMANENT_ERROR_CODES)
     return 400 <= status < 500 and status not in _RETRYABLE_STATUS_CODES
 
 
@@ -859,6 +887,10 @@ class LLMAgent(
         summary = result.message.text
         if not summary:
             raise RuntimeError("Compaction provider returned no summary text")
+        if result.finish_reason == "length":
+            # A summary cut off by the output cap would silently drop the
+            # trailing sections; fail the pass so the history is kept instead.
+            raise RuntimeError("Compaction summary was truncated by the output token limit")
         return summary
 
     def _blocking_completion(self, request: CompletionRequest):

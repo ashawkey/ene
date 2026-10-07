@@ -87,6 +87,11 @@ def find_match(content: str, old_text: str) -> list[tuple[int, int]]:
     norm_old = _normalize_ws(old_text)
     if not norm_old.strip():
         return []
+    # A trailing newline ends the last line rather than adding an empty one:
+    # match it as a line break after the last matched line.
+    trailing_newline = norm_old.endswith("\n")
+    if trailing_newline:
+        norm_old = norm_old[:-1]
 
     lines = content.split("\n")
     offsets: list[int] = []
@@ -100,9 +105,12 @@ def find_match(content: str, old_text: str) -> list[tuple[int, int]]:
 
     i = 0
     while i <= len(norm_lines) - n:
-        if norm_lines[i:i + n] == old_lines:
+        if norm_lines[i:i + n] == old_lines and (
+            not trailing_newline or i + n < len(lines)
+        ):
             last = i + n - 1
-            spans.append((offsets[i], offsets[last] + len(lines[last])))
+            end = offsets[last] + len(lines[last]) + (1 if trailing_newline else 0)
+            spans.append((offsets[i], end))
             i += n  # non-overlapping
         else:
             i += 1
@@ -149,7 +157,63 @@ def apply_edit(content: str, old_text: str, new_text: str, replace_all: bool) ->
     return new_content, (count if replace_all else 1), line_num, None
 
 
+def _read_text_file(file_path: Path) -> tuple[bytes, str, str]:
+    """Read UTF-8 text, returning ``(raw_bytes, text, dominant_newline)``.
+
+    Raises ``UnicodeDecodeError`` for non-UTF-8 content. A BOM is kept as a
+    leading U+FEFF so writing the text back preserves it.
+    """
+    raw = file_path.read_bytes()
+    text = raw.decode("utf-8")
+    crlf = text.count("\r\n")
+    newline = "\r\n" if crlf * 2 > text.count("\n") else "\n"
+    return raw, text, newline
+
+
+def _encode_text(content: str, newline: str) -> bytes:
+    """Encode LF-normalized *content* with the file's original line endings."""
+    if newline != "\n":
+        content = content.replace("\n", newline)
+    return content.encode("utf-8")
+
+
+def _count_lines(f) -> int:
+    """Count the remaining lines of binary file *f* without decoding them."""
+    count = 0
+    last = b""
+    while chunk := f.read(64 * 1024):
+        count += chunk.count(b"\n")
+        last = chunk
+    if last and not last.endswith(b"\n"):
+        count += 1
+    return count
+
+
 class FileToolsMixin:
+    def _track(self, method: str, *args: Any) -> Any:
+        """Record a change with the tracker, returning its record (or None)."""
+        if self._change_tracker and self._get_round_id:
+            return getattr(self._change_tracker, method)(self._get_round_id(), *args)
+        return None
+
+    def _write_tracked(self, file_path: Path, data: str | bytes, record: Any) -> None:
+        """Write *data*, dropping *record* if the file could not be opened.
+
+        Once open succeeds the file is truncated, so the record (and its
+        before-snapshot) must stay for rewind even if the write then fails.
+        """
+        try:
+            if isinstance(data, bytes):
+                f = open(file_path, "wb")
+            else:
+                f = open(file_path, "w", encoding="utf-8")
+        except BaseException:
+            if record is not None:
+                self._change_tracker.discard(record)
+            raise
+        with f:
+            f.write(data)
+
     def _resolve_path(self, path: str | os.PathLike[str]) -> Path:
         """Resolve a caller path lexically against the executor's work directory."""
         candidate = Path(path).expanduser()
@@ -174,18 +238,20 @@ class FileToolsMixin:
         wanted = effective_limit + 1
         lines: list[str] = []
         remaining_lines = 0
+        # Lines are split and counted as bytes and only the window is decoded,
+        # so content outside it can neither fail the read nor be decoded.
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "rb") as f:
                 for index, line in enumerate(f):
                     if index < skip:
                         continue
-                    lines.append(line)
+                    lines.append(line.decode("utf-8").replace("\r\n", "\n"))
                     if len(lines) >= wanted:
                         break
                 truncated_by_lines = len(lines) > effective_limit
                 if truncated_by_lines:
                     lines.pop()
-                    remaining_lines = sum(1 for _ in f) + 1
+                    remaining_lines = _count_lines(f) + 1
         except UnicodeDecodeError:
             return {"error": f"Cannot read binary file: {file}", "success": False}
 
@@ -260,12 +326,9 @@ class FileToolsMixin:
     def _write_file(self, file: str, content: str) -> dict[str, Any]:
         """Write content to file, creating parent directories."""
         file_path = self._resolve_path(file)
-        if self._change_tracker and self._get_round_id:
-            self._change_tracker.track_write(self._get_round_id(), str(file_path), content)
-
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        record = self._track("track_write", str(file_path), content)
+        self._write_tracked(file_path, content, record)
 
         return {
             "message": f"Successfully wrote {len(content)} characters to {file}",
@@ -288,7 +351,7 @@ class FileToolsMixin:
             return {"error": f"Path is not a file: {file}", "success": False}
 
         try:
-            content = file_path.read_text(encoding="utf-8")
+            raw, content, newline = _read_text_file(file_path)
         except UnicodeDecodeError:
             return {"error": f"Cannot edit binary file: {file}", "success": False}
 
@@ -296,11 +359,9 @@ class FileToolsMixin:
         if error is not None:
             return {"error": f"{error} (in {file})", "success": False}
 
-        original = content.replace("\r\n", "\n").replace("\r", "\n")
-        if self._change_tracker and self._get_round_id:
-            self._change_tracker.track_edit_result(self._get_round_id(), str(file_path), original, new_content)
-
-        file_path.write_text(new_content, encoding="utf-8")
+        data = _encode_text(new_content, newline)
+        record = self._track("track_edit_result", str(file_path), raw, data)
+        self._write_tracked(file_path, data, record)
 
         diff_msg = (
             f"Replaced {count} occurrence(s):\n- {old_text}\n+ {new_text}"
@@ -331,12 +392,11 @@ class FileToolsMixin:
             return {"error": f"Path is not a file: {file}", "success": False}
 
         try:
-            content = file_path.read_text(encoding="utf-8")
+            raw, content, newline = _read_text_file(file_path)
         except UnicodeDecodeError:
             return {"error": f"Cannot edit binary file: {file}", "success": False}
 
-        original = content.replace("\r\n", "\n").replace("\r", "\n")
-        working = original
+        working = content.replace("\r\n", "\n").replace("\r", "\n")
         total_replacements = 0
         diffs: list[dict[str, Any]] = []
 
@@ -369,10 +429,9 @@ class FileToolsMixin:
                 "count": count,
             })
 
-        if self._change_tracker and self._get_round_id:
-            self._change_tracker.track_edit_result(self._get_round_id(), str(file_path), original, working)
-
-        file_path.write_text(working, encoding="utf-8")
+        data = _encode_text(working, newline)
+        record = self._track("track_edit_result", str(file_path), raw, data)
+        self._write_tracked(file_path, data, record)
 
         return {
             "message": (
@@ -452,13 +511,14 @@ class FileToolsMixin:
     def _remove_file(self, file: str) -> dict[str, Any]:
         """Remove a file or directory."""
         target = self._resolve_path(file)
-        if not target.exists():
+        # lexists: a dangling symlink is still removable.
+        if not os.path.lexists(target):
             return {"error": f"Path not found: {file}", "success": False}
 
-        if self._change_tracker and self._get_round_id:
-            self._change_tracker.track_remove(self._get_round_id(), str(target))
+        self._track("track_remove", str(target))
 
-        if target.is_dir():
+        # Remove a symlink itself, never the directory it points to.
+        if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
         else:
             target.unlink()

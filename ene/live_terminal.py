@@ -181,7 +181,7 @@ class LiveTerminal:
             title_name=str(session.get("name") or Path(workspace).name),
         )
         self.terminal.set_runtime_state(
-            cancel=lambda: self._send({"type": "cancel", "operation_id": self.operation_id}),
+            cancel=self._cancel_operation,
             pending_text=lambda: self.pending.get("text") if self.pending else None,
             edit_pending=self._edit_pending,
             can_submit_while_pending=self._is_instant_command,
@@ -281,7 +281,18 @@ class LiveTerminal:
                         else:
                             self._detach_from_worker()
                         return "new", name
-                    response = self._request({"type": "submit", "text": text})
+                    try:
+                        response = self._request({"type": "submit", "text": text})
+                    except KeyboardInterrupt:
+                        # The submission may already be queued; do not restore
+                        # it as a draft and risk sending it twice.
+                        self.console.warn("Stopped waiting for the session to respond.")
+                        continue
+                    except LiveError as exc:
+                        # A timeout may still deliver the message; a lost
+                        # connection ends the loop. Neither restores a draft.
+                        self.console.warn(str(exc))
+                        continue
                     if not response.get("ok"):
                         self.console.warn(str(response.get("error", "Message was rejected")))
                         draft = text
@@ -310,7 +321,10 @@ class LiveTerminal:
         """Choose a replacement while keeping this attachment alive on cancel."""
         if self.switch_picker is None:
             return True
-        self.switch_record = self.switch_picker()
+        try:
+            self.switch_record = self.switch_picker()
+        except KeyboardInterrupt:
+            self.switch_record = None
         return self.switch_record is not None
 
     def _start_new(self, name: str) -> bool:
@@ -321,6 +335,10 @@ class LiveTerminal:
             self.new_record = self.new_session(name)
         except LiveError as exc:
             self.console.warn(str(exc))
+            return False
+        except KeyboardInterrupt:
+            # start_session terminates a worker interrupted during startup.
+            self.console.warn("New session cancelled.")
             return False
         return True
 
@@ -338,6 +356,13 @@ class LiveTerminal:
         self.detaching.set()
         self._send({"type": "kill"})
         self.stopped.wait()
+
+    def _cancel_operation(self) -> None:
+        """Cancel from a key binding, where an exception would end the editor."""
+        try:
+            self._send({"type": "cancel", "operation_id": self.operation_id})
+        except LiveError as exc:
+            self.console.warn(str(exc))
 
     def _ping_loop(self) -> None:
         """Heartbeat the attachment so a killed terminal cannot block the session.
@@ -380,9 +405,12 @@ class LiveTerminal:
         pending = self.pending
         if pending is None:
             return None
-        response = self._request({
-            "type": "withdraw_pending", "id": pending.get("id")
-        })
+        try:
+            response = self._request({
+                "type": "withdraw_pending", "id": pending.get("id")
+            })
+        except LiveError as exc:
+            response = {"ok": False, "error": str(exc)}
         if not response.get("ok"):
             self.console.warn(str(response.get(
                 "error", "Pending message is no longer available"
@@ -515,13 +543,21 @@ class LiveTerminal:
                 str(data.get("message", "")), default=str(data.get("default", ""))
             )
         if answer is None:
-            # The user cancelled the local picker (e.g. Ctrl+C). Tell the
+            # The user cancelled the local picker (Ctrl+C or Ctrl+D). Tell the
             # worker to close the prompt; otherwise its round waits forever
             # and this loop re-asks the same prompt on every iteration.
-            self._send({"type": "prompt_cancel", "id": data.get("id")})
+            message = {"type": "prompt_cancel", "id": data.get("id")}
+        else:
+            message = {"type": "prompt_response", "id": data.get("id"), "answer": answer}
+        try:
+            self._send(message)
+        except LiveError:
+            # The reader reports the disconnect and stops the loop.
             self.prompt = None
             return
-        self._send({"type": "prompt_response", "id": data.get("id"), "answer": answer})
+        if answer is None:
+            self.prompt = None
+            return
         if self.prompt is data or (
             self.prompt is not None and self.prompt.get("id") == data.get("id")
         ):

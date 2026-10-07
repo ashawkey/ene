@@ -273,3 +273,26 @@ def test_model_switch_selects_configured_api_and_rejects_invalid_mode(monkeypatc
     AgentCommandsMixin._cmd_model(agent, '/model chat')
     assert type(agent.provider) is OpenAICompatibleProvider
     assert agent._provider_settings.api == 'chat_completions'
+
+
+def test_responses_openai_6_models_send_reasoning_controls():
+    provider = OpenAIResponsesProvider(ProviderSettings(api='responses'))
+    body = provider._kwargs(CompletionRequest(
+        model='gpt-6-sol', messages=[Message.user('Hello')], reasoning_effort='none',
+    ))
+    assert body['reasoning'] == {'effort': 'none', 'summary': 'auto'}
+    assert body['include'] == ['reasoning.encrypted_content']
+
+
+def test_responses_stream_failure_keeps_error_code():
+    from ene.providers.responses import ResponsesCompletionStream
+
+    stream = ResponsesCompletionStream(
+        [{'type': 'response.failed', 'response': {'error': {
+            'code': 'context_length_exceeded', 'message': 'Input exceeds the window.',
+        }}}],
+        MODEL, close_response=lambda: None, release=lambda: None,
+    )
+    with pytest.raises(ProviderError) as info:
+        stream.consume()
+    assert info.value.code == 'context_length_exceeded'

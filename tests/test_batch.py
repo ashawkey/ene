@@ -331,3 +331,52 @@ def test_direct_completion_uses_fresh_context_provider_and_parses_json(monkeypat
     assert request.tools == [] and request.stream is False
     assert request.response_schema == schema and request.reasoning_effort == "low"
     assert usage[0].total_tokens == 12
+
+
+def test_batch_interrupt_still_records_results_finished_alongside_it(tmp_path, monkeypatch):
+    from concurrent.futures import ALL_COMPLETED, wait
+
+    from ene.utils.interrupt import RequestInterrupted
+
+    entry = _load_batch_tool()
+
+    def wait_all_interrupt_first(futures, timeout=None, return_when=None):
+        done, not_done = wait(futures, return_when=ALL_COMPLETED)
+        # The interrupted future is handled first, before its finished siblings.
+        ordered = sorted(done, key=lambda f: not isinstance(f.exception(), RequestInterrupted))
+        return ordered, not_done
+
+    monkeypatch.setitem(entry["run"].__globals__, "wait", wait_all_interrupt_first)
+    completer = _Completer({"stop": RequestInterrupted()})
+
+    result = entry["run"](
+        _executor(tmp_path, completer),
+        instruction="Do",
+        items=["stop", "a", "b", "later"],
+        name="run",
+        concurrency=3,
+    )
+
+    assert result["interrupted"] and result["succeeded"] == 2
+    assert {record["item"] for record in _records(_output(tmp_path))} == {"a", "b"}
+    assert "later" not in {call[1] for call in completer.calls}
+
+
+def test_batch_resume_refuses_results_from_a_different_instruction(tmp_path):
+    entry = _load_batch_tool()
+    first = entry["run"](_executor(tmp_path), instruction="Summarize", items=["a"], name="run")
+    assert first["success"] and first["succeeded"] == 1
+
+    completer = _Completer()
+    result = entry["run"](
+        _executor(tmp_path, completer), instruction="Translate", items=["a", "b"], name="run"
+    )
+
+    assert result["success"] is False
+    assert "different instruction" in result["error"]
+    assert completer.calls == []
+
+    resumed = entry["run"](
+        _executor(tmp_path, completer), instruction="Summarize", items=["a", "b"], name="run"
+    )
+    assert (resumed["skipped"], resumed["succeeded"]) == (1, 1)

@@ -13,6 +13,10 @@ from ene.session_store import PathDelta, SessionStore
 from ene.ui import AgentConsole
 
 
+def _as_bytes(content: str | bytes) -> bytes:
+    return content if isinstance(content, bytes) else content.encode("utf-8")
+
+
 @dataclass
 class ChangeRecord:
     """One reversible filesystem operation."""
@@ -95,33 +99,45 @@ class ChangeTracker:
         path = Path(stored)
         return path if path.is_absolute() else self.work_dir / path
 
-    def track_write(self, round_id: int, path: str, content: str = ""):
+    def _record(self, record: ChangeRecord) -> ChangeRecord:
+        self._pending.append(record)
+        return record
+
+    def discard(self, record: ChangeRecord) -> None:
+        """Drop a pending *record* whose operation failed before touching disk."""
+        for index in range(len(self._pending) - 1, -1, -1):
+            if self._pending[index] is record:
+                del self._pending[index]
+                return
+
+    def track_write(self, round_id: int, path: str, content: str = "") -> ChangeRecord:
         abs_path, stored_path = self._record_path(path, follow_symlinks=True)
         before = self.store.store_path(abs_path) if abs_path.exists() or abs_path.is_symlink() else None
         mode = stat.S_IMODE(abs_path.stat().st_mode) if abs_path.exists() else 0o644
         after = self.store.store_bytes(content.encode("utf-8"), mode=mode)
-        self._pending.append(ChangeRecord(round_id, stored_path, "write", before, after))
+        return self._record(ChangeRecord(round_id, stored_path, "write", before, after))
 
     def track_edit_result(
         self,
         round_id: int,
         path: str,
-        original_content: str | None,
-        new_content: str,
-    ):
+        original_content: str | bytes | None,
+        new_content: str | bytes,
+    ) -> ChangeRecord:
+        """Record an edit; pass bytes to snapshot the exact on-disk content."""
         abs_path, stored_path = self._record_path(path, follow_symlinks=True)
         mode = stat.S_IMODE(abs_path.stat().st_mode)
         before = (
-            self.store.store_bytes(original_content.encode("utf-8"), mode=mode)
+            self.store.store_bytes(_as_bytes(original_content), mode=mode)
             if original_content is not None else None
         )
-        after = self.store.store_bytes(new_content.encode("utf-8"), mode=mode)
-        self._pending.append(ChangeRecord(round_id, stored_path, "edit", before, after))
+        after = self.store.store_bytes(_as_bytes(new_content), mode=mode)
+        return self._record(ChangeRecord(round_id, stored_path, "edit", before, after))
 
-    def track_remove(self, round_id: int, path: str):
+    def track_remove(self, round_id: int, path: str) -> ChangeRecord:
         abs_path, stored_path = self._record_path(path)
         before = self.store.store_path(abs_path)
-        self._pending.append(ChangeRecord(round_id, stored_path, "remove", before, None))
+        return self._record(ChangeRecord(round_id, stored_path, "remove", before, None))
 
     def plan_checkout(self, target_id: str | None) -> CheckoutPlan:
         """Describe moving code to *target_id* without touching the filesystem."""
@@ -140,8 +156,19 @@ class ChangeTracker:
             raise RuntimeError("Save the session before checking out a code revision")
 
         changed = 0
+        restored: list[str] = []
         for record, forward in plan.steps:
-            changed += self._apply(ChangeRecord(**record), forward=forward)
+            change = ChangeRecord(**record)
+            try:
+                changed += self._apply(change, forward=forward)
+            except Exception as e:
+                # No rollback: say exactly which paths were already rewritten.
+                done = ", ".join(dict.fromkeys(restored)) or "none"
+                raise RuntimeError(
+                    f"Code checkout failed at {change.path}: {e}. "
+                    f"Already restored: {done}"
+                ) from e
+            restored.append(change.path)
         self.code_revision_id = plan.target_id
         return changed
 
@@ -154,8 +181,9 @@ class ChangeTracker:
 
         A dirty path means a rewind would overwrite edits made outside the agent
         (or by a tool that does not track changes), so it is worth warning about.
-        Text files are compared decoded: tools write them in text mode, so the
-        line endings on disk are platform-dependent while the stored bytes are not.
+        Identical bytes are clean. Otherwise text files are compared decoded:
+        tools write them in text mode, so the line endings on disk are
+        platform-dependent while the stored bytes are not.
         """
         path = self._absolute(delta.path)
         if delta.before is None:
@@ -163,6 +191,8 @@ class ChangeTracker:
             return path.exists() or path.is_symlink()
         if not path.exists() and not path.is_symlink():
             return True
+        if self.store.hash_path(path) == delta.before["id"]:
+            return False
         recorded = self.store.read_text(delta.before)
         if recorded is not None and path.is_file() and not path.is_symlink():
             try:

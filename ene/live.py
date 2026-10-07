@@ -8,6 +8,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -24,8 +25,9 @@ REGISTRY_LOCK = LIVE_DIR / ".lock"
 CONNECT_TIMEOUT = 1.0
 REQUEST_TIMEOUT = 5.0
 START_TIMEOUT = 15.0
-STOP_TIMEOUT = 20.0
-STOP_RECORD_GRACE = 30.0
+# Covers the worker's two shutdown watchdog phases (agent join, then cleanup).
+STOP_TIMEOUT = 35.0
+STOP_RECORD_GRACE = 40.0
 # A live worker's discovery record must survive any length of control-plane
 # unreachability. Long tool calls and process waits must not orphan a detached
 # session merely because status probes fail; only a definitively exited worker
@@ -84,9 +86,10 @@ def unlink_record(path: Path) -> None:
 def _atomic_write(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    staging.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    if os.name == "posix":
-        staging.chmod(0o600)
+    # Records carry credentials: create owner-only so no umask window exposes them.
+    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(data, ensure_ascii=False))
     os.replace(staging, path)
 
 
@@ -368,6 +371,10 @@ def create_record(*, name: str, workspace: str, options: dict[str, Any]) -> dict
     return record
 
 
+def _reap(process: subprocess.Popen) -> None:
+    process.wait()
+
+
 def launch_worker(record: dict[str, Any], *, api_key: str | None = None) -> dict[str, Any]:
     path = record_path(str(record["runtime_id"]))
     log_path = path.with_suffix(".log")
@@ -384,7 +391,7 @@ def launch_worker(record: dict[str, Any], *, api_key: str | None = None) -> dict
     else:
         kwargs["start_new_session"] = True
     with log_path.open("ab", buffering=0) as log:
-        subprocess.Popen(
+        process = subprocess.Popen(
             [sys.executable, "-m", "ene.live_worker", str(path)],
             cwd=record["workspace"],
             stdin=subprocess.DEVNULL,
@@ -393,18 +400,32 @@ def launch_worker(record: dict[str, Any], *, api_key: str | None = None) -> dict
             close_fds=True,
             **kwargs,
         )
-    deadline = time.monotonic() + START_TIMEOUT
-    while time.monotonic() < deadline:
-        current = read_record(path)
-        if current is None:
-            raise LiveError("Worker exited during startup")
-        if current.get("status") == "error":
-            unlink_record(path)
-            raise LiveError(str(current.get("error", "Worker failed to start")))
-        if current.get("status") == "ready" and probe(current) is not None:
-            return current
-        time.sleep(0.05)
-    raise LiveError(f"Worker did not become ready; see {log_path}")
+    # Reap the worker whenever it exits so a long-lived parent (the hub)
+    # does not accumulate zombies.
+    threading.Thread(
+        target=_reap, args=(process,), name="ene-live-reaper", daemon=True
+    ).start()
+    try:
+        deadline = time.monotonic() + START_TIMEOUT
+        while time.monotonic() < deadline:
+            current = read_record(path)
+            if current is None:
+                raise LiveError("Worker exited during startup")
+            if current.get("status") == "error":
+                unlink_record(path)
+                raise LiveError(str(current.get("error", "Worker failed to start")))
+            if current.get("status") == "ready" and probe(current) is not None:
+                return current
+            time.sleep(0.05)
+        raise LiveError(f"Worker did not become ready; see {log_path}")
+    except BaseException:
+        # The caller drops the record, so a worker left running here could
+        # never be attached or stopped again.
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        raise
 
 
 def start_session(*, name: str, workspace: str, options: dict[str, Any]) -> dict[str, Any]:
@@ -418,7 +439,7 @@ def start_session(*, name: str, workspace: str, options: dict[str, Any]) -> dict
     record = create_record(name=name, workspace=workspace, options=options)
     try:
         return launch_worker(record, api_key=api_key)
-    except Exception:
+    except BaseException:
         unlink_record(record_path(str(record["runtime_id"])))
         raise
 

@@ -344,7 +344,7 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
             "type": "function",
             "function": {
                 "name": "web_fetch",
-                "description": "Fetch a public HTTP(S) URL and convert its content to readable text. Uses a 30-second overall timeout.",
+                "description": "Fetch a public HTTP(S) URL; HTML is converted to readable text, other text is returned as-is, and binary content is refused. Uses a 30-second overall timeout.",
                 "parameters": {
                     "type": "object",
                     "properties": {

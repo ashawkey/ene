@@ -111,6 +111,10 @@ def _prompt_cache_key(session_id: str | None) -> str | None:
     return value or None
 
 
+# Reasoning styles whose models accept the Responses ``reasoning`` field.
+_OPENAI_REASONING_STYLES = frozenset({"openai", "openai-astra", "openai-6"})
+
+
 def build_responses_body(
     request: CompletionRequest, *, state_key: str = "openai-codex",
     codex: bool = False, reasoning_style: str | None = None,
@@ -142,9 +146,9 @@ def build_responses_body(
     }
     if request.tools:
         body["tools"] = _responses_tools(request.tools, strict=None if codex else False)
-    if request.reasoning_effort is not None and (codex or style in {"openai", "openai-astra"}):
+    if request.reasoning_effort is not None and (codex or style in _OPENAI_REASONING_STYLES):
         effort = reasoning_kwargs(
-            "openai-astra" if style == "openai-astra" else "openai",
+            style if style in _OPENAI_REASONING_STYLES else "openai",
             request.reasoning_effort,
         )["reasoning_effort"]
         body["reasoning"] = {
@@ -153,7 +157,7 @@ def build_responses_body(
         }
     if not codex and request.max_output_tokens is not None:
         body["max_output_tokens"] = request.max_output_tokens
-    if not codex and style not in {"openai", "openai-astra"}:
+    if not codex and style not in _OPENAI_REASONING_STYLES:
         # Non-reasoning models need neither encrypted reasoning nor verbosity.
         body.pop("include")
         body["text"].pop("verbosity")

@@ -36,6 +36,22 @@ def test_checkbox_terminal_normalizes_cancellation(monkeypatch):
     assert AgentConsole().checkbox_terminal("Kill sessions", ["one"]) is None
 
 
+@pytest.mark.parametrize("error", [KeyboardInterrupt, EOFError])
+@pytest.mark.parametrize("kind", ["text", "select"])
+def test_terminal_prompts_treat_ctrl_d_as_cancellation(monkeypatch, kind, error):
+    class Question:
+        def unsafe_ask(self):
+            raise error
+
+    monkeypatch.setattr(f"ene.ui.questionary.{kind}", lambda *args, **kwargs: Question())
+    console = AgentConsole()
+
+    if kind == "text":
+        assert console.ask_text_terminal("Answer") is None
+    else:
+        assert console.select_terminal("Pick", ["a"]) is None
+
+
 def test_terminal_title_animates_working_and_marks_done(monkeypatch):
     from prompt_toolkit.output import DummyOutput
     from prompt_toolkit.application.current import create_app_session

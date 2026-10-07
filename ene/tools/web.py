@@ -4,6 +4,7 @@ import ipaddress
 import socket
 import threading
 import time
+import zlib
 from typing import Any
 from urllib.request import getproxies_environment, proxy_bypass_environment
 
@@ -29,6 +30,111 @@ def _proxy_for_url(scheme: str, host: str, port: int | None) -> str | None:
     if proxy_bypass_environment(bypass_host, proxies):
         return None
     return proxies.get(scheme) or proxies.get("all") or proxies.get("socks")
+
+
+def _bounded_body(response: Any, stopped: threading.Event) -> bytes:
+    """Read and decompress *response* without exceeding MAX_WEB_FETCH_BYTES.
+
+    httpx decompresses each raw chunk in one call, so a small gzip chunk could
+    expand far beyond the cap before it is checked; decompress here instead,
+    bounding every step's output.
+    """
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding not in ("", "identity", "gzip", "x-gzip", "deflate"):
+        raise ValueError(f"unsupported content encoding: {encoding}")
+    decoder = None
+
+    chunks: list[bytes] = []
+    size = 0
+
+    def append(data: bytes) -> None:
+        nonlocal size
+        size += len(data)
+        if size > MAX_WEB_FETCH_BYTES:
+            raise ValueError(f"response exceeds {MAX_WEB_FETCH_BYTES} bytes")
+        chunks.append(data)
+
+    for raw in response.iter_raw():
+        if stopped.is_set():
+            raise TimeoutError("fetch stopped")
+        if encoding in ("", "identity"):
+            append(raw)
+            continue
+        if decoder is None:
+            if encoding != "deflate":
+                wbits = zlib.MAX_WBITS | 16
+            elif len(raw) >= 2 and (raw[0] & 0x0F) == 8 and (raw[0] << 8 | raw[1]) % 31 == 0:
+                wbits = zlib.MAX_WBITS  # zlib-wrapped, as the RFC specifies
+            else:
+                wbits = -zlib.MAX_WBITS  # raw deflate, as some servers send
+            decoder = zlib.decompressobj(wbits)
+        while raw:
+            # One byte past the remaining budget is enough to detect overflow.
+            append(decoder.decompress(raw, MAX_WEB_FETCH_BYTES - size + 1))
+            raw = decoder.unconsumed_tail
+    if decoder is not None:
+        append(decoder.flush())
+    return b"".join(chunks)
+
+
+# Non-``text/*`` media types whose bodies are still readable text.
+_TEXT_MEDIA_TYPES = frozenset({
+    "application/json",
+    "application/ld+json",
+    "application/x-ndjson",
+    "application/xml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/ecmascript",
+    "application/yaml",
+    "application/x-yaml",
+    "application/toml",
+    "application/x-sh",
+    "application/sql",
+    "application/graphql",
+})
+# Generic types that say nothing about the content; their bodies are sniffed.
+_UNTYPED_MEDIA_TYPES = frozenset({"", "application/octet-stream"})
+
+
+def _is_text_media_type(content_type: str) -> bool:
+    return (
+        content_type.startswith("text/")
+        or content_type in _TEXT_MEDIA_TYPES
+        or content_type.endswith(("+json", "+xml", "+yaml"))
+    )
+
+
+def _binary_content_error(content_type: str) -> str:
+    return (
+        f"URL returned binary content ({content_type or 'unknown type'}), which "
+        "web_fetch cannot read. Download it to a file with exec_command (e.g. "
+        "curl -o) and inspect it with a suitable tool, such as read_image for "
+        "images or the pdf-reading skill for PDFs."
+    )
+
+
+def _html_text(text_body: str) -> str:
+    """Extract readable text from HTML, keeping its non-blank line breaks."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(text_body, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    # The title becomes a heading, so keep it out of the body text, where it
+    # would run into the first line ("Title" + "Intro" -> "TitleIntro").
+    title_tag = soup.find("title")
+    title = title_tag.get_text().strip() if title_tag else ""
+    if title_tag:
+        title_tag.decompose()
+
+    lines = (
+        " ".join(phrase.strip() for phrase in line.split("  ") if phrase.strip())
+        for line in soup.get_text().splitlines()
+    )
+    text = "\n".join(line for line in lines if line)
+
+    return f"# {title}\n\n{text}" if title else text
 
 
 def _validate_public_address(
@@ -163,11 +269,13 @@ class WebToolsMixin:
         try:
             import httpcore
             import httpx
-            from bs4 import BeautifulSoup
+            import bs4  # noqa: F401
         except ImportError:
             return {"error": "web_fetch requires httpx and beautifulsoup4: pip install httpx beautifulsoup4", "success": False}
 
         headers = {
+            # Only encodings _bounded_body can decompress incrementally.
+            "Accept-Encoding": "gzip, deflate",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -233,18 +341,20 @@ class WebToolsMixin:
                                 current = current.join(location)
                                 continue
                             response.raise_for_status()
-                            chunks = []
-                            size = 0
-                            for chunk in response.iter_bytes():
-                                if stopped.is_set():
-                                    raise TimeoutError("fetch stopped")
-                                size += len(chunk)
-                                if size > MAX_WEB_FETCH_BYTES:
-                                    raise ValueError(
-                                        f"response exceeds {MAX_WEB_FETCH_BYTES} bytes"
-                                    )
-                                chunks.append(chunk)
-                            body = b"".join(chunks)
+                            content_type = (
+                                response.headers.get("content-type", "")
+                                .split(";")[0].strip().lower()
+                            )
+                            # Refuse declared binary types before downloading.
+                            if not (
+                                content_type in _UNTYPED_MEDIA_TYPES
+                                or _is_text_media_type(content_type)
+                            ):
+                                return {
+                                    "error": _binary_content_error(content_type),
+                                    "success": False,
+                                }
+                            body = _bounded_body(response, stopped)
                             final_url = current
                             encoding = response.encoding or "utf-8"
                             break
@@ -255,19 +365,22 @@ class WebToolsMixin:
         except Exception as e:
             return {"error": f"Failed to fetch URL: {e}", "success": False}
 
+        # Untyped bodies are text only if they contain no NUL bytes, which
+        # practically every binary format has early and text never does.
+        if content_type in _UNTYPED_MEDIA_TYPES and b"\0" in body[:8192]:
+            return {"error": _binary_content_error(content_type), "success": False}
+
         text_body = body.decode(encoding, errors="replace")
-        soup = BeautifulSoup(text_body, "html.parser")
-        for tag in soup(["script", "style"]):
-            tag.decompose()
-
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = " ".join(chunk for chunk in chunks if chunk)
-
-        title = soup.find("title")
-        if title:
-            text = f"# {title.get_text().strip()}\n\n{text}"
+        # Only HTML is parsed; JSON, source, and other text pass through as-is
+        # (an HTML parser would eat "a<b and b>0" and collapse the layout).
+        # Untyped responses are sniffed for an HTML document.
+        sniff = text_body.lstrip()[:100].lower()
+        if content_type in ("text/html", "application/xhtml+xml") or (
+            not content_type and sniff.startswith(("<!doctype html", "<html"))
+        ):
+            text = _html_text(text_body)
+        else:
+            text = text_body
 
         content, truncated = truncate_text_output(
             text,

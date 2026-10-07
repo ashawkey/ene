@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -43,10 +44,19 @@ def _read_items_file(path: Path) -> list[str]:
     return items
 
 
-def _completed_items(path: Path) -> set[str]:
+def _instruction_digest(instruction: str) -> str:
+    return hashlib.sha256(instruction.encode("utf-8")).hexdigest()[:16]
+
+
+def _completed_items(path: Path, digest: str) -> tuple[set[str], bool]:
+    """Items already done, and whether any were done under another instruction.
+
+    Records written before digests were stored carry none and still count.
+    """
     if not path.is_file():
-        return set()
+        return set(), False
     done: set[str] = set()
+    mismatch = False
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
@@ -54,8 +64,10 @@ def _completed_items(path: Path) -> set[str]:
             except ValueError:
                 continue
             if isinstance(record, dict) and record.get("ok") and "item" in record:
+                if record.get("instruction_sha", digest) != digest:
+                    mismatch = True
                 done.add(str(record["item"]))
-    return done
+    return done, mismatch
 
 
 def _append_record(handle, record: dict[str, Any]) -> None:
@@ -186,7 +198,16 @@ def run_batch(
     except OSError as e:
         return {"error": f"Cannot create the batch results directory: {e}", "success": False}
     output = _display_path(executor, output_path)
-    done = _completed_items(output_path) if resume else set()
+    digest = _instruction_digest(instruction)
+    done, mismatch = _completed_items(output_path, digest) if resume else (set(), False)
+    if mismatch:
+        return {
+            "error": (
+                f"{output} holds results from a different instruction. Use a new name, "
+                "or resume=false to start over (previous results are kept as a backup)."
+            ),
+            "success": False,
+        }
     pending = [(i, item) for i, item in enumerate(resolved, 1) if item not in done]
     skipped = len(resolved) - len(pending)
     if not pending:
@@ -278,15 +299,17 @@ def run_batch(
                             response = completed["result"]
                             usage = completed.get("usage")
                         except RequestInterrupted:
+                            # Other futures in this wait set may already hold
+                            # paid results; keep recording them.
                             interrupted = True
+                            continue
                         except Exception as e:
                             failure = f"{type(e).__name__}: {e}"
-                        if interrupted:
-                            continue
                         ok = failure is None
                         _append_record(handle, {
                             "item": item, "index": index, "ok": ok,
                             "result": response, "error": failure, "usage": usage,
+                            "instruction_sha": digest,
                         })
                         if ok:
                             succeeded += 1
@@ -294,7 +317,8 @@ def run_batch(
                             failed += 1
                             if len(failures) < MAX_REPORTED_FAILURES:
                                 failures.append({"item": item, "error": failure or "Unknown failure"})
-                        submit_next()
+                        if not interrupted:
+                            submit_next()
                         status(indicator)
                     if interrupted:
                         if executor.cancel_batch_completions is not None:

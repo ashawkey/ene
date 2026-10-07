@@ -73,7 +73,9 @@ Example shape:
 3. Watch the live status for completed, succeeded, failed, and active items.
    Completion advances only after the corresponding JSONL record is flushed.
 4. Reissue the same call to resume after interruption. Successful items are
-   skipped and failed or unfinished items are retried. Use `resume=false` only
+   skipped and failed or unfinished items are retried. Resuming with a changed
+   `instruction` is refused; choose a new `name` or use `resume=false`. Use
+   `resume=false` only
    to intentionally restart every item; the old file is retained as
    `<name>.jsonl.bak`.
 5. Report summary counts and the output path. Do not repeat all item results

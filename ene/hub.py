@@ -39,6 +39,7 @@ from ene.hublink import WorkerLink
 from ene.live import (
     LiveBusyError,
     LiveError,
+    _atomic_write,
     kill_session,
     list_records,
     start_session,
@@ -622,6 +623,15 @@ class Hub:
         with self._registry_lock:
             self._sessions[runtime_id] = session
             count = len(self._sessions)
+        if session.link.stopped.is_set():
+            # The worker closed before registration, so _on_link_closed found
+            # nothing to drop; undo the registration instead of keeping a ghost.
+            with self._registry_lock:
+                if self._sessions.get(runtime_id) is session:
+                    self._sessions.pop(runtime_id)
+            session.link.detach()
+            self.refresh_records()
+            raise LiveError("Live session closed while attaching")
         self.refresh_records()
         session.touch()
         cwd = record.get("workspace", "")
@@ -972,7 +982,9 @@ class Hub:
             return {"path": str(target), "parent": parent, "entries": entries}
 
         @app.get("/api/sessions/{session_id}/path-completions")
-        def path_completions(request: Request, session_id: str, query: str = ""):
+        async def path_completions(
+            request: Request, session_id: str, query: str = ""
+        ):
             """Complete an @ path relative to an attached session's workspace."""
             require_login(request)
             if len(query) > 1024 or any(char.isspace() for char in query):
@@ -988,18 +1000,23 @@ class Hub:
                     status_code=400, detail="Session workspace is unavailable."
                 ) from exc
 
-            # AtFileCompleter caches its git/filesystem index. Serialize access
-            # so concurrent browser requests do not rebuild the same index.
-            with self._path_completion_lock:
-                completer = self._path_completers.get(workspace)
-                if completer is None:
-                    completer = AtFileCompleter(work_dir)
-                    self._path_completers[workspace] = completer
-                document = Document(f"@{query}")
-                values = [
-                    completion.text
-                    for completion in completer.get_completions(document, None)
-                ]
+            def complete() -> list[str]:
+                # AtFileCompleter caches its git/filesystem index. Serialize
+                # access so concurrent requests do not rebuild the same index.
+                with self._path_completion_lock:
+                    completer = self._path_completers.get(workspace)
+                    if completer is None:
+                        completer = AtFileCompleter(work_dir)
+                        self._path_completers[workspace] = completer
+                    document = Document(f"@{query}")
+                    return [
+                        completion.text
+                        for completion in completer.get_completions(document, None)
+                    ]
+
+            # Authentication stays on the loop, which owns login revocation;
+            # only the blocking index walk runs in a worker thread.
+            values = await asyncio.get_running_loop().run_in_executor(None, complete)
             return {"completions": values}
 
         @app.get("/api/workspaces")
@@ -1227,7 +1244,7 @@ class Hub:
             # show up as an unexplained disconnect.
             while True:
                 try:
-                    payload = await websocket.receive_json()
+                    payload = await self._receive_json(websocket)
                 except json.JSONDecodeError:
                     continue
                 require_login()
@@ -1302,7 +1319,7 @@ class Hub:
         async def receive_actions():
             while True:
                 try:
-                    payload = await websocket.receive_json()
+                    payload = await self._receive_json(websocket)
                 except WebSocketDisconnect:
                     return
                 except json.JSONDecodeError:
@@ -1393,6 +1410,18 @@ class Hub:
             return False
 
     @staticmethod
+    async def _receive_json(websocket) -> object:
+        """Receive one JSON text frame, closing the socket on a binary frame."""
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            raise WebSocketDisconnect(message.get("code", 1000))
+        text = message.get("text")
+        if text is None:
+            await websocket.close(code=1003)
+            raise WebSocketDisconnect(1003)
+        return json.loads(text)
+
+    @staticmethod
     async def _race(*coros) -> None:
         tasks = [asyncio.create_task(coro) for coro in coros]
         try:
@@ -1409,23 +1438,17 @@ class Hub:
     # -- lifecycle ----------------------------------------------------------
 
     def _write_info(self) -> None:
-        HUB_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
-        HUB_INFO_PATH.write_text(
-            json.dumps({
-                # Discovery is local, so record a concrete connectable address
-                # rather than the all-interfaces bind address.
-                "host": LOOPBACK_HOST,
-                "port": self.port,
-                "token": self.token,
-                "pid": os.getpid(),
-                "started": time.time(),
-            }),
-            encoding="utf-8",
-        )
-        try:
-            os.chmod(HUB_INFO_PATH, 0o600)
-        except OSError:
-            pass
+        # The file holds the hub token, so it is created owner-only rather
+        # than chmod-ed after a umask-permission write.
+        _atomic_write(HUB_INFO_PATH, {
+            # Discovery is local, so record a concrete connectable address
+            # rather than the all-interfaces bind address.
+            "host": LOOPBACK_HOST,
+            "port": self.port,
+            "token": self.token,
+            "pid": os.getpid(),
+            "started": time.time(),
+        })
 
     def _remove_info(self) -> None:
         try:

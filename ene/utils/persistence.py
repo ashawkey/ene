@@ -98,11 +98,19 @@ def truncate_torn_jsonl_tail(path: Path) -> None:
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Read JSONL, tolerating only a torn final record."""
+    """Read JSONL, ignoring a torn final record.
+
+    A record counts only once its trailing newline is written, matching what
+    ``truncate_torn_jsonl_tail`` keeps: a tail that parses but lacks the
+    newline came from an append that never completed, and the next write
+    discards it, so it must not be read as committed either.
+    """
     if not path.exists():
         return []
     raw = path.read_bytes()
     lines = raw.splitlines()
+    if lines and not raw.endswith(b"\n"):
+        lines.pop()
     records: list[dict[str, Any]] = []
     for index, line in enumerate(lines):
         if not line.strip():
@@ -110,8 +118,6 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         try:
             record = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            if index == len(lines) - 1 and not raw.endswith(b"\n"):
-                break
             raise ValueError(f"Corrupted JSONL record {index + 1}: {path}") from None
         if not isinstance(record, dict):
             raise ValueError(f"JSONL record {index + 1} is not an object: {path}")

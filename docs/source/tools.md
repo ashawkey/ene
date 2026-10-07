@@ -15,7 +15,7 @@ Built-in tools (availability depends on the model and persona):
 | `glob_files` | Find files matching a glob pattern (gitignore-aware) |
 | `grep_files` | Search file contents using ripgrep regex (gitignore-aware) |
 | `web_search` | Search the web via DuckDuckGo |
-| `web_fetch` | Fetch readable URL content; interruptible 30-second timeout; honors proxy environment variables |
+| `web_fetch` | Fetch URL content (HTML as readable text, other text as-is, binary refused); interruptible 30-second timeout; honors proxy environment variables |
 | `remove_file` | Remove a file or directory |
 | `load_skill` | Load the full prompt instructions for a skill by name |
 | `start_process` | Start a managed background process with file-backed output and live status |

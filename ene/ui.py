@@ -1445,7 +1445,7 @@ class AgentConsole:
                 style=_QS_STYLE,
                 use_indicator=use_indicator,
             ).unsafe_ask()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             return None
 
     def checkbox_terminal(
@@ -1521,7 +1521,7 @@ class AgentConsole:
                 validate=validate,
                 style=_QS_STYLE,
             ).unsafe_ask()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             return None
 
     async def ask_text_terminal_async(

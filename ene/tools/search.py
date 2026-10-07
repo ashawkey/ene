@@ -141,10 +141,8 @@ class SearchToolsMixin:
     def _glob_ripgrep(self, pattern: str, base: Path, include_ignored: bool) -> dict[str, Any]:
         # --no-require-git: outside a git repository rg ignores .gitignore
         # entirely, which would contradict this tool's gitignore-aware contract.
-        cmd = [
-            "rg", "--files", "--null", "--hidden",
-            "--no-ignore-parent", "--no-require-git",
-        ]
+        # Parent .gitignore files still apply, matching grep_files.
+        cmd = ["rg", "--files", "--null", "--hidden", "--no-require-git"]
         if include_ignored:
             cmd.append("--no-ignore")
         for directory in _SKIP_DIRS:

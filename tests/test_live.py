@@ -1971,3 +1971,156 @@ def test_worker_startup_rejects_unresolved_alias(monkeypatch, tmp_path, alias, e
                      'options': {'model': alias}})
     with pytest.raises(live.LiveError, match=error):
         worker._make_agent()
+
+
+def test_live_terminal_interrupted_new_session_keeps_current_attachment():
+    def interrupted(_name):
+        raise KeyboardInterrupt
+
+    client = LiveTerminal({}, new_session=interrupted)
+    warnings = []
+    client.console = SimpleNamespace(warn=warnings.append)
+
+    assert client._start_new("next") is False
+    assert client.new_record is None
+    assert warnings == ["New session cancelled."]
+
+
+def test_live_terminal_interrupted_switch_picker_keeps_attachment():
+    def interrupted():
+        raise KeyboardInterrupt
+
+    client = LiveTerminal({}, switch_picker=interrupted)
+
+    assert client._select_switch() is False
+    assert client.switch_record is None
+
+
+def test_live_terminal_key_binding_send_failures_warn_instead_of_raising():
+    client = LiveTerminal({})
+    client.pending = {"id": "pending-1", "text": "queued"}
+    warnings = []
+    client.console = SimpleNamespace(warn=warnings.append)
+
+    def lost(_message):
+        raise live.LiveError("Connection to the live session was lost")
+
+    client._send = lost
+    client._request = lost
+
+    client._cancel_operation()
+    assert client._edit_pending() is None
+    assert warnings == ["Connection to the live session was lost"] * 2
+    assert client.pending == {"id": "pending-1", "text": "queued"}
+
+
+def test_live_terminal_prompt_answer_survives_lost_connection():
+    client = LiveTerminal({})
+    prompt = {"id": "prompt-1", "kind": "text", "message": "Name?"}
+    client.prompt = prompt
+    client.console = SimpleNamespace(ask_text_terminal=lambda *_args, **_kwargs: "x")
+
+    def lost(_message):
+        raise live.LiveError("Connection to the live session was lost")
+
+    client._send = lost
+    client._answer_prompt(prompt)
+
+    assert client.prompt is None
+
+
+def test_live_worker_wait_readable_uses_selectors():
+    left, right = socket.socketpair()
+    try:
+        assert live_worker._wait_readable(left, 0.01) is False
+        right.sendall(b"x")
+        assert live_worker._wait_readable(left, 1) is True
+    finally:
+        left.close()
+        right.close()
+
+
+def test_live_worker_stop_signal_uses_normal_stop_path():
+    import signal
+
+    worker = SimpleNamespace(stop_event=threading.Event())
+    previous = signal.getsignal(signal.SIGTERM)
+    previous_hup = signal.getsignal(signal.SIGHUP) if hasattr(signal, "SIGHUP") else None
+    try:
+        live_worker._install_stop_signals(worker)
+        signal.raise_signal(signal.SIGTERM)
+        assert worker.stop_event.is_set()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        if previous_hup is not None:
+            signal.signal(signal.SIGHUP, previous_hup)
+
+
+def test_live_worker_watchdog_waits_for_each_shutdown_phase(monkeypatch):
+    worker = Worker.__new__(Worker)
+    worker._shutdown_done = threading.Event()
+    exits = []
+    monkeypatch.setattr(live_worker, "SHUTDOWN_PHASE_TIMEOUT", 0.2)
+    monkeypatch.setattr(live_worker.os, "_exit", exits.append)
+    worker._extend_shutdown_deadline()
+    watchdog = threading.Thread(target=worker._force_exit_after_timeout, daemon=True)
+    watchdog.start()
+
+    time.sleep(0.15)
+    # The agent round settled, so cleanup gets a fresh phase.
+    worker._extend_shutdown_deadline()
+    time.sleep(0.15)
+    assert exits == []
+
+    watchdog.join(timeout=2)
+    assert exits == [1]
+
+
+def test_launch_worker_terminates_and_reaps_worker_that_never_starts(monkeypatch, tmp_path):
+    monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
+    monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
+    monkeypatch.setattr(live, "START_TIMEOUT", 0.1)
+    record = live.create_record(name="", workspace=str(tmp_path), options={})
+    exited = threading.Event()
+    calls = []
+
+    class Process:
+        def terminate(self):
+            calls.append("terminate")
+            exited.set()
+
+        def wait(self):
+            exited.wait(5)
+            calls.append("wait")
+
+    monkeypatch.setattr(live.subprocess, "Popen", lambda *args, **kwargs: Process())
+
+    with pytest.raises(live.LiveError, match="did not become ready"):
+        live.launch_worker(record)
+
+    assert wait_for(lambda: calls == ["terminate", "wait"])
+
+
+def wait_for(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_atomic_write_creates_record_owner_only(monkeypatch, tmp_path):
+    created_modes = []
+    real_open = live.os.open
+
+    def recording_open(path, flags, mode=0o777, *args, **kwargs):
+        created_modes.append(mode)
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(live.os, "open", recording_open)
+    path = tmp_path / "record.json"
+    live._atomic_write(path, {"token": "secret"})
+
+    assert created_modes == [0o600]
+    assert live.read_record(path) == {"token": "secret"}

@@ -75,9 +75,10 @@ class _ToolCallAccumulator:
         self.arguments: str = ""
 
     def update(self, delta_tool_call: Any) -> None:
-        if delta_tool_call.id:
-            self.id = delta_tool_call.id
-        function = delta_tool_call.function
+        call_id = getattr(delta_tool_call, "id", None)
+        if call_id:
+            self.id = call_id
+        function = getattr(delta_tool_call, "function", None)
         if function is not None:
             if function.name:
                 self.name = function.name
@@ -103,7 +104,11 @@ def consume_stream(
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_calls: dict[int, _ToolCallAccumulator] = {}
+    # Calls in arrival order, plus the open call per stream index. Some
+    # OpenAI-compatible servers omit ``index`` or reuse it for every call, so a
+    # new id under an occupied index starts a new call rather than merging.
+    tool_calls: list[_ToolCallAccumulator] = []
+    open_calls: dict[Any, _ToolCallAccumulator] = {}
     usage: Any = None
     finish_reason: str | None = None
     role = "assistant"
@@ -141,10 +146,16 @@ def consume_stream(
 
         if delta.tool_calls:
             for tc_delta in delta.tool_calls:
-                acc = tool_calls.get(tc_delta.index)
-                if acc is None:
+                index = getattr(tc_delta, "index", None)
+                call_id = getattr(tc_delta, "id", None)
+                acc = open_calls.get(index)
+                if index is None and acc is None and tool_calls:
+                    # Index-less continuation fragments extend the latest call.
+                    acc = tool_calls[-1]
+                if acc is None or (call_id and acc.id and call_id != acc.id):
                     acc = _ToolCallAccumulator()
-                    tool_calls[tc_delta.index] = acc
+                    tool_calls.append(acc)
+                open_calls[index] = acc
                 acc.update(tc_delta)
 
     if should_stop is not None and should_stop():
@@ -155,7 +166,7 @@ def consume_stream(
 
     message = Message.assistant(
         content=content or None,
-        tool_calls=[tool_calls[i].build() for i in sorted(tool_calls)] or None,
+        tool_calls=[acc.build() for acc in tool_calls] or None,
         # Preserve reasoning so /context and session dumps can show it.
         reasoning_content=reasoning or None,
     )

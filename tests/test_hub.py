@@ -1,5 +1,6 @@
 import inspect
 import json
+import os
 import socket
 import threading
 import time
@@ -12,6 +13,7 @@ pytest.importorskip("uvicorn")
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from ene import hub as hub_module
 from ene import live
 from ene.hub import Hub, RemoteSession
 from ene.live_worker import Worker
@@ -936,3 +938,72 @@ def test_attached_session_reports_done_when_idle():
 
     session.ingest({"type": "pending_cleared", "data": {"id": "p1"}})
     assert session.summary()["state"] == "done"
+
+
+@pytest.mark.parametrize("channel", ["", "?session=s1"])
+def test_binary_websocket_frame_closes_with_unsupported_data(channel):
+    hub = make_hub()
+    add_session(hub, "s1")
+    with TestClient(hub.app) as client:
+        client.post("/api/login", json={"token": "correct-token"})
+        headers = {"origin": "http://testserver"}
+        with client.websocket_connect(f"/api/ws{channel}", headers=headers) as sock:
+            sock.receive_json()
+            sock.send_bytes(b"\x00binary")
+            with pytest.raises(WebSocketDisconnect) as exc:
+                for _ in range(10):
+                    sock.receive_json()
+        assert exc.value.code == 1003
+
+
+def test_hub_does_not_register_a_worker_that_exits_while_attaching(monkeypatch):
+    worker = FakeWorker()
+    hub = make_hub()
+    hub._records = [worker.record]
+
+    class RacingLink(hub_module.WorkerLink):
+        def attach(self):
+            status = super().attach()
+            # The worker exits after the reader starts but before registration.
+            worker.stop_serving()
+            assert self.stopped.wait(5)
+            return status
+
+    monkeypatch.setattr(hub_module, "WorkerLink", RacingLink)
+    try:
+        with pytest.raises(live.LiveError):
+            hub.attach_session("runtime-1")
+        assert hub.get_session("runtime-1") is None
+    finally:
+        hub.stop()
+        worker.close()
+
+
+def test_hub_info_is_created_owner_only(monkeypatch, tmp_path):
+    info_path = tmp_path / "hub.json"
+    monkeypatch.setattr(hub_module, "HUB_INFO_PATH", info_path)
+    created_modes = []
+    real_open = os.open
+
+    def recording_open(path, flags, mode=0o777, *args, **kwargs):
+        created_modes.append(mode)
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    hub = make_hub()
+    hub._write_info()
+
+    assert json.loads(info_path.read_text())["token"] == "correct-token"
+    assert created_modes == [0o600]
+    if os.name == "posix":
+        assert info_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_path_completion_endpoint_authenticates_on_the_event_loop():
+    hub = make_hub()
+    route = next(
+        route for route in hub.app.routes
+        if getattr(route, "path", "") == "/api/sessions/{session_id}/path-completions"
+    )
+    # Login expiry revokes asyncio events, which must happen on the app loop.
+    assert inspect.iscoroutinefunction(route.endpoint)

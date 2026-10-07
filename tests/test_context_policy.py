@@ -317,6 +317,32 @@ def test_write_invalidates_an_earlier_read_of_the_same_file():
     assert "file modified after this read" in result[2].text
 
 
+def test_write_invalidation_normalizes_paths():
+    messages = [Message.user("start")]
+    messages += _turn("c0", "read_file", {"file": "./a.py"}, "x" * 40_000)
+    messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 5_000)
+    messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 5_000)
+    messages += _turn("c3", "edit_file", {"file": "a.py"}, "x" * 40_000)
+    messages += _tail_turns()[:4]
+
+    result = _prune(messages, used_tokens=60_000)
+
+    assert "file modified after this read" in result[2].text
+
+
+def test_failed_write_does_not_invalidate_an_earlier_read():
+    messages = [Message.user("start")]
+    messages += _turn("c0", "read_file", {"file": "a.py"}, "x" * 40_000)
+    messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 5_000)
+    messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 5_000)
+    messages += _turn("c3", "edit_file", {"file": "a.py"}, "Error: old_string not found")
+    messages += _tail_turns()[:4]
+
+    result = _prune(messages, used_tokens=60_000)
+
+    assert "file modified after this read" not in result[2].text
+
+
 def test_eviction_clears_only_what_is_recoverable_from_disk():
     """Trimming comes first; clearing escalates only when it falls short."""
     messages = [Message.user("start")]

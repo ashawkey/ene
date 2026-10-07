@@ -165,6 +165,46 @@ def test_transient_errors_are_retried(status):
     assert _is_fatal_api_error(_StatusError(status)) is False
 
 
+@pytest.mark.parametrize(
+    "code", ["context_length_exceeded", "insufficient_quota", "invalid_prompt"],
+)
+def test_statusless_provider_errors_with_permanent_codes_are_fatal(code):
+    # Responses streams report failures in-band, without an HTTP status.
+    assert _is_fatal_api_error(ProviderError("failed", code=code)) is True
+
+
+def test_statusless_provider_errors_with_transient_codes_retry():
+    assert _is_fatal_api_error(ProviderError("busy", code="server_error")) is False
+    assert _is_fatal_api_error(ProviderError("stream failed")) is False
+
+
+def test_midstream_sdk_error_type_is_fatal():
+    error = RuntimeError("bad request")
+    error.code = None
+    error.type = "invalid_request_error"
+    assert _is_fatal_api_error(error) is True
+
+
+def test_context_overflow_detected_from_error_code():
+    error = ProviderError("Your input exceeds the window.", code="context_length_exceeded")
+    assert backend._is_context_overflow_error(error) is True
+
+
+def test_truncated_compaction_summary_fails_the_pass():
+    provider = NS(
+        complete=lambda request: CompletionResult(
+            message=Message.assistant("partial summ"), usage=None, finish_reason="length",
+        ),
+    )
+    agent = LLMAgent.__new__(LLMAgent)
+    agent.cancellation = None
+    agent._active_compaction_provider = None
+    agent._summary_provider = lambda: (provider, "model", False)
+
+    with pytest.raises(RuntimeError, match="truncated"):
+        agent._summarize("summarize this")
+
+
 def test_oauth_commands_use_current_provider():
     output = []
 
