@@ -13,8 +13,8 @@ REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 class ModelProfile:
     """Properties of a model family that affect API behaviour."""
 
-    context_length: int = 128_000
-    # "openai" | "openai-astra" | "openai-6" | "anthropic" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
+    context_length: int = 1_000_000
+    # "openai" | "openai-astra" | "openai-6" | "anthropic" | "anthropic-always" | "gemini" | "deepseek" | "deepseek-v4" | "glm" | "glm-5" | "kimi" | "qwen3.8"
     reasoning: str | None = None
     supports_image_input: bool = False
     # Max output tokens per request. Reasoning tokens count against this budget,
@@ -26,12 +26,15 @@ class ModelProfile:
 # Ordered most-specific → least-specific within each family.
 # Matching is case-insensitive substring; first hit wins.
 MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
+    # GPT-6.1 Sol always reasons, with the same effort levels as Astra.
+    ("gpt-6.1-sol", ModelProfile(context_length=1_050_000, reasoning="openai-astra", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt-6-astra", ModelProfile(context_length=1_050_000, reasoning="openai-astra", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt-6-sol", ModelProfile(context_length=1_050_000, reasoning="openai-6", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt-6-luna", ModelProfile(context_length=1_050_000, reasoning="openai-6", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt-5", ModelProfile(context_length=258_000, reasoning="openai", supports_image_input=True, max_output_tokens=128_000)),
     ("gpt", ModelProfile(supports_image_input=True)),
     ("gemini", ModelProfile(context_length=1_000_000, reasoning="gemini", supports_image_input=True, max_output_tokens=64_000)),
+    ("claude-opus-5-5", ModelProfile(context_length=1_000_000, reasoning="anthropic-always", supports_image_input=True, max_output_tokens=128_000)),
     ("claude", ModelProfile(context_length=1_000_000, reasoning="anthropic", supports_image_input=True, max_output_tokens=64_000)),
     # deepseek-v4-flash/pro gained three-tier thinking effort (low/high/max);
     # the -vision-exp variant is the same model family with image input;
@@ -87,7 +90,7 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
     if style is None:
         return {}
     if style == "openai-astra":
-        # Astra always reasons and supports a native max level.
+        # Astra and GPT-6.1 Sol always reason and support a native max level.
         return {"reasoning_effort": "low" if effort in ("none", "minimal") else effort}
     if style == "openai-6":
         # Sol and Luna allow no reasoning and support a native max level.
@@ -95,14 +98,14 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
     if style == "openai":
         # Older OpenAI models use xhigh for Ene's max level.
         return {"reasoning_effort": "xhigh" if effort == "max" else effort}
-    if style == "anthropic":
-        if effort == "none":
+    if style in ("anthropic", "anthropic-always"):
+        if effort == "none" and style == "anthropic":
             return {"extra_body": {"thinking": {"type": "disabled"}}}
         # Adaptive-thinking models use adaptive mode by default. Omitting the
         # explicit thinking field also avoids OpenAI-compatible gateways that
         # incorrectly translate it back to the unsupported legacy "enabled"
         # mode. Anthropic has no minimal level, and names its top level max.
-        mapped = {"minimal": "low", "xhigh": "max"}.get(effort, effort)
+        mapped = {"none": "low", "minimal": "low", "xhigh": "max"}.get(effort, effort)
         return {"extra_body": {"output_config": {"effort": mapped}}}
     if style == "gemini":
         # Gemini 3 uses qualitative thinking levels; it has no xhigh/max level.

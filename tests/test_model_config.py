@@ -107,7 +107,7 @@ def test_agent_profile_override_preserves_wire_model_and_resets_on_switch(monkey
         assert agent.model == "custom-text"
         assert agent.profile == resolve_model_profile("custom-text")
         assert agent.tool_executor.supports_image_input is False
-        assert agent.context_length == 128000
+        assert agent.context_length == 1000000
         assert agent.max_output_tokens == 32000
     finally:
         agent.close()

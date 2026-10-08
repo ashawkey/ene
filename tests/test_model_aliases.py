@@ -89,7 +89,9 @@ def test_switch_resolves_prefix_and_preserves_state_on_ambiguity(monkeypatch):
 
 @pytest.mark.parametrize('alias, model_conf, context_length, max_output, reasoning', [
     ('claude', {'model': 'azure/openai/GPT-6-SOL'}, 1_050_000, 128_000, 'openai-6'),
-    ('gpt-6-astra', {'model': 'custom-deployment'}, 128_000, 32_000, None),
+    ('gpt-6-astra', {'model': 'custom-deployment'}, 1_000_000, 32_000, None),
+    ('gpt-6.1-sol', {}, 1_050_000, 128_000, 'openai-astra'),
+    ('opus', {'model': 'claude-opus-5-5'}, 1_000_000, 128_000, 'anthropic-always'),
     ('gpt-6-sol', {}, 1_050_000, 128_000, 'openai-6'),
     ('small', {'model': 'gpt-6-luna', 'context_length': 200_000,
                'max_output_tokens': 16_000}, 200_000, 16_000, 'openai-6'),

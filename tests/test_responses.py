@@ -275,12 +275,13 @@ def test_model_switch_selects_configured_api_and_rejects_invalid_mode(monkeypatc
     assert agent._provider_settings.api == 'chat_completions'
 
 
-def test_responses_openai_6_models_send_reasoning_controls():
+@pytest.mark.parametrize('model, effort', [('gpt-6-sol', 'none'), ('gpt-6.1-sol', 'low')])
+def test_responses_openai_6_models_send_reasoning_controls(model, effort):
     provider = OpenAIResponsesProvider(ProviderSettings(api='responses'))
     body = provider._kwargs(CompletionRequest(
-        model='gpt-6-sol', messages=[Message.user('Hello')], reasoning_effort='none',
+        model=model, messages=[Message.user('Hello')], reasoning_effort='none',
     ))
-    assert body['reasoning'] == {'effort': 'none', 'summary': 'auto'}
+    assert body['reasoning'] == {'effort': effort, 'summary': 'auto'}
     assert body['include'] == ['reasoning.encrypted_content']
 
 

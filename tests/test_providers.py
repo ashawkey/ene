@@ -282,15 +282,20 @@ def test_openai_provider_stream_is_closed_and_normalized(monkeypatch):
     assert client.close_calls == 1
 
 
-@pytest.mark.parametrize("model", ["gpt-6-astra", "openai/GPT-6-ASTRA"])
-def test_astra_model_profile(model):
+@pytest.mark.parametrize("model", [
+    "gpt-6-astra", "openai/GPT-6-ASTRA", "gpt-6.1-sol", "azure/openai/GPT-6.1-SOL",
+])
+def test_always_reasoning_openai_model_profile(model):
     profile = resolve_model_profile(model)
     assert profile.context_length == 1_050_000
     assert profile.max_output_tokens == 128_000
     assert profile.supports_image_input is True
     assert profile.reasoning == "openai-astra"
     assert reasoning_kwargs(profile.reasoning, "max") == {"reasoning_effort": "max"}
-    assert reasoning_kwargs(profile.reasoning, "none") == {"reasoning_effort": "low"}
+    for effort in ("none", "minimal"):
+        assert reasoning_kwargs(profile.reasoning, effort) == {"reasoning_effort": "low"}
+    for effort in ("low", "medium", "high", "xhigh", "max"):
+        assert reasoning_kwargs(profile.reasoning, effort) == {"reasoning_effort": effort}
 
 
 @pytest.mark.parametrize("model", [
@@ -311,3 +316,28 @@ def test_gpt6_sol_and_luna_model_profiles(model):
     assert trigger == 892_500
     assert trigger < 922_000
     assert trigger + profile.max_output_tokens < profile.context_length
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "anthropic/CLAUDE-OPUS-5-5"])
+def test_opus55_model_profile(model):
+    profile = resolve_model_profile(model)
+    assert profile == resolve_model_profile("deployment", "claude-opus-5-5")
+    assert profile.context_length == 1_000_000
+    assert profile.max_output_tokens == 128_000
+    assert profile.supports_image_input is True
+    assert profile.reasoning == "anthropic-always"
+    for effort, expected in [
+        ("none", "low"), ("minimal", "low"), ("low", "low"),
+        ("medium", "medium"), ("high", "high"), ("xhigh", "max"), ("max", "max"),
+    ]:
+        assert reasoning_kwargs(profile.reasoning, effort) == {
+            "extra_body": {"output_config": {"effort": expected}},
+        }
+
+
+def test_unknown_model_profile_defaults():
+    profile = resolve_model_profile("custom-deployment")
+    assert profile.context_length == 1_000_000
+    assert profile.max_output_tokens == 32_000
+    assert profile.reasoning is None
+    assert profile.supports_image_input is False
