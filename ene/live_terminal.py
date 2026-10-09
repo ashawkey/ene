@@ -179,6 +179,7 @@ class LiveTerminal:
             system_message=self.console.system,
             persistent=True,
             title_name=str(session.get("name") or Path(workspace).name),
+            session_label=str(session.get("name") or self.conversation_id),
         )
         self.terminal.set_runtime_state(
             cancel=self._cancel_operation,
@@ -519,6 +520,7 @@ class LiveTerminal:
             if self.terminal is not None:
                 name = str(data.get("name") or data.get("title") or "session")
                 self.terminal.set_title_name(name)
+                self.terminal.set_session_label(str(data.get("name") or self.conversation_id))
         elif kind == "commands":
             self.commands.clear()
             self.commands.update(data.get("commands", {}))

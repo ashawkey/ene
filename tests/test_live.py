@@ -751,11 +751,13 @@ def test_live_terminal_reports_resume_command_when_session_stops():
     ]
 
 
-def test_live_terminal_updates_title_for_session_metadata():
+def test_live_terminal_updates_title_and_status_label_for_session_metadata():
     client = LiveTerminal({})
     names = []
+    labels = []
     client.terminal = SimpleNamespace(
         set_title_name=names.append,
+        set_session_label=labels.append,
         set_busy=lambda _busy: None,
     )
     client.operation_id = None
@@ -775,7 +777,13 @@ def test_live_terminal_updates_title_for_session_metadata():
     })
 
     assert names == ["renamed", "workspace"]
-    assert client.conversation_id == "conversation-456"
+    assert labels == ["renamed", "conversation-456"]
+    client._event({
+        "type": "session_meta",
+        "data": {"name": "", "title": "workspace", "conversation_id": "conversation-789"},
+    })
+    assert labels[-1] == "conversation-789"
+    assert client.conversation_id == "conversation-789"
 
 
 def test_live_terminal_renders_structured_output_with_ansi_styles():
@@ -872,7 +880,8 @@ def test_live_terminal_answers_prompt_replayed_before_editor_starts():
     assert client.prompt is None
 
 
-def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
+@pytest.mark.parametrize("name", ["my session", ""])
+def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch, name):
     class FakeSocket:
         def settimeout(self, _timeout):
             pass
@@ -911,6 +920,8 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
         "type": "attached",
         "session": {
             "runtime_id": "runtime",
+            "name": name,
+            "conversation_id": "conversation-123",
             "workspace": "/tmp",
             "operation_id": "operation-1",
             "pending": {"id": "pending-1", "text": "follow up"},
@@ -933,8 +944,10 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
         "ene.live_terminal.patch_stdout",
         lambda **_kwargs: contextlib.nullcontext(),
     )
+    terminal_options = {}
     monkeypatch.setattr(
-        "ene.live_terminal.TerminalInput", lambda **_kwargs: terminal
+        "ene.live_terminal.TerminalInput",
+        lambda **kwargs: terminal_options.update(kwargs) or terminal,
     )
     client = LiveTerminal({})
     client.console = SimpleNamespace(
@@ -947,6 +960,7 @@ def test_live_terminal_hydrates_pending_and_operation_from_attach(monkeypatch):
     result = client.run()
 
     assert result == ("disconnect", "")
+    assert terminal_options["session_label"] == (name or "conversation-123")
     assert client.operation_id == "operation-1"
     assert client.pending == {"id": "pending-1", "text": "follow up"}
     assert terminal.busy == [True]
@@ -1866,6 +1880,31 @@ def test_active_indicator_ignores_completed_historical_status():
         {"type": "thinking_start", "data": active},
         {"type": "thinking_stop", "data": {}},
     ]) is None
+
+
+def test_live_worker_session_metadata_uses_switched_conversation_id(monkeypatch):
+    worker = Worker.__new__(Worker)
+    worker.runtime_id = "runtime"
+    worker.record = {"name": "", "workspace": "/tmp/workspace"}
+    worker.agent = SimpleNamespace(_session_id="old-conversation")
+    events = []
+    worker.events = SimpleNamespace(
+        publish=lambda kind, **data: events.append((kind, data))
+    )
+    monkeypatch.setattr(
+        live_worker,
+        "update_identity",
+        lambda _runtime_id, **changes: worker.record | changes,
+    )
+
+    # Identity callbacks run before the agent replaces its current session ID.
+    worker._session_changed("new-conversation", "")
+
+    assert events == [("session_meta", {
+        "name": "",
+        "title": "workspace",
+        "conversation_id": "new-conversation",
+    })]
 
 
 def test_live_worker_restores_saved_name_when_resuming(monkeypatch):

@@ -506,7 +506,7 @@ class Worker:
             "session_meta",
             name=name,
             title=title,
-            conversation_id=self.agent._session_id,
+            conversation_id=self.record["conversation_id"],
         )
 
     def _cleanup_record(self) -> None:

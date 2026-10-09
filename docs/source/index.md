@@ -163,6 +163,7 @@ Interactive sessions run in detached workers and survive closing the terminal or
 - Start with an optional name using `ene [name]` (equivalent to `ene new [name]`).
 - Detach without interruption using `/detach` or Ctrl+D.
 - Rename the session with `/name [name]`.
+- The terminal status bar shows the session name (or saved session ID if unnamed) after the cache-hit percentage.
 - List workers with `ene ls` (`ene l`).
 - Reattach with `ene attach [name]`, or choose with bare `ene attach` (`ene a`).
 - Switch sessions using `/switch` or Ctrl+S; cancelling the picker leaves the current attachment untouched.

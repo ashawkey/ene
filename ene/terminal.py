@@ -461,6 +461,7 @@ class TerminalInput:
         system_message: Callable[[str], None] = print,
         persistent: bool = False,
         title_name: str = "",
+        session_label: str = "",
     ):
         self._prompt_label = prompt_label
         self._system_message = system_message
@@ -470,6 +471,7 @@ class TerminalInput:
         self._status: list[tuple[str, str]] = []
         self._context_status: ContextStatus | None = None
         self._process_status = ""
+        self._session_label = self._clean_title_name(session_label) if session_label else ""
         self._status_lock = threading.Lock()
         self._cancel: Callable[[], None] | None = None
         self._pending_text: Callable[[], str | None] | None = None
@@ -792,6 +794,7 @@ class TerminalInput:
             status = list(self._status)
             context_status = getattr(self, "_context_status", None)
             process_status = self._process_status
+            session_label = self._session_label
         has_context = any(style.startswith("class:status.context.") for style, _ in status)
         if context_status is not None and not has_context:
             context_fragments = context_status.prompt_fragments()
@@ -804,6 +807,12 @@ class TerminalInput:
                 ("class:status.spinner", "⠋ "),
                 ("class:status.text", "Working..."),
             ]
+        if session_label:
+            session_fragment = ("class:status.detail", session_label)
+            if status:
+                status.extend([("", " · "), session_fragment])
+            else:
+                status = [session_fragment]
         if process_status:
             process_fragment = ("class:status.process", process_status)
             if status:
@@ -900,6 +909,13 @@ class TerminalInput:
     def set_context_status(self, status: ContextStatus) -> None:
         with self._status_lock:
             self._context_status = status
+        app = self._session.app
+        if app.is_running:
+            app.invalidate()
+
+    def set_session_label(self, label: str) -> None:
+        with self._status_lock:
+            self._session_label = self._clean_title_name(label) if label else ""
         app = self._session.app
         if app.is_running:
             app.invalidate()

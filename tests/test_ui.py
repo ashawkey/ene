@@ -95,12 +95,13 @@ def test_terminal_title_sanitizes_name_and_uses_workspace_fallback(monkeypatch):
     terminal.close_title()
 
 
-def test_terminal_keeps_context_status_when_activity_stops(monkeypatch):
+@pytest.mark.parametrize("session_label", ["my session", "20261009_052114"])
+def test_terminal_keeps_context_status_when_activity_stops(monkeypatch, session_label):
     from prompt_toolkit.output import DummyOutput
     import prompt_toolkit.output.defaults as pt_defaults
 
     monkeypatch.setattr(pt_defaults, "create_output", lambda *a, **k: DummyOutput())
-    terminal = TerminalInput()
+    terminal = TerminalInput(session_label=session_label)
     context = ContextStatus(96_000, 128_000, 200_000, 4_000, 150_000)
     terminal.set_context_status(context)
     terminal.set_status([
@@ -110,15 +111,39 @@ def test_terminal_keeps_context_status_when_activity_stops(monkeypatch):
 
     active = "".join(text for _, text in terminal._message())
     assert "Executing..." in active
-    assert "75% · ↑200K · ↓4K · 75% hit" in active
+    assert f"75% · ↑200K · ↓4K · 75% hit · {session_label}" in active
+
+    terminal.set_status([
+        ("class:status.text", "Working..."),
+        *context.prompt_fragments(),
+    ])
+    thinking = "".join(text for _, text in terminal._message())
+    assert f"75% hit · {session_label}" in thinking
+    assert thinking.count(session_label) == 1
 
     terminal.set_status(None)
     idle = "".join(text for _, text in terminal._message())
     assert "Executing..." not in idle
-    assert "75% · ↑200K · ↓4K · 75% hit" in idle
+    assert f"75% · ↑200K · ↓4K · 75% hit · {session_label}" in idle
     lines = idle.splitlines()
     assert lines[0] and set(lines[0]) == {"─"}
     assert lines[2] and set(lines[2]) == {"─"}
+
+
+def test_terminal_updates_session_label_before_multiline_process_status():
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.application.current import create_app_session
+
+    with create_app_session(output=DummyOutput()):
+        terminal = TerminalInput(session_label="old name")
+    terminal.set_context_status(ContextStatus(1, 10, 0, 0))
+    terminal.set_process_status("1 process running\n└ reading files")
+    terminal.set_session_label(" new\n\x1bname ")
+
+    text = "".join(text for _, text in terminal._message())
+    assert "0% hit · new name · 1 process running\n└ reading files" in text
+    assert "old name" not in text
+    terminal.close_title()
 
 
 def test_thinking_indicator_publishes_running_suffix_updates():

@@ -1493,8 +1493,11 @@ class LLMAgent(
             if self.prompt_broker is not None:
                 self.prompt_broker.set_terminal_adapter(terminal_ask)
 
+            set_session_label = getattr(terminal, "set_session_label", None)
             try:
                 while True:
+                    if set_session_label is not None:
+                        set_session_label(self.session_name or self._session_id)
                     item = self.input_broker.submission
                     should_show_wait = (
                         active is None
@@ -1910,6 +1913,7 @@ class LLMAgent(
             commands=self._slash_commands,
             system_message=self.console.system,
             title_name=self.session_name or Path(_wd).name,
+            session_label=self.session_name or self._session_id,
         )
 
         try:

@@ -1225,6 +1225,7 @@ def test_terminal_loop_answers_a_command_without_waiting_for_the_round(monkeypat
     round_started = threading.Event()
     release_round = threading.Event()
     dispatched: list[str] = []
+    session_labels: list[str] = []
 
     class Agent(AgentCommandsMixin):
         input_broker = broker
@@ -1234,6 +1235,8 @@ def test_terminal_loop_answers_a_command_without_waiting_for_the_round(monkeypat
         verbose = False
         _run_instant_command = LLMAgent._run_instant_command
         _run_round = LLMAgent._run_round
+        session_name = ""
+        _session_id = "session-123"
 
         def _process_next_submission(self) -> bool:
             text = broker.get_nowait().text
@@ -1248,10 +1251,12 @@ def test_terminal_loop_answers_a_command_without_waiting_for_the_round(monkeypat
 
         def _run_command(self, query: str) -> bool:
             dispatched.append(query)
+            self.session_name = "renamed"
             return False
 
     agent = Agent()
     terminal = _ScriptedTerminal()
+    terminal.set_session_label = session_labels.append
     loop = threading.Thread(
         target=lambda: LLMAgent._run_terminal_loop(agent, terminal), daemon=True
     )
@@ -1259,10 +1264,12 @@ def test_terminal_loop_answers_a_command_without_waiting_for_the_round(monkeypat
 
     terminal.lines.put("do some work")
     assert round_started.wait(5)
+    assert session_labels[0] == "session-123"
 
     # Answered with the round still blocked on the worker thread.
     terminal.lines.put("/usage")
     assert _wait_until(lambda: dispatched == ["/usage"])
+    assert _wait_until(lambda: session_labels[-1] == "renamed")
     assert not release_round.is_set()
 
     # A second instant command bypasses the occupied pending slot.

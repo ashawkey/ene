@@ -258,6 +258,7 @@ def _message_terminal(*, pending=None, status=None):
     terminal._busy = True
     terminal._status = list(status or [])
     terminal._process_status = ""
+    terminal._session_label = ""
     terminal._status_lock = threading.Lock()
     terminal._pending_text = lambda: pending
     terminal._prompt_label = "> "
