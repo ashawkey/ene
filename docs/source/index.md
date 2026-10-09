@@ -185,5 +185,6 @@ ene resume SESSION_ID  # resume directly
 
 - **Storage:** `./.ene/`; Ene maintains a `.gitignore` containing `*` to exclude local state.
 - **`/rewind`:** preview an earlier prompt and restore conversation, tracked files, or both. Edit the restored prompt before branching.
+- **Backup limit:** files larger than 10 MiB are not backed up, including files inside deleted directories. Writes and deletions still proceed with a warning; rewind across an incomplete backup offers conversation only. Existing backups are unchanged.
 - **`/fork [name]`:** start a new session at an earlier prompt without changing the old session or tracked files.
 - **Symlinks:** rewind restores targets written by `write_file`, `edit_file`, or `multi_edit`, preserving symlinks—even through symlinked directories or outside the workspace.

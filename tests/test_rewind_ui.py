@@ -251,6 +251,30 @@ def test_external_file_changes_disable_code_rewind(tmp_path: Path):
     assert len(agent.context.messages) == 1
 
 
+def test_incomplete_backup_warns_and_only_offers_conversation_rewind(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_FILE_SIZE", 64)
+    agent, work, console = _build(tmp_path, [" 1.", "1."])
+    large = work / "model.pt"
+    large.write_bytes(b"x" * 65)
+    agent.changes.track_remove(2, str(large))
+    large.unlink()
+    agent.save_session(reason="round")
+    assert "Not backed up for rewind: model.pt" in console.text
+
+    agent._cmd_rewind()
+
+    assert "Code cannot be reverted" in console.text
+    assert "not backed up (10 MiB limit): model.pt" in console.text
+    assert console.prompts[1] == [
+        "1. Conversation only — 3 → 1 messages, files untouched",
+        "2. Cancel",
+    ]
+    assert (work / "parser.py").read_text() == "def parse(text):\n    return float(text)\n"
+    assert not (work / "util.py").exists()
+    assert not large.exists()
+    assert len(agent.context.messages) == 1
+
+
 def test_replay_omits_tool_activity(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = [

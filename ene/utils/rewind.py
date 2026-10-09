@@ -38,9 +38,10 @@ class CheckoutPlan:
     dirty: tuple[str, ...]
     added: int
     removed: int
+    skipped: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
-        return bool(self.deltas)
+        return bool(self.deltas or self.skipped)
 
     @property
     def files(self) -> int:
@@ -101,6 +102,15 @@ class ChangeTracker:
 
     def _record(self, record: ChangeRecord) -> ChangeRecord:
         self._pending.append(record)
+        skipped = dict.fromkeys(
+            self.store.skipped_paths(record.before, record.path)
+            + self.store.skipped_paths(record.after, record.path)
+        )
+        for path in skipped:
+            self.console.warn(
+                f"Not backed up for rewind: {path} (exceeds the 10 MiB file limit). "
+                "Code rewind across this change is unavailable."
+            )
         return record
 
     def discard(self, record: ChangeRecord) -> None:
@@ -147,13 +157,25 @@ class ChangeTracker:
         steps = self.store.code_walk(self.code_revision_id, target_id)
         deltas = self.store.code_delta(self.code_revision_id, target_id)
         _, added, removed = self.store.delta_stats(deltas)
-        dirty = tuple(delta.path for delta in deltas if self._is_dirty(delta))
-        return CheckoutPlan(target_id, steps, deltas, dirty, added, removed)
+        skipped = tuple(dict.fromkeys(
+            path
+            for record, _ in steps
+            for side in ("before", "after")
+            for path in self.store.skipped_paths(record[side], record["path"])
+        ))
+        dirty = () if skipped else tuple(delta.path for delta in deltas if self._is_dirty(delta))
+        return CheckoutPlan(target_id, steps, deltas, dirty, added, removed, skipped)
 
     def apply_plan(self, plan: CheckoutPlan) -> int:
         """Execute a plan built by :meth:`plan_checkout`."""
         if self._pending:
             raise RuntimeError("Save the session before checking out a code revision")
+
+        if plan.skipped:
+            raise RuntimeError(
+                "Cannot revert code: files were not backed up for rewind "
+                f"(10 MiB limit): {', '.join(plan.skipped[:5])}"
+            )
 
         changed = 0
         restored: list[str] = []

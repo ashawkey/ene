@@ -40,6 +40,8 @@ def _object_key(descriptor: dict[str, Any] | None) -> tuple[str, int] | None:
     """Identity of a stored object: content plus permissions, or ``None`` if absent."""
     if descriptor is None:
         return None
+    if descriptor["kind"] == "skipped":
+        return f"skipped:{descriptor['size']}", descriptor["mode"]
     return descriptor["id"], descriptor["mode"]
 
 
@@ -108,6 +110,9 @@ def _decode_revision(
         revision["state"] = state
     return revision
 
+
+# Rewind backups are intended for source files, not datasets or checkpoints.
+MAX_BACKUP_FILE_SIZE = 10 * 1024 * 1024
 
 # Above this many lines, line-by-line matching costs more than the stat is worth.
 DIFF_LINE_LIMIT = 20000
@@ -223,6 +228,8 @@ class SessionStore:
         return self.head_id is not None
 
     def store_bytes(self, data: bytes, *, mode: int = 0o644) -> dict[str, Any]:
+        if len(data) > MAX_BACKUP_FILE_SIZE:
+            return {"kind": "skipped", "size": len(data), "mode": mode}
         return self._store_object("file", data, mode)
 
     def store_path(self, path: Path) -> dict[str, Any]:
@@ -232,7 +239,11 @@ class SessionStore:
         if path.is_symlink():
             return self._store_object("symlink", os.readlink(path).encode("utf-8"), mode)
         if path.is_file():
-            return self._store_object("file", path.read_bytes(), mode)
+            if info.st_size > MAX_BACKUP_FILE_SIZE:
+                return {"kind": "skipped", "size": info.st_size, "mode": mode}
+            with path.open("rb") as f:
+                data = f.read(MAX_BACKUP_FILE_SIZE + 1)
+            return self.store_bytes(data, mode=mode)
         if path.is_dir():
             entries = [
                 {"name": child.name, "object": self.store_path(child)}
@@ -242,8 +253,25 @@ class SessionStore:
             return self._store_object("tree", manifest, mode)
         raise ValueError(f"Cannot store special file: {path}")
 
+    def skipped_paths(self, descriptor: dict[str, Any] | None, path: str) -> list[str]:
+        """Paths whose file contents were omitted from a backup."""
+        if descriptor is None:
+            return []
+        if descriptor["kind"] == "skipped":
+            return [path]
+        if descriptor["kind"] != "tree":
+            return []
+        return [
+            skipped
+            for entry in json.loads(self._read_object(descriptor))
+            for skipped in self.skipped_paths(entry["object"], str(Path(path) / entry["name"]))
+        ]
+
     def restore_object(self, descriptor: dict[str, Any], path: Path) -> None:
         """Restore and verify one content-addressed object tree."""
+        skipped = self.skipped_paths(descriptor, str(path))
+        if skipped:
+            raise ValueError(f"Cannot restore files not backed up for rewind: {', '.join(skipped[:5])}")
         kind = descriptor["kind"]
         data = self._read_object(descriptor)
         mode = descriptor["mode"]

@@ -5,14 +5,18 @@ from pathlib import Path
 import pytest
 
 from ene.messages import Message
-from ene.session_store import SessionStore
+from ene.session_store import MAX_BACKUP_FILE_SIZE, SessionStore
 from ene.tools import ToolExecutor
 from ene.ui import AgentConsole
 from ene.utils.rewind import ChangeTracker
 
 
 class _Console:
-    pass
+    def __init__(self):
+        self.warnings = []
+
+    def warn(self, message):
+        self.warnings.append(message)
 
 
 def _state(round_id: int, text: str) -> dict:
@@ -520,6 +524,137 @@ def test_removed_tree_uses_deduplicated_content_addressed_objects(tmp_path: Path
     assert (removed / "a.bin").read_bytes() == b"same bytes"
     assert (removed / "b.bin").read_bytes() == b"same bytes"
     assert store.revisions[root]["codeRevisionId"] == code_revision
+
+
+def test_backup_limit_includes_exact_boundary(tmp_path):
+    store = SessionStore(tmp_path / "sessions", "session")
+    data = b"x" * MAX_BACKUP_FILE_SIZE
+    descriptor = store.store_bytes(data)
+    assert descriptor["kind"] == "file"
+    assert store._object_path(descriptor["id"]).stat().st_size == MAX_BACKUP_FILE_SIZE
+    assert store.store_bytes(data + b"x") == {
+        "kind": "skipped", "size": MAX_BACKUP_FILE_SIZE + 1, "mode": 0o644,
+    }
+    assert len(list(store.objects_path.glob("*/*"))) == 1
+
+
+@pytest.mark.parametrize("size", [8, 9])
+def test_store_path_checks_size_before_reading(tmp_path, monkeypatch, size):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_FILE_SIZE", 8)
+    store = SessionStore(tmp_path / "sessions", "session")
+    target = tmp_path / "checkpoint.pt"
+    target.write_bytes(b"x" * size)
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path == target and size > 8:
+            pytest.fail("Oversized backup must not read file contents")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    descriptor = store.store_path(target)
+    assert descriptor["kind"] == ("file" if size == 8 else "skipped")
+    if size > 8:
+        assert not store.objects_path.exists()
+
+
+@pytest.mark.parametrize("operation", ["write_file", "edit_file", "multi_edit", "remove_file"])
+def test_oversized_changes_warn_and_block_code_rewind(tmp_path, monkeypatch, operation):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_FILE_SIZE", 8)
+    store, tracker, work = _session(tmp_path)
+    target = work / "large.txt"
+    target.write_text("0123456789")
+    executor = ToolExecutor(
+        console=AgentConsole(render_terminal=False), work_dir=str(work),
+        change_tracker=tracker, get_round_id=lambda: 1,
+    )
+    edit = {"old_text": "0", "new_text": "X"}
+    arguments = {"content": "small"} if operation == "write_file" else (
+        {"edits": [edit]} if operation == "multi_edit" else (
+            edit if operation == "edit_file" else {}
+        )
+    )
+    assert executor.execute(operation, {"file": "large.txt", **arguments})["success"]
+    assert "large.txt" in tracker.console.warnings[0]
+    assert "10 MiB" in tracker.console.warnings[0]
+    assert "rewind" in tracker.console.warnings[0]
+    expected = target.read_bytes() if target.exists() else None
+    _round(store, tracker, None, 1, "change large file")
+
+    # The skipped marker and warning survive a restart; no large files are hashed.
+    store = SessionStore(tmp_path / "sessions", "session")
+    tracker = ChangeTracker("session", work, _Console(), store, store.materialize()["code_revision_id"])
+    monkeypatch.setattr(store, "hash_path", lambda path: pytest.fail("Blocked rewind must not hash files"))
+    plan = tracker.plan_checkout(None)
+    assert plan and plan.skipped == ("large.txt",)
+    assert store.candidates()
+    with pytest.raises(RuntimeError, match="not backed up"):
+        tracker.apply_plan(plan)
+    assert (target.read_bytes() if target.exists() else None) == expected
+    assert all(path.stat().st_size <= 8 for path in store.objects_path.glob("*/*"))
+
+
+def test_new_oversized_file_cannot_be_replayed_or_deleted_by_rewind(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_FILE_SIZE", 8)
+    store, tracker, work = _session(tmp_path)
+    target = work / "large.txt"
+    tracker.track_write(1, str(target), "0123456789")
+    target.write_text("0123456789")
+    _round(store, tracker, None, 1, "create")
+    code = tracker.code_revision_id
+    assert tracker.plan_checkout(None).skipped == ("large.txt",)
+    tracker.code_revision_id = None
+    plan = tracker.plan_checkout(code)
+    assert plan.skipped == ("large.txt",)
+    with pytest.raises(RuntimeError, match="not backed up"):
+        tracker.apply_plan(plan)
+    assert target.read_text() == "0123456789"
+
+
+def test_removed_tree_with_large_file_has_persistent_incomplete_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_FILE_SIZE", 8)
+    store, tracker, work = _session(tmp_path)
+    package = work / "package"
+    nested = package / "checkpoints"
+    nested.mkdir(parents=True)
+    (package / "a.py").write_text("small")
+    (nested / "model.pt").write_bytes(b"x" * 9)
+    tracker.track_remove(1, str(package))
+    descriptor = tracker.pending_changes[0]["before"]
+    assert tracker.console.warnings == [
+        "Not backed up for rewind: package/checkpoints/model.pt (exceeds the 10 MiB file limit). "
+        "Code rewind across this change is unavailable."
+    ]
+    shutil.rmtree(package)
+    _round(store, tracker, None, 1, "remove tree")
+    plan = tracker.plan_checkout(None)
+    assert plan.skipped == ("package/checkpoints/model.pt",)
+    with pytest.raises(RuntimeError, match="not backed up"):
+        tracker.apply_plan(plan)
+    assert not package.exists()
+
+    # Direct restore also refuses before creating any part of an incomplete tree.
+    with pytest.raises(ValueError, match="not backed up"):
+        store.restore_object(descriptor, package)
+    assert not package.exists()
+    assert sorted(path.stat().st_size for path in store.objects_path.glob("*/*"))[0] == 5
+
+
+def test_blocked_checkout_does_not_partially_restore_other_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_FILE_SIZE", 8)
+    store, tracker, work = _session(tmp_path)
+    large = work / "large.txt"
+    large.write_text("0123456789")
+    tracker.track_remove(1, str(large))
+    large.unlink()
+    _write(tracker, work, 1, "small.py", "small")
+    _round(store, tracker, None, 1, "mixed changes")
+    plan = tracker.plan_checkout(None)
+    assert plan.steps[0][0]["path"] == "small.py"
+    with pytest.raises(RuntimeError, match="not backed up"):
+        tracker.apply_plan(plan)
+    assert (work / "small.py").read_text() == "small"
+    assert not large.exists()
 
 
 def _session(tmp_path: Path) -> tuple[SessionStore, ChangeTracker, Path]:

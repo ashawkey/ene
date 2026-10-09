@@ -462,7 +462,7 @@ class SessionMixin:
             detail.add_row("", Text(line, style=style))
 
         if plan:
-            change = "would change" if plan.dirty else "will change"
+            change = "would change" if plan.dirty or plan.skipped else "will change"
             detail.add_row(
                 "Files",
                 Text(f"{plan.files} {change}  (+{plan.added} / -{plan.removed})", style="yellow"),
@@ -477,6 +477,15 @@ class SessionMixin:
             hidden = plan.files - self.REWIND_MAX_FILES
             if hidden > 0:
                 detail.add_row("", Text(f"… and {hidden} more file(s)", style="dim"))
+            if plan.skipped:
+                detail.add_row(
+                    "",
+                    Text(
+                        f"! Code cannot be reverted because {len(plan.skipped)} file(s) were not "
+                        f"backed up (10 MiB limit): {', '.join(plan.skipped[:5])}",
+                        style="bold yellow",
+                    ),
+                )
             if plan.dirty:
                 detail.add_row(
                     "",
@@ -525,7 +534,7 @@ class SessionMixin:
         Returns ``"both"``, ``"conversation"``, ``"code"``, or ``None`` to cancel.
         """
         conversation = f"{len(self.context.messages)} → {len(target['messages'])} messages"
-        if not plan or plan.dirty:
+        if not plan or plan.dirty or plan.skipped:
             modes = ["conversation"]
             choices = [
                 f"1. Conversation only — {conversation}, files untouched",
