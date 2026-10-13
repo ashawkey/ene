@@ -117,6 +117,9 @@ _LAST_LINE_MAX_CHARS = 80
 NOTIFY_MODES = ("exit", "output", "jsonl", "none")
 # Output notifications carry one line each; the inbox bounds the backlog.
 _NOTIFY_LINE_MAX_BYTES = 8192
+# Keep JSON framing intact across pipe reads, with a separate bounded parser
+# budget. Large valid objects are delivered by file reference, never sliced.
+_JSONL_LINE_MAX_BYTES = 1024 * 1024
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
@@ -433,6 +436,7 @@ class ProcessManagerMixin:
         }
 
         source = f"process:{process_id}" + (f" {label}" if label else "")
+        notification_file_bytes = 0
 
         def post(text: str) -> None:
             # A deliberate stop ends every notification, including output
@@ -442,10 +446,15 @@ class ProcessManagerMixin:
                     sink(text, source)
 
         def notify_line(raw: bytes) -> None:
+            nonlocal notification_file_bytes
             # Carriage returns redraw a terminal line (progress bars); only
             # the final redraw is what the line shows.
-            raw = raw.rstrip(b"\r").rsplit(b"\r", 1)[-1]
-            text = _ANSI_RE.sub("", decode_output_text(raw[:_NOTIFY_LINE_MAX_BYTES]))
+            raw = raw.rstrip(b"\r")
+            if notify != "jsonl":
+                raw = raw.rsplit(b"\r", 1)[-1]
+            text = _ANSI_RE.sub("", decode_output_text(
+                raw if notify == "jsonl" else raw[:_NOTIFY_LINE_MAX_BYTES]
+            ))
             if not text.strip():
                 return
             if notify == "jsonl":
@@ -454,6 +463,34 @@ class ProcessManagerMixin:
                         return
                 # Deep nesting raises RecursionError, not a decode error.
                 except (ValueError, RecursionError):
+                    return
+                if len(raw) > _NOTIFY_LINE_MAX_BYTES:
+                    data = text.encode("utf-8")
+                    if notification_file_bytes + len(data) > MAX_PROCESS_LOG_BYTES:
+                        post(json.dumps({
+                            "type": "process_output_storage_limit",
+                            "log_path": record["log_path"],
+                            "note": "Oversized JSON notification was not saved: the process's "
+                                    "notification-file budget is exhausted. The log may be truncated.",
+                        }))
+                        return
+                    path = log_dir / f"{log_path.stem}-event-{uuid.uuid4().hex}.json"
+                    try:
+                        with path.open("xb") as handle:
+                            path.chmod(0o600)
+                            handle.write(data)
+                    except OSError as exc:
+                        path.unlink(missing_ok=True)
+                        post(f"Could not save oversized JSON notification: {exc}. "
+                             f"Inspect process log: {record['log_path']}")
+                        return
+                    notification_file_bytes += len(data)
+                    post(json.dumps({
+                        "type": "process_output_file",
+                        "path": str(path.relative_to(self._resolve_path("."))),
+                        "bytes": len(raw),
+                        "note": "Read this file for the complete JSON notification.",
+                    }))
                     return
             elif line_filter is not None and not line_filter.search(text):
                 return
@@ -484,9 +521,37 @@ class ProcessManagerMixin:
             log_enabled = True
             tail = b""
             partial = b""
+            oversized_json = False
+
+            def consume_json(fragment: bytes, *, complete: bool) -> None:
+                nonlocal partial, oversized_json
+                if not oversized_json:
+                    if len(partial) + len(fragment) > _JSONL_LINE_MAX_BYTES:
+                        partial = b""
+                        oversized_json = True
+                        post_notification(post, json.dumps({
+                            "type": "process_output_too_large",
+                            "log_path": record["log_path"],
+                            "note": f"JSONL line exceeded the {_JSONL_LINE_MAX_BYTES}-byte "
+                                    "notification limit; inspect the process log "
+                                    "(which may be truncated).",
+                        }))
+                    else:
+                        partial += fragment
+                if complete:
+                    if not oversized_json:
+                        post_notification(notify_line, partial)
+                    partial = b""
+                    oversized_json = False
+
             try:
                 while chunk := proc.stdout.read1(65536):
-                    if notify in ("output", "jsonl"):
+                    if notify == "jsonl":
+                        fragments = chunk.split(b"\n")
+                        for fragment in fragments[:-1]:
+                            consume_json(fragment, complete=True)
+                        consume_json(fragments[-1], complete=False)
+                    elif notify == "output":
                         *lines, partial = (partial + chunk).split(b"\n")
                         # Keep only the latest redraw of a line still being
                         # rewritten with carriage returns.

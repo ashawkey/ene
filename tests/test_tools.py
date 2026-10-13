@@ -1242,6 +1242,79 @@ def test_jsonl_survives_deeply_nested_output(tmp_path):
         te.shutdown_processes()
 
 
+@pytest.mark.parametrize("text", ["x" * 9000, "界" * 3000, "x" * 80000])
+def test_large_jsonl_notification_preserves_complete_record(tmp_path, text):
+    import json
+
+    te, broker = _executor_with_inbox(tmp_path)
+    payload = {"type": "slack_message", "text": text}
+    (tmp_path / "payload.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "emit.py").write_text(
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "data = Path('payload.json').read_bytes()\n"
+        "for offset in range(0, len(data), 4096):\n"
+        "    sys.stdout.buffer.write(data[offset:offset+4096])\n"
+        "    sys.stdout.buffer.flush()\n"
+        "    time.sleep(0.001)\n",  # EOF also finishes the record.
+        encoding="utf-8",
+    )
+    try:
+        te.execute("start_process", {"command": "python -u emit.py", "notify": "jsonl"})
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert len(events) == 2
+        reference = json.loads(events[0].text)
+        assert reference["type"] == "process_output_file"
+        artifact = tmp_path / reference["path"]
+        assert json.loads(artifact.read_text(encoding="utf-8")) == payload
+        if sys.platform != "win32":
+            assert artifact.stat().st_mode & 0o777 == 0o600
+    finally:
+        te.shutdown_processes()
+
+
+def test_oversized_jsonl_line_reports_loss_and_preserves_next_frame(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.tools.process_manager._JSONL_LINE_MAX_BYTES", 256)
+    te, broker = _executor_with_inbox(tmp_path)
+    (tmp_path / "emit.py").write_text(
+        "import json\n"
+        "print(json.dumps({'text': 'x' * 100000}))\n"
+        "print(json.dumps({'text': 'next'}))\n",
+        encoding="utf-8",
+    )
+    try:
+        te.execute("start_process", {"command": "python -u emit.py", "notify": "jsonl"})
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert len(events) == 3
+        assert '"type": "process_output_too_large"' in events[0].text
+        assert events[1].text == '{"text": "next"}'
+    finally:
+        te.shutdown_processes()
+
+
+def test_jsonl_artifact_storage_is_bounded_per_process(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.tools.process_manager.MAX_PROCESS_LOG_BYTES", 10000)
+    te, broker = _executor_with_inbox(tmp_path)
+    (tmp_path / "emit.py").write_text(
+        "import json\n"
+        "for _ in range(3): print(json.dumps({'text': 'x' * 9000}))\n"
+        "print(json.dumps({'text': 'small'}))\n",
+        encoding="utf-8",
+    )
+    try:
+        te.execute("start_process", {"command": "python -u emit.py", "notify": "jsonl"})
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert '"type": "process_output_file"' in events[0].text
+        assert all('"type": "process_output_storage_limit"' in event.text for event in events[1:3])
+        assert events[3].text == '{"text": "small"}'
+        assert len(list((tmp_path / ".ene/processes").glob("*-event-*.json"))) == 1
+    finally:
+        te.shutdown_processes()
+
+
 def test_wakeup_stays_pending_until_its_notification_is_queued(tmp_path):
     te, broker = _executor_with_inbox(tmp_path)
     seen = []

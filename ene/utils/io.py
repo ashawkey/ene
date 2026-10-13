@@ -24,6 +24,8 @@ INBOX_MAX_EVENTS = 200
 INBOX_MAX_EVENTS_PER_SOURCE = 50
 INBOX_EVENT_TEXT_LIMIT = 8 * 1024
 INBOX_SOURCE_LIMIT = 80
+INBOX_MAX_DROPPED_SOURCES = 32
+INBOX_OTHER_SOURCES = "[other sources]"
 # Notifications that wake an idle agent wait this long for companions, so a
 # chatty source starts one round per burst instead of one per line.
 INBOX_BATCH_SECONDS = 0.5
@@ -430,8 +432,12 @@ class InputBroker:
                 dropped = None
             if dropped is not None:
                 self._count_removed(dropped)
-                self._inbox_dropped[dropped.source] = (
-                    self._inbox_dropped.get(dropped.source, 0) + 1
+                source = dropped.source
+                if (source not in self._inbox_dropped
+                        and len(self._inbox_dropped) >= INBOX_MAX_DROPPED_SOURCES):
+                    source = INBOX_OTHER_SOURCES
+                self._inbox_dropped[source] = (
+                    self._inbox_dropped.get(source, 0) + 1
                 )
             self._inbox.append(item)
             self._inbox_counts[item.source] = self._inbox_counts.get(item.source, 0) + 1
@@ -484,7 +490,18 @@ class InputBroker:
         """
         with self._lock:
             events: list[InboxEvent] = []
-            used = 0
+            dropped, self._inbox_dropped = self._inbox_dropped, {}
+            # Reserve space for overflow reporting too. Source labels can
+            # expand sixfold when HTML-escaped by the inbox renderer.
+            def notice_size(source: str, count: int) -> int:
+                return 100 + 6 * len(source) + len(str(count))
+
+            budget = max(256, max_chars // 4)
+            used = sum(notice_size(source, count) for source, count in dropped.items())
+            if used > budget:
+                total = sum(dropped.values())
+                dropped = {INBOX_OTHER_SOURCES: total}
+                used = notice_size(INBOX_OTHER_SOURCES, total)
             while self._inbox:
                 size = len(self._inbox[0].text)
                 if events and used + size > max_chars:
@@ -495,7 +512,6 @@ class InputBroker:
                 used += size
             if not self._inbox:
                 self._reset_inbox_window_locked()
-            dropped, self._inbox_dropped = self._inbox_dropped, {}
             listeners = tuple(self._listeners) if events else ()
         self._notify(listeners)
         return events, dropped

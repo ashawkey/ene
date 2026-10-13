@@ -1974,6 +1974,20 @@ def test_one_shot_marks_only_the_delivery_that_empties_the_inbox_final(monkeypat
         agent.close()
 
 
+def test_one_shot_delivers_unbatched_event_at_idle_deadline(monkeypatch, tmp_path):
+    monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 60)
+    agent, _requests = _inbox_agent(monkeypatch, tmp_path, [])
+    try:
+        agent.tool_executor.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
+        agent.input_broker.post_event("arrived before timeout", "process:1")
+        assert not agent.input_broker.inbox_ready
+        assert agent._await_inbox(0.01) == "deliver"
+        assert agent.tool_executor.has_pending_notifications()
+    finally:
+        agent.input_broker.clear_events()
+        agent.close()
+
+
 def _one_shot_with_sleeping_job(monkeypatch, tmp_path, replies):
     start = ToolCall(
         "start", "start_process",

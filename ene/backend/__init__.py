@@ -2121,7 +2121,9 @@ class LLMAgent(
                         return "cancelled"
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        return "timeout"
+                        # Batching delays delivery, not arrival. Do not stop
+                        # live work when a notification is already queued.
+                        return "deliver" if broker.inbox_size else "timeout"
                     if indicator is None:
                         indicator = self.console.thinking(
                             label="Waiting for notifications", countdown=timeout

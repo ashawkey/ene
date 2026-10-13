@@ -44,7 +44,8 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                         "description": (
                             "exit: notify when it exits; output: also notify for each output "
                             "line matching pattern (every line when pattern is omitted); "
-                            "jsonl: also notify for each output line that is a JSON object; "
+                            "jsonl: also notify for each output line that is a JSON object "
+                            "(over 8 KiB: read the file in the notification; over 1 MiB: size-limit notice); "
                             "none: never notify"
                         ),
                     },

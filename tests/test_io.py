@@ -265,6 +265,22 @@ def test_inbox_drains_by_size_and_clips_large_events():
     assert broker.clear_events() == 1 and broker.inbox_size == 0
 
 
+def test_inbox_overflow_metadata_is_bounded_and_budgeted(monkeypatch):
+    from ene.utils.io import INBOX_MAX_DROPPED_SOURCES, INBOX_OTHER_SOURCES
+
+    monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 0)
+    broker = InputBroker(EventHub())
+    for index in range(10000):
+        broker.post_event("x" * 100, f"{index}:" + "&" * 70)
+    assert len(broker._inbox_dropped) <= INBOX_MAX_DROPPED_SOURCES + 1
+    events, dropped = broker.drain_events(max_chars=1024)
+    assert dropped == {INBOX_OTHER_SOURCES: 10000 - INBOX_MAX_EVENTS}
+    notice_budget = sum(100 + 6 * len(source) + len(str(count)) for source, count in dropped.items())
+    assert sum(len(event.text) for event in events) + notice_budget <= 1024
+    assert broker.inbox_size > 0 and broker.has_work
+    assert broker.drain_events()[1] == {}
+
+
 @pytest.mark.parametrize("text", ["", "   "])
 def test_inbox_rejects_empty_events(text):
     with pytest.raises(ValueError):

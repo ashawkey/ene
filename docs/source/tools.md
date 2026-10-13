@@ -70,7 +70,9 @@ The agent never blocks waiting for background work. Notifications queue in an in
 | `ene notify NAME_OR_ID [TEXT]` | Another program sends a message ([command](commands.md#top-level-commands)) |
 
 - Use `notify="none"` for processes whose exit does not matter.
-- The inbox keeps at most 50 events per source and 200 overall; dropped counts are reported.
+- The inbox keeps at most 50 events per source and 200 overall. Overflow counts are bounded and may be grouped under `[other sources]` to fit a delivery.
+- JSONL objects larger than 8 KiB arrive as `process_output_file` notifications. Read their `path` for the complete JSON, saved under `.ene/processes/`. Lines over 1 MiB produce an explicit size-limit notice; the process log may contain more, subject to its own limit.
+- JSON notification files have a separate 100 MiB budget per process. Once exhausted, large objects produce a storage-limit notice; small objects still arrive normally.
 - Delivered notifications are inbox messages, not user prompts: `/context inbox` lists them, and `/rewind` to a notification round leaves the editor empty.
 - Keep `pattern` simple; it runs on every output line.
 - A line rewritten with carriage returns, such as a progress bar, notifies with its final redraw.
@@ -80,7 +82,7 @@ The agent never blocks waiting for background work. Notifications queue in an in
 
 - `run_agent()` stays open while a process or wakeup can still notify, and delivers each notification as another round.
 - The last delivery asks the model to restate its complete answer, which becomes the result; a round with no reply keeps the earlier answer.
-- After `notify_timeout` seconds without a notification, remaining processes and wakeups stop and the model gives its final answer.
+- After `notify_timeout` seconds without a notification, remaining processes and wakeups stop and the model gives its final answer. Already queued notifications are delivered even if their batching window has not elapsed.
 - ESC or Ctrl+C stops the wait and returns `TurnOutcome.USER_INTERRUPTED` with the latest answer.
 
 Set the default timeout in `~/.ene.yaml`, or pass `run_agent(..., notify_timeout=SECONDS)`:
