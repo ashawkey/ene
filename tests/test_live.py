@@ -539,8 +539,8 @@ def test_live_worker_status_includes_current_process_activity():
     status = worker._status()
 
     assert status["process_status"] == (
-        "1 process running · 0 finished\n"
-        "└ 1 [review parser] (12s) reading src/parse.py"
+        "1 running (⚙1) · 0 finished\n"
+        "└ ⚙ 1 [review parser] (12s) reading src/parse.py"
     )
     assert status["processes"] == {
         "running": 1,
@@ -550,8 +550,33 @@ def test_live_worker_status_includes_current_process_activity():
             "label": "review parser",
             "elapsed_seconds": 12.0,
             "last_line": "reading src/parse.py",
+            "watching": False,
         }],
     }
+
+
+def test_live_worker_waits_while_watchers_or_notifications_remain(monkeypatch):
+    monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 0)
+    worker = Worker({"runtime_id": "runtime", "token": "token", "workspace": "/tmp"})
+
+    worker.events.publish("background_status", watchers=0, background=1)
+    status = worker._status()
+    # A silent background process cannot continue the session on its own.
+    assert status["needs_attention"] is True
+    assert (status["watchers"], status["background"]) == (0, 1)
+
+    worker.events.publish("background_status", watchers=2, background=1)
+    status = worker._status()
+    assert status["needs_attention"] is False and status["watchers"] == 2
+    assert worker._state == "waiting"
+
+    # A delivered-but-unread notification still keeps the session waiting.
+    worker.inputs.post_event("job finished", "process:1")
+    worker.events.publish("background_status", watchers=0, background=1)
+    assert worker._state == "waiting"
+    worker.inputs.drain_events()
+    assert worker._state == "done"
+    assert worker._status()["needs_attention"] is True
 
 
 def test_live_worker_status_tracks_state_transition_time(monkeypatch):
@@ -597,6 +622,7 @@ def test_live_worker_status_includes_pending_submission_and_operation_id():
         source="terminal",
         action_id=None,
         steer=False,
+        appendable=True,
     ))
     worker.prompts = SimpleNamespace(active=None)
     worker.cancellation = SimpleNamespace(operation_id="operation-1")
@@ -612,6 +638,7 @@ def test_live_worker_status_includes_pending_submission_and_operation_id():
         "source": "terminal",
         "action_id": None,
         "steer": False,
+        "appendable": True,
     }
 
 
@@ -820,6 +847,27 @@ def test_live_terminal_classifies_instant_commands_from_worker_metadata():
     assert client._is_instant_command("/name new name")
     assert not client._is_instant_command("/compact")
     assert not client._is_instant_command("follow up")
+
+
+@pytest.mark.parametrize(
+    "pending, text, allowed",
+    [
+        ({"id": "p", "text": "first", "appendable": True}, "follow up", True),
+        ({"id": "p", "text": "first", "appendable": True}, "/compact", False),
+        ({"id": "p", "text": "first", "appendable": True}, "!ls", False),
+        ({"id": "p", "text": "/compact", "appendable": False}, "follow up", False),
+        ({"id": "p", "text": "later", "appendable": False}, "follow up", False),
+        ({"id": "p", "text": "first", "appendable": False}, "/context", True),
+    ],
+)
+def test_live_terminal_appends_plain_messages_to_pending(pending, text, allowed):
+    client = LiveTerminal({})
+    client.commands = {"context": "Show context", "compact": "Compact context"}
+    client.instant_commands = {"context"}
+    client.instant_listing_commands = set()
+    client.pending = pending
+
+    assert client._can_submit_while_pending(text) is allowed
 
 
 def test_live_terminal_cancelled_remote_prompt_cancels_worker_prompt():
@@ -1315,12 +1363,17 @@ def test_live_worker_acknowledges_accepted_and_rejected_submissions():
 
     assert receive_result("first")["ok"] is True
     live.send_frame(left, {
-        "type": "submit", "request_id": "second", "text": "rejected"
+        "type": "submit", "request_id": "second", "text": "!rejected"
     })
     rejected = receive_result("second")
     assert rejected["ok"] is False
-    assert rejected["error"] == "Another message is already pending."
+    assert "already pending" in rejected["error"]
     assert worker.inputs.submission.text == "accepted"
+    live.send_frame(left, {
+        "type": "submit", "request_id": "third", "text": "appended"
+    })
+    assert receive_result("third")["ok"] is True
+    assert worker.inputs.submission.text == "accepted\n\nappended"
 
     live.send_frame(left, {"type": "detach"})
     serving.join(timeout=1)
@@ -2163,3 +2216,50 @@ def test_atomic_write_creates_record_owner_only(monkeypatch, tmp_path):
 
     assert created_modes == [0o600]
     assert live.read_record(path) == {"token": "secret"}
+
+
+def _notify_worker():
+    worker = Worker.__new__(Worker)
+    worker.token = "secret"
+    worker.connections = set()
+    worker.connections_lock = threading.Lock()
+    worker.events = EventHub()
+    worker.inputs = InputBroker(worker.events)
+    return worker
+
+
+@pytest.mark.parametrize(
+    "hello, accepted, source",
+    [
+        ({"text": "deploy finished", "source": "ci"}, True, "notify:ci"),
+        ({"text": "ping"}, True, "notify"),
+        ({"text": "  "}, False, None),
+        ({"text": "ping", "token": "wrong"}, False, None),
+    ],
+)
+def test_live_worker_queues_notify_requests(hello, accepted, source):
+    worker = _notify_worker()
+    left, right = socket.socketpair()
+    live.send_frame(left, {"type": "notify", "token": "secret", **hello})
+    worker._handle(right)
+
+    assert live.recv_frame(left)["ok"] is accepted
+    left.close()
+    if accepted:
+        events, _ = worker.inputs.drain_events()
+        assert [(event.text, event.source) for event in events] == [(hello["text"], source)]
+    else:
+        assert worker.inputs.inbox_size == 0
+
+
+def test_notify_session_sends_text_and_source(monkeypatch):
+    sent = []
+
+    @contextlib.contextmanager
+    def connect(record, kind, **data):
+        sent.append((record["runtime_id"], kind, data))
+        yield None
+
+    monkeypatch.setattr(live, "connect", connect)
+    live.notify_session({"runtime_id": "r1"}, "build done", "ci")
+    assert sent == [("r1", "notify", {"text": "build done", "source": "ci"})]

@@ -412,6 +412,13 @@ html { scrollbar-gutter: stable; }
   cursor: pointer;
 }
 .session-text { display: flex; flex-direction: column; min-width: 0; gap: 0.05rem; }
+.session-marker {
+  margin-left: auto;
+  padding-right: 0.2rem;
+  color: var(--dim);
+  font: 0.68rem ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
 .session-meta {
   overflow: hidden;
   color: var(--dim);
@@ -963,7 +970,9 @@ html { scrollbar-gutter: stable; }
 .process-panel ul { max-height: min(27dvh, 14rem); margin: 0; padding: 0.5rem; overflow-y: auto; list-style: none; }
 .process-panel li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.55rem; padding: 0.5rem 0.6rem; border-radius: 11px; background: var(--surface-soft); }
 .process-panel li + li { margin-top: 0.35rem; }
-.process-indicator { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 18%, transparent); }
+/* ↻ watchers can wake the agent (accent); ⚙ background processes never do (dim). */
+.process-indicator { width: 1rem; color: var(--dim); font-size: 0.85rem; line-height: 1; text-align: center; }
+.process-indicator.watcher { color: var(--accent); }
 .process-copy { display: flex; min-width: 0; flex-direction: column; gap: 0.12rem; }
 .process-copy strong { overflow: hidden; color: var(--text); font-size: 0.78rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .process-copy code { color: var(--accent); font-size: 0.72rem; }

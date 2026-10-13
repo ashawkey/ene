@@ -531,6 +531,7 @@ def test_pending_message_steers_next_agentic_iteration():
         stream=False,
         context=context,
         input_broker=broker,
+        _inject_inbox=lambda **kwargs: False,
         console=console,
         call_api=call_api,
         execute_tool_calls=execute_tool_calls,
@@ -558,6 +559,7 @@ def test_wait_submission_never_steers_current_round():
     context = ContextManager("system")
     agent = NS(
         input_broker=broker,
+        _inject_inbox=lambda **kwargs: False,
         context=context,
         console=NS(user_input=lambda *args, **kwargs: None),
         _isolated_turn_active=False,
@@ -575,6 +577,7 @@ def test_pending_local_query_waits_for_round_completion(query):
     context = ContextManager("system")
     agent = NS(
         input_broker=broker,
+        _inject_inbox=lambda **kwargs: False,
         context=context,
         console=NS(user_input=lambda *args, **kwargs: None),
         _isolated_turn_active=False,
@@ -607,6 +610,7 @@ def test_interrupted_tool_iteration_does_not_consume_pending_message():
         stream=False,
         context=context,
         input_broker=broker,
+        _inject_inbox=lambda **kwargs: False,
         console=NS(response=lambda text: None, system=lambda text: None),
         call_api=call_api,
         execute_tool_calls=execute_tool_calls,

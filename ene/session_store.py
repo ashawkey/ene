@@ -711,13 +711,17 @@ class SessionStore:
         return stats
 
     def revision_prompt(self, revision_id: str) -> str:
-        """Last user message in a revision, collapsed to a single line."""
+        """Message that opened a revision's round, collapsed to a single line."""
+        message = self._round_opener(revision_id)
+        return " ".join(message.display.split()) if message is not None else ""
+
+    def _round_opener(self, revision_id: str) -> Message | None:
+        """Last user input or delivered notification in a revision."""
         for message_id in reversed(self.revisions[revision_id]["messageIds"]):
             message = self.messages.get(message_id)
-            if message is None or not message.is_user_input:
-                continue
-            return " ".join(message.display.split())
-        return ""
+            if message is not None and (message.is_user_input or message.is_inbox):
+                return message
+        return None
 
     def revision_ancestors(self, revision_id: str) -> list[str]:
         """Revision IDs from *revision_id* back to the root, newest first."""
@@ -753,6 +757,7 @@ class SessionStore:
                 continue
 
             target = self.revisions[target_id]
+            opener = self._round_opener(source_id)
             deltas = self.code_delta(
                 target.get("codeRevisionId"), source.get("codeRevisionId")
             )
@@ -764,7 +769,9 @@ class SessionStore:
                 "created_at": target["createdAt"],
                 "messages": len(target["messageIds"]),
                 "new_messages": len(source["messageIds"]) - len(target["messageIds"]),
-                "prompt": self.revision_prompt(source_id),
+                "prompt": " ".join(opener.display.split()) if opener is not None else "",
+                # A notification round has no user prompt to restore for editing.
+                "inbox": opener is not None and opener.is_inbox,
                 "files": len(deltas),
                 "code_revision_id": target.get("codeRevisionId"),
                 "current": False,
@@ -781,6 +788,7 @@ class SessionStore:
                 "messages": len(head["messageIds"]),
                 "new_messages": 0,
                 "prompt": "",
+                "inbox": False,
                 "files": 0,
                 "code_revision_id": head.get("codeRevisionId"),
                 "current": True,

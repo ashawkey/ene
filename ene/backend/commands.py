@@ -53,6 +53,11 @@ def _fit_segments(segments: list[tuple[str, str]], budget: int) -> str:
     return "".join(parts)
 
 
+def _context_role(message: Message) -> str:
+    """Role label for /context; delivered notifications are not user input."""
+    return "inbox" if message.is_inbox else message.role
+
+
 def _format_elapsed(seconds: float) -> str:
     """Compact wall-clock age for process listings."""
     total = max(0, math.ceil(seconds))
@@ -211,8 +216,9 @@ class AgentCommandsMixin:
             + "\n\n"
             "  Press [bold]Enter[/bold] to send, [bold]Escape → Enter[/bold] for a newline.\n"
             "  Invoke a discovered skill with [cyan]/<skill-name> [optional task][/cyan].\n"
-            "  While the agent is working, messages queue; commands that do not touch\n"
-            "  the conversation (such as /usage and /context) run right away."
+            "  While the agent is working, messages queue and further messages append;\n"
+            "  commands that do not touch the conversation (such as /usage and\n"
+            "  /context) run right away."
         )
 
     def _cmd_compact(self):
@@ -715,7 +721,7 @@ class AgentCommandsMixin:
     def _cmd_context(self, raw: str = "/context"):
         msgs = self.context.messages
         parts = raw.split()
-        usage = "Usage: /context [user|assistant|id] (id may be negative)"
+        usage = "Usage: /context [user|inbox|assistant|id] (id may be negative)"
         if len(parts) > 2:
             self.console.warn(usage)
             return
@@ -723,7 +729,7 @@ class AgentCommandsMixin:
         role_filter = None
         if len(parts) == 2:
             argument = parts[1].lower()
-            if argument in ("user", "assistant"):
+            if argument in ("user", "inbox", "assistant"):
                 role_filter = argument
             else:
                 message_id = argument.removeprefix("#")
@@ -741,7 +747,7 @@ class AgentCommandsMixin:
 
         indexed_msgs = [
             (idx, message) for idx, message in enumerate(msgs)
-            if role_filter is None or message.role == role_filter
+            if role_filter is None or _context_role(message) == role_filter
         ]
         if not indexed_msgs:
             if role_filter is not None:
@@ -769,7 +775,7 @@ class AgentCommandsMixin:
         )
 
         for idx, m in indexed_msgs:
-            role = m.role
+            role = _context_role(m)
             text = m.display if m.is_user else m.text
             chars = m.chars
             total_chars += chars
@@ -780,6 +786,7 @@ class AgentCommandsMixin:
 
             role_style = {
                 "user": "bold yellow",
+                "inbox": "bold magenta",
                 "assistant": "bold white",
                 "tool": "bright_black",
             }.get(role, "dim")
@@ -807,6 +814,7 @@ class AgentCommandsMixin:
             else:
                 preview_style = (
                     "yellow" if role == "user" else
+                    "magenta" if role == "inbox" else
                     "white" if role == "assistant" else ""
                 )
                 segments = [(preview_style, preview)]
@@ -819,7 +827,7 @@ class AgentCommandsMixin:
         lines.append(f"\n  [bold]Total:[/bold] ~{est_tokens:,} tokens / {self.context_length:,} [{ctx_pct:.0f}%]")
 
         lines.append(
-            "  [dim]Filter: /context user|assistant · "
+            "  [dim]Filter: /context user|inbox|assistant · "
             "Full message: /context <id> (-1 is the newest)[/dim]"
         )
         self._print_chunked("\n".join(lines))
@@ -843,7 +851,7 @@ class AgentCommandsMixin:
 
     def _print_context_message(self, idx: int, message: Message) -> None:
         """Print one context message in full, rendering assistant text as Markdown."""
-        role = message.role
+        role = _context_role(message)
         chars = message.chars
         self.console.print(
             f"[bold blue]Context message #{idx}[/bold blue] "

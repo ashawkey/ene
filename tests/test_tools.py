@@ -31,7 +31,7 @@ from ene.tools import (
     format_tool_result,
     result_text_failed,
 )
-from ene.utils.io import CancellationToken, EventHub
+from ene.utils.io import CancellationToken, EventHub, InputBroker
 from ene.utils.process import (
     decode_output_text,
     windows_hidden_process_kwargs,
@@ -61,9 +61,31 @@ def _executor_with_monitor(tmp_path):
     return ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
 
 
+def _executor_with_inbox(tmp_path):
+    """Executor whose notifications land in a real broker."""
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    broker = InputBroker(EventHub())
+    te.inbox_sink = broker.post_event
+    return te, broker
+
+
+def _wait_until(predicate, timeout=10):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition not reached"
+        time.sleep(0.01)
+
+
+def _wait_for_exit(te, process_id, timeout=10):
+    _wait_until(
+        lambda: te.inspect_processes(process_id)["processes"][0]["status"] == "exited",
+        timeout,
+    )
+
+
 def test_process_status_format():
-    assert format_process_status(2, 2) == "2 processes running · 2 finished"
-    assert format_process_status(1, 0) == "1 process running · 0 finished"
+    assert format_process_status(2, 2) == "2 running · 2 finished"
+    assert format_process_status(1, 0) == "1 running · 0 finished"
     assert format_process_status(0, 4) == ""
 
 
@@ -149,7 +171,7 @@ def test_start_process_injects_model_identity_env(tmp_path):
          "os.environ.get('ENE_REASONING_EFFORT'))\""},
     )
     try:
-        assert te.wait_processes([started["process_id"]], timeout=10)["event"] == "process_exit"
+        _wait_for_exit(te, started["process_id"])
         process = te.inspect_processes(
             started["process_id"], log_tail_chars=200
         )["processes"][0]
@@ -243,6 +265,7 @@ def test_format_process_status_shows_one_line_per_running_process():
             "status": "running",
             "elapsed_seconds": 12.9,
             "last_line": "\x1b[32mreading\x1b[0m src/parse.py\x00",
+            "watching": True,
         },
         {
             "process_id": "2",
@@ -255,9 +278,9 @@ def test_format_process_status_shows_one_line_per_running_process():
         {"process_id": "3", "pid": 44, "label": "done child", "status": "exited", "last_line": "stale line"},
     ]
     assert format_process_status(2, 1, activity) == (
-        "2 processes running · 1 finished\n"
-        "├ 1 [review parser] (13s) reading src/parse.py\n"
-        "└ 2 [plan refactor] (3s)"
+        "2 running (↻1 ⚙1) · 1 finished\n"
+        "├ ↻ 1 [review parser] (13s) reading src/parse.py\n"
+        "└ ⚙ 2 [plan refactor] (3s)"
     )
     assert process_status_snapshot(2, 1, activity) == {
         "running": 2,
@@ -268,12 +291,14 @@ def test_format_process_status_shows_one_line_per_running_process():
                 "label": "review parser",
                 "elapsed_seconds": 12.9,
                 "last_line": "reading src/parse.py",
+                "watching": True,
             },
             {
                 "process_id": "2",
                 "label": "plan refactor",
                 "elapsed_seconds": 3.0,
                 "last_line": "",
+                "watching": False,
             },
         ],
     }
@@ -300,9 +325,9 @@ def test_format_process_status_converts_minutes_and_hours():
         },
     ]
     assert format_process_status(2, 0, activity) == (
-        "2 processes running · 0 finished\n"
-        "├ 1 [minute job] (1m 15s)\n"
-        "└ 2 [hour job] (1h 01m 01s)"
+        "2 running (⚙2) · 0 finished\n"
+        "├ ⚙ 1 [minute job] (1m 15s)\n"
+        "└ ⚙ 2 [hour job] (1h 01m 01s)"
     )
 
 
@@ -689,7 +714,7 @@ def test_process_log_tail_preserves_utf8_when_byte_offset_splits_character(tmp_p
     te = _executor_with_monitor(tmp_path)
     started = te.execute("start_process", {"command": "python -c \"pass\""})
     try:
-        assert te.wait_processes([started["process_id"]], timeout=5)["event"] == "process_exit"
+        _wait_for_exit(te, started["process_id"])
         text = "结果: 世界你好, 检查完成"
         te._resolve_path(started["log_path"]).write_bytes(text.encode("utf-8"))
         process = te.inspect_processes(started["process_id"], log_tail_chars=8)["processes"][0]
@@ -948,34 +973,83 @@ def test_search_honors_gitignore_outside_a_git_repository(tmp_path):
     assert "hidden.txt" in te._glob_files("*.txt", include_ignored=True)["matches"]
 
 
-def test_wait_tool_is_bounded_and_interruptible(tmp_path):
-    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+def test_schedule_wakeup_posts_notification_without_blocking(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
 
     started = time.monotonic()
-    result = te.execute("wait", {"seconds": 0.02})
-    assert result == {"waited_seconds": 0.02, "success": True}
-    assert time.monotonic() - started >= 0.015
+    result = te.execute("schedule_wakeup", {"seconds": 0.05, "note": "check the job"})
+    assert result["success"] and result["wakeup_id"] == "w1"
+    assert time.monotonic() - started < 0.05
+    assert te.has_pending_notifications()
 
-    events = EventHub()
-    cancellation = CancellationToken(events)
-    cancellation.begin("test wait")
-    te.cancellation = cancellation
-    timer = threading.Timer(0.02, cancellation.cancel)
-    timer.start()
+    _wait_until(lambda: broker.inbox_size == 1)
+    events, _ = broker.drain_events()
+    assert events[0].source == "wakeup:w1"
+    assert "check the job" in events[0].text
+    assert not te.has_pending_notifications()
+
+
+def test_schedule_wakeup_limits_pending_wakeups(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.tools.control.MAX_PENDING_WAKEUPS", 2)
+    te, _broker = _executor_with_inbox(tmp_path)
     try:
-        started = time.monotonic()
-        result = te.execute("wait", {"seconds": 10})
+        for _ in range(2):
+            assert te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})["success"]
+        result = te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
+        assert not result["success"] and "At most 2" in result["error"]
     finally:
-        timer.cancel()
-    assert result["interrupted"] and not result["success"]
-    assert time.monotonic() - started < 1
+        te.shutdown_processes()
 
 
-@pytest.mark.parametrize("seconds", [0, -1, float("inf"), "1", True])
-def test_wait_tool_rejects_invalid_duration(tmp_path, seconds):
-    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
-    result = te.execute("wait", {"seconds": seconds})
-    assert not result["success"]
+def test_background_counts_separate_watchers_from_silent_processes(tmp_path):
+    te, _broker = _executor_with_inbox(tmp_path)
+    changes = []
+    te.background_callback = lambda: changes.append(te.background_counts())
+    sleeper = 'python -c "import time; time.sleep(30)"'
+    try:
+        te.execute("start_process", {"command": sleeper})
+        te.execute("start_process", {"command": sleeper, "notify": "none"})
+        te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
+        assert te.background_counts() == (2, 1)
+        assert changes[-1] == (2, 1)
+        assert [item["watching"] for item in te.process_activity()] == [True, False]
+        te.shutdown_processes()
+        _wait_until(lambda: te.background_counts() == (0, 0))
+        _wait_until(lambda: changes[-1] == (0, 0))
+    finally:
+        te.shutdown_processes()
+
+
+def test_shutdown_cancels_pending_wakeups(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    te.execute("schedule_wakeup", {"seconds": 0.05, "note": "later"})
+    te.shutdown_processes()
+    time.sleep(0.1)
+    assert broker.inbox_size == 0
+    assert not te.has_pending_notifications()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"seconds": 0, "note": "x"},
+        {"seconds": -1, "note": "x"},
+        {"seconds": float("inf"), "note": "x"},
+        {"seconds": "1", "note": "x"},
+        {"seconds": True, "note": "x"},
+        {"seconds": 1, "note": " "},
+    ],
+)
+def test_schedule_wakeup_rejects_invalid_arguments(tmp_path, arguments):
+    te, _broker = _executor_with_inbox(tmp_path)
+    assert not te.execute("schedule_wakeup", arguments)["success"]
+    assert not te.has_pending_notifications()
+
+
+def test_retired_wait_tools_are_not_registered(tmp_path):
+    te = _executor_with_monitor(tmp_path)
+    assert te.registry.get("wait") is None
+    assert te.registry.get("wait_processes") is None
 
 
 def test_inspect_processes_no_longer_accepts_wait(tmp_path):
@@ -1008,159 +1082,210 @@ def test_process_supervisor_rejects_stale_owner_before_starting_command(tmp_path
     assert not marker.exists()
 
 
-def test_wait_processes_returns_when_any_selected_process_exits(tmp_path):
-    te = _executor_with_monitor(tmp_path)
-    fast = te.execute(
-        "start_process",
-        {"command": "python -c 'import time; time.sleep(0.1)'"},
-    )
-    slow = te.execute(
-        "start_process",
-        {"command": "python -c 'import time; time.sleep(30)'"},
-    )
-    try:
-        started = time.monotonic()
-        result = te.execute(
-            "wait_processes",
-            {"process_ids": [fast["process_id"], slow["process_id"]], "timeout": 5},
-        )
-        assert result["success"]
-        assert result["event"] == "process_exit"
-        assert [item["process_id"] for item in result["processes"]] == [fast["process_id"]]
-        assert result["pending_process_ids"] == [slow["process_id"]]
-        assert time.monotonic() - started < 3
-    finally:
-        te.shutdown_processes()
-
-
-def test_wait_processes_defaults_to_waiting_until_process_exit(tmp_path):
-    te = _executor_with_monitor(tmp_path)
+def test_process_exit_posts_inbox_notification(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
     started = te.execute(
         "start_process",
-        {"command": "python -c 'import time; time.sleep(0.1)'"},
+        {"command": "python -c \"print('done'); raise SystemExit(3)\"", "label": "job"},
     )
     try:
-        result = te.execute(
-            "wait_processes",
-            {"process_ids": [started["process_id"]]},
-        )
-        assert result["success"]
-        assert result["event"] == "process_exit"
-        assert result["pending_process_ids"] == []
+        assert started["notify"] == "exit"
+        _wait_until(lambda: broker.inbox_size == 1)
+        events, _ = broker.drain_events()
+        assert events[0].source == f"process:{started['process_id']} job"
+        assert "exited with code 3" in events[0].text
+        assert "Last output line: done" in events[0].text
+        assert not te.has_pending_notifications()
     finally:
         te.shutdown_processes()
 
 
-def test_wait_processes_can_wake_on_new_output(tmp_path):
-    te = _executor_with_monitor(tmp_path)
+def test_stopped_process_does_not_notify(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
     started = te.execute(
-        "start_process",
-        {"command": "python -u -c \"import time; time.sleep(.1); print('ready'); time.sleep(30)\""},
+        "start_process", {"command": "python -c 'import time; time.sleep(30)'"}
     )
     try:
-        result = te.execute(
-            "wait_processes",
-            {
-                "process_ids": [started["process_id"]],
-                "timeout": 5,
-                "wake_on_output": True,
-            },
-        )
-        assert result["success"]
-        assert result["event"] == "log_output"
-        assert result["processes"][0]["process_id"] == started["process_id"]
-        assert result["processes"][0]["log_bytes_added"] > 0
+        assert te.has_pending_notifications()
+        te.execute("stop_process", {"process_id": started["process_id"]})
+        time.sleep(0.1)
+        assert broker.inbox_size == 0
+        assert not te.has_pending_notifications()
     finally:
         te.shutdown_processes()
 
 
-def test_wait_processes_timeout_is_concise(tmp_path):
-    te = _executor_with_monitor(tmp_path)
-    started = te.execute(
-        "start_process",
-        {"command": "python -c 'import time; time.sleep(30)'"},
-    )
-    try:
-        result = te.execute(
-            "wait_processes",
-            {"process_ids": [started["process_id"]], "timeout": 0.02},
-        )
-        assert result == {
-            "event": "timeout",
-            "processes": [],
-            "count": 0,
-            "pending_process_ids": [started["process_id"]],
-            "timed_out": True,
-            "success": True,
-        }
-    finally:
-        te.shutdown_processes()
-
-
-def test_wait_processes_handles_keyboard_interrupt_without_stopping_process(
-    tmp_path, monkeypatch
-):
-    te = _executor_with_monitor(tmp_path)
-    started = te.execute(
-        "start_process",
-        {"command": "python -c 'import time; time.sleep(30)'"},
-    )
-
-    def interrupt(*, timeout):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(te._process_condition, "wait", interrupt)
-    try:
-        result = te.execute(
-            "wait_processes",
-            {"process_ids": [started["process_id"]], "timeout": 10},
-        )
-        assert result["interrupted"] and not result["success"]
-        assert te.inspect_processes(started["process_id"])["processes"][0]["status"] == "running"
-    finally:
-        te.shutdown_processes()
-
-
-def test_wait_processes_is_interruptible_without_stopping_process(tmp_path):
-    events = EventHub()
-    cancellation = CancellationToken(events)
-    cancellation.begin("test process wait")
-    te = ToolExecutor(
-        console=_SilentConsole(), work_dir=str(tmp_path), cancellation=cancellation
+def test_stopped_process_output_does_not_notify(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    script = tmp_path / "chatty.py"
+    script.write_text(
+        "import time\n"
+        "while True:\n"
+        "    print('tick', flush=True)\n"
+        "    time.sleep(0.01)\n",
+        encoding="utf-8",
     )
     started = te.execute(
-        "start_process",
-        {"command": "python -c 'import time; time.sleep(30)'"},
+        "start_process", {"command": f"python -u {script.name}", "notify": "output"}
     )
-    timer = threading.Timer(0.02, cancellation.cancel)
-    timer.start()
     try:
-        result = te.execute(
-            "wait_processes",
-            {"process_ids": [started["process_id"]], "timeout": 10},
-        )
-        assert result["interrupted"] and not result["success"]
-        assert te.inspect_processes(started["process_id"])["processes"][0]["status"] == "running"
+        _wait_until(lambda: broker.inbox_size > 0)
+        # A stop whose wait gave up while the process kept writing.
+        te._processes[started["process_id"]]["stop_requested"] = True
+        broker.clear_events()
+        time.sleep(0.2)
+        assert broker.inbox_size == 0
     finally:
-        timer.cancel()
         te.shutdown_processes()
+
+
+def test_failed_notification_still_posts_exit(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+
+    def sink(text, source):
+        if text == "tail":
+            raise RuntimeError("sink failed")
+        broker.post_event(text, source)
+
+    te.inbox_sink = sink
+    te.execute(
+        "start_process",
+        {"command": "python -c \"import sys; sys.stdout.write('tail')\"", "notify": "output"},
+    )
+    try:
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert len(events) == 1 and "exited with code 0" in events[0].text
+    finally:
+        te.shutdown_processes()
+
+
+def test_output_notifications_follow_pattern(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    script = "print('step 1'); print('ERROR: disk full'); print('step 2')"
+    started = te.execute(
+        "start_process",
+        {"command": f'python -u -c "{script}"', "notify": "output", "pattern": "ERROR"},
+    )
+    try:
+        _wait_for_exit(te, started["process_id"])
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert [event.text for event in events][0] == "ERROR: disk full"
+        assert len(events) == 2 and "exited with code 0" in events[1].text
+    finally:
+        te.shutdown_processes()
+
+
+def test_output_notifications_show_the_final_carriage_return_redraw(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    script = tmp_path / "progress.py"
+    script.write_text(
+        "import sys\n"
+        "for pct in range(0, 101, 10):\n"
+        "    sys.stdout.write(f'\\r{pct}%')\n"
+        "    sys.stdout.flush()\n"
+        "sys.stdout.write('\\r\\n')\n"
+        "print('done')\n",
+        encoding="utf-8",
+    )
+    started = te.execute(
+        "start_process", {"command": f"python -u {script.name}", "notify": "output"}
+    )
+    try:
+        _wait_for_exit(te, started["process_id"])
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert [event.text for event in events[:2]] == ["100%", "done"]
+    finally:
+        te.shutdown_processes()
+
+
+def test_jsonl_notifications_only_accept_json_objects(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    script = tmp_path / "emit.py"
+    script.write_text(
+        "import json, sys\n"
+        "print('connecting')\n"
+        "print(json.dumps([1, 2]))\n"
+        "print(json.dumps({'text': 'hello'}))\n"
+        "sys.stdout.write(json.dumps({'text': 'tail'}))\n",
+        encoding="utf-8",
+    )
+    started = te.execute(
+        "start_process", {"command": f"python -u {script.name}", "notify": "jsonl"}
+    )
+    try:
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        texts = [event.text for event in events]
+        assert texts[:2] == ['{"text": "hello"}', '{"text": "tail"}']
+        assert len(texts) == 3 and "exited" in texts[2]
+    finally:
+        te.shutdown_processes()
+
+
+def test_jsonl_survives_deeply_nested_output(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    script = tmp_path / "emit.py"
+    # json.loads raises RecursionError, not ValueError, for this line.
+    script.write_text(
+        "print('[' * 5000)\nprint('{\"text\": \"after\"}')\n", encoding="utf-8"
+    )
+    te.execute("start_process", {"command": f"python -u {script.name}", "notify": "jsonl"})
+    try:
+        _wait_until(lambda: not te.has_pending_notifications())
+        events, _ = broker.drain_events()
+        assert [event.text for event in events][0] == '{"text": "after"}'
+        assert "exited with code 0" in events[1].text
+    finally:
+        te.shutdown_processes()
+
+
+def test_wakeup_stays_pending_until_its_notification_is_queued(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    seen = []
+
+    def sink(text, source):
+        seen.append(te.has_pending_notifications())
+        broker.post_event(text, source)
+
+    te.inbox_sink = sink
+    te.execute("schedule_wakeup", {"seconds": 0.01, "note": "check"})
+    _wait_until(lambda: broker.inbox_size == 1)
+    assert seen == [True]
+    assert not te.has_pending_notifications()
+
+
+def test_notify_none_and_bare_executor_never_notify(tmp_path):
+    te, broker = _executor_with_inbox(tmp_path)
+    quiet = te.execute("start_process", {"command": "python -c pass", "notify": "none"})
+    bare = _executor_with_monitor(tmp_path)
+    unattached = bare.execute("start_process", {"command": "python -c pass"})
+    try:
+        assert quiet["notify"] == "none" and unattached["notify"] == "none"
+        _wait_for_exit(te, quiet["process_id"])
+        time.sleep(0.05)
+        assert broker.inbox_size == 0
+        assert not te.has_pending_notifications()
+    finally:
+        te.shutdown_processes()
+        bare.shutdown_processes()
 
 
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"process_ids": [], "timeout": 1},
-        {"process_ids": ["missing"], "timeout": 1},
-        {"process_ids": ["1", "1"], "timeout": 1},
-        {"process_ids": ["1"], "timeout": 0},
-        {"process_ids": ["1"], "timeout": float("inf")},
-        {"process_ids": ["1"], "timeout": True},
-        {"process_ids": ["1"], "timeout": 1, "wake_on_output": "yes"},
+        {"command": "true", "notify": "sometimes"},
+        {"command": "true", "notify": "exit", "pattern": "x"},
+        {"command": "true", "notify": "output", "pattern": "("},
+        {"command": "true", "notify": "output", "pattern": ""},
     ],
 )
-def test_wait_processes_rejects_invalid_arguments(tmp_path, arguments):
-    te = _executor_with_monitor(tmp_path)
-    assert not te.execute("wait_processes", arguments)["success"]
+def test_start_process_rejects_invalid_notify_arguments(tmp_path, arguments):
+    te, _broker = _executor_with_inbox(tmp_path)
+    assert not te.execute("start_process", arguments)["success"]
+    assert te.inspect_processes()["count"] == 0
 
 
 def test_process_status_notifications_are_delivered_in_order(tmp_path):
@@ -1331,7 +1456,7 @@ def test_executor_rejects_nonobject_arguments_before_logging(tmp_path, arguments
         ("grep_files", {"pattern": "needle"}),
         ("grep_files", {"pattern": "needle", "path": "sub", "file_glob": "*.py", "case_insensitive": True}),
         ("load_skill", {"name": "monitor"}),
-        ("wait", {"seconds": 0.001}),
+        ("schedule_wakeup", {"seconds": 60, "note": "check"}),
     ],
 )
 def test_replayed_tool_calls_render_like_live_ones(tmp_path, name, args):

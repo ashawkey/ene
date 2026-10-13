@@ -403,7 +403,9 @@ class MessageValidator(Validator):
         if not text:
             raise ValidationError(message="Please enter a message.")
         if self._has_pending() and not self._can_submit_while_pending(text):
-            raise ValidationError(message="Another message is already pending.")
+            raise ValidationError(
+                message="Another message is already pending; commands cannot be combined with it."
+            )
 
 
 class SharedFileHistory(FileHistory):

@@ -9,6 +9,9 @@ import pytest
 
 from ene.utils.io import (
     EVENT_TEXT_LIMIT,
+    INBOX_EVENT_TEXT_LIMIT,
+    INBOX_MAX_EVENTS,
+    INBOX_MAX_EVENTS_PER_SOURCE,
     CancellationToken,
     EventHub,
     InputBroker,
@@ -33,19 +36,60 @@ def test_event_hub_orders_and_bounds_replay():
     assert not hub.has_replay_gap(second.seq - 1)
 
 
-def test_input_broker_accepts_only_one_pending_submission():
+def test_input_broker_appends_follow_ups_to_pending_submission():
     hub = EventHub()
     broker = InputBroker(hub)
-    first = broker.submit("first")
+    first = broker.submit("first", source="terminal")
+    merged = broker.submit("second", source="web", action_id="a2")
 
-    with pytest.raises(ValueError, match="already pending"):
-        broker.submit("second")
-
-    assert broker.get_nowait() == first
+    assert merged.text == "first\n\nsecond"
+    assert merged.id != first.id
+    assert merged.source == "web" and merged.action_id == "a2"
+    with pytest.raises(queue.Empty):
+        broker.get_nowait(first.id)  # a stale ID cannot take the longer text
+    assert broker.get_nowait(merged.id) == merged
     assert [(e.type, e.data.get("reason")) for e in hub.after(0)] == [
+        ("pending_set", None),
+        ("pending_cleared", "merged"),
         ("pending_set", None),
         ("pending_cleared", "consumed"),
     ]
+
+
+@pytest.mark.parametrize(
+    "pending, follow_up",
+    [
+        ("first", "/compact"),
+        ("first", "!ls"),
+        ("first", "exit"),
+        ("/compact", "second"),
+        ("first", "/wait 5m later"),
+        ("/wait 5m later", "second"),
+    ],
+)
+def test_input_broker_never_combines_commands_or_delayed_messages(pending, follow_up):
+    broker = InputBroker(EventHub())
+    existing = broker.submit(pending, source="terminal")
+
+    assert not broker.accepts_while_pending(follow_up)
+    with pytest.raises(ValueError, match="already pending"):
+        broker.submit(follow_up, source="terminal")
+    assert broker.submission == existing
+
+
+def test_accepts_while_pending_hints_plain_follow_ups():
+    broker = InputBroker(EventHub())
+    assert not broker.accepts_while_pending("hello")  # nothing pending
+    broker.submit("first")
+    assert broker.accepts_while_pending("  more detail ")
+
+
+def test_input_broker_rejects_oversized_combined_message():
+    broker = InputBroker(EventHub())
+    broker.submit("a" * (EVENT_TEXT_LIMIT - 10))
+    with pytest.raises(ValueError, match="too large"):
+        broker.submit("b" * 20)
+    assert broker.submission.text == "a" * (EVENT_TEXT_LIMIT - 10)
 
 
 @pytest.mark.parametrize(
@@ -115,6 +159,116 @@ def test_input_broker_consumes_only_the_expected_submission():
         ("pending_set", None),
         ("pending_cleared", "consumed"),
     ]
+
+
+def test_inbox_queues_notifications_beside_pending_submission():
+    broker = InputBroker(EventHub())
+    wakes = []
+    broker.add_listener(lambda: wakes.append(True))
+    submission = broker.submit("hello", source="terminal")
+    first = broker.post_event("job done", "process:1")
+    broker.post_event("new message", "slack")
+
+    assert broker.submission == submission
+    assert broker.inbox_size == 2 and broker.has_work
+    assert len(wakes) == 3
+    events, dropped = broker.drain_events()
+    assert [event.text for event in events] == ["job done", "new message"]
+    assert events[0] == first and dropped == {}
+    assert broker.inbox_size == 0
+    assert broker.has_work  # the user submission is still ready
+
+
+def test_inbox_waits_for_delayed_submission_but_not_for_events(monkeypatch):
+    monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 0)
+    broker = InputBroker(EventHub())
+    broker.submit("/wait 1h later", source="terminal")
+    assert not broker.has_work
+    broker.post_event("ping", "external")
+    assert broker.has_work
+
+
+def test_inbox_batches_notifications_before_waking_an_idle_agent(monkeypatch):
+    monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 0.2)
+    broker = InputBroker(EventHub())
+    woken = threading.Event()
+    broker.add_listener(woken.set)
+    broker.post_event("line 1", "process:1")
+    broker.post_event("line 2", "process:1")
+    assert broker.inbox_size == 2 and not broker.has_work
+    woken.clear()
+    # The window's end wakes listeners again, now with work to do.
+    assert woken.wait(5)
+    assert broker.has_work and broker.inbox_ready
+    events, _ = broker.drain_events()
+    assert [event.text for event in events] == ["line 1", "line 2"]
+    assert not broker.has_work
+    # Each new burst opens a fresh window.
+    broker.post_event("line 3", "process:1")
+    assert not broker.has_work
+
+
+def test_cleared_inbox_window_does_not_mark_later_events_ready(monkeypatch):
+    monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 0.2)
+    broker = InputBroker(EventHub())
+    broker.post_event("stale", "process:1")
+    broker.clear_events()
+    time.sleep(0.3)
+    broker.post_event("fresh", "process:2")
+    assert not broker.has_work
+
+
+def test_pending_messages_report_whether_follow_ups_can_append():
+    hub = EventHub()
+    broker = InputBroker(hub)
+    broker.submit("first", source="terminal")
+    assert hub.after(0)[-1].data["appendable"] is True
+    assert broker.accepts_while_pending("follow up")
+    assert not broker.accepts_while_pending("/compact")
+    broker.withdraw()
+    broker.submit("/wait 1h later", source="terminal")
+    assert hub.after(0)[-1].data["appendable"] is False
+    assert not broker.accepts_while_pending("follow up")
+
+
+def test_inbox_bounds_each_source_and_reports_drops():
+    broker = InputBroker(EventHub())
+    for index in range(INBOX_MAX_EVENTS_PER_SOURCE + 2):
+        broker.post_event(f"line {index}", "process:1")
+    broker.post_event("other", "slack")
+
+    events, dropped = broker.drain_events(max_chars=10**9)
+    texts = [event.text for event in events]
+    assert texts[0] == "line 2" and texts[-1] == "other"
+    assert dropped == {"process:1": 2}
+    assert broker.drain_events() == ([], {})
+
+
+def test_inbox_bounds_total_size():
+    broker = InputBroker(EventHub())
+    for index in range(INBOX_MAX_EVENTS + 1):
+        broker.post_event("x", f"source:{index}")
+    assert broker.inbox_size == INBOX_MAX_EVENTS
+    _events, dropped = broker.drain_events(max_chars=10**9)
+    assert dropped == {"source:0": 1}
+
+
+def test_inbox_drains_by_size_and_clips_large_events():
+    broker = InputBroker(EventHub())
+    broker.post_event("a" * (INBOX_EVENT_TEXT_LIMIT * 2), "big")
+    broker.post_event("b" * 10, "small")
+
+    events, _ = broker.drain_events(max_chars=100)
+    assert len(events) == 1  # the first event always drains
+    assert len(events[0].text) < INBOX_EVENT_TEXT_LIMIT + 100
+    assert broker.inbox_size == 1
+    assert broker.clear_events() == 1 and broker.inbox_size == 0
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_inbox_rejects_empty_events(text):
+    with pytest.raises(ValueError):
+        InputBroker(EventHub()).post_event(text, "external")
 
 
 def test_prompt_broker_first_valid_answer_wins():

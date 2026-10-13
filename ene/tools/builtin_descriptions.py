@@ -27,10 +27,14 @@ def _describe_exec(args: dict[str, Any]) -> ToolCallDescription:
 
 def _describe_start_process(args: dict[str, Any]) -> ToolCallDescription:
     primary = args.get("label") or args["command"]
+    notify = args.get("notify") or "exit"
+    if notify == "output" and args.get("pattern"):
+        notify = f"output /{args['pattern']}/"
     return _description(
         "start_process",
         quote_tool_call_value(primary),
         f"cwd {args['cwd']}" if args.get("cwd") else "",
+        f"notify {notify}" if notify != "exit" else "",
     )
 
 
@@ -39,17 +43,6 @@ def _describe_inspect_processes(args: dict[str, Any]) -> ToolCallDescription:
         "inspect_processes",
         str(args.get("process_id") or "all"),
         f"tail {args['log_tail_chars']:,} chars" if args.get("log_tail_chars") else "",
-    )
-
-
-def _describe_wait_processes(args: dict[str, Any]) -> ToolCallDescription:
-    process_ids = args.get("process_ids") or []
-    primary = ", ".join(str(item) for item in process_ids)
-    return _description(
-        "wait_processes",
-        primary,
-        f"timeout {args['timeout']:g}s" if args.get("timeout") is not None else "until event",
-        "wake on output" if args.get("wake_on_output") else "",
     )
 
 
@@ -119,15 +112,6 @@ def _describe_process_output(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _describe_wait_process_output(result: dict[str, Any]) -> str:
-    event = str(result.get("event", "unknown")).replace("_", " ")
-    processes = result.get("processes") or []
-    if not processes:
-        pending = len(result.get("pending_process_ids") or [])
-        return f"{event} · {pending} still running"
-    return f"{event}\n{_describe_process_output(result)}"
-
-
 def _describe_read_output(result: dict[str, Any]) -> str:
     message = f"{result.get('lines_read', 0)} lines read"
     reason = result.get("truncation_reason")
@@ -147,10 +131,11 @@ def _describe_search_output(result: dict[str, Any], noun: str) -> str:
 BUILTIN_CALL_DESCRIBERS: dict[str, Callable[[dict[str, Any]], ToolCallDescription]] = {
     "start_process": _describe_start_process,
     "inspect_processes": _describe_inspect_processes,
-    "wait_processes": _describe_wait_processes,
     "stop_process": lambda a: _description("stop_process", str(a["process_id"])),
     "exec_command": _describe_exec,
-    "wait": lambda a: _description("wait", f"{a['seconds']:g}s"),
+    "schedule_wakeup": lambda a: _description(
+        "schedule_wakeup", f"{a['seconds']:g}s", quote_tool_call_value(a.get("note", ""))
+    ),
     "read_file": _describe_read_file,
     "read_image": lambda a: _description("read_image", str(a["file"])),
     "write_file": lambda a: _description("write_file", str(a["file"])),
@@ -174,7 +159,6 @@ BUILTIN_OUTPUT_DESCRIBERS: dict[str, Callable[[dict[str, Any]], str]] = {
     ),
     "start_process": _describe_process_output,
     "inspect_processes": _describe_process_output,
-    "wait_processes": _describe_wait_process_output,
     "stop_process": _describe_process_output,
     "read_file": _describe_read_output,
     "read_image": lambda r: str(r["message"]),
@@ -186,5 +170,5 @@ BUILTIN_OUTPUT_DESCRIBERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "glob_files": lambda r: _describe_search_output(r, "files matched"),
     "grep_files": lambda r: _describe_search_output(r, "matches"),
     "load_skill": lambda r: f"Skill {r['name']} loaded.",
-    "wait": lambda r: f"Waited {r['waited_seconds']:g}s",
+    "schedule_wakeup": lambda r: f"Wakeup {r['wakeup_id']} due {r['due_at']}",
 }

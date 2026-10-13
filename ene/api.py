@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 from ene.config import CONFIG_PATH, conf
-from ene.backend import LLMAgent
+from ene.backend import DEFAULT_NOTIFY_TIMEOUT, LLMAgent
 from ene.models import ReasoningEffort, resolve_model_alias
 from ene.providers import provider_names
 from ene.ui import AgentConsole
@@ -39,6 +40,7 @@ def run_agent(
     verbose: bool = False,
     quiet: bool = True,
     console: AgentConsole | None = None,
+    notify_timeout: float | None = None,
 ) -> AgentRunResult:
     """Run one independent, non-interactive agent task.
 
@@ -55,9 +57,22 @@ def run_agent(
     after automatic continuations, or truncate during a tool call, return
     ``FAILED`` with an error explaining why; any final partial text is retained
     in ``response``.
+
+    The run stays open while a background process or wakeup can still notify
+    the agent. After ``notify_timeout`` seconds without a notification
+    (default: ``notify_timeout`` in the configuration, else one hour), the
+    remaining background work is stopped and the agent gives its final answer.
     """
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-empty string")
+    if notify_timeout is None:
+        configured = conf.get("notify_timeout")
+        # An invalid configured value falls back like malformed configuration.
+        notify_timeout = (
+            float(configured) if _valid_timeout(configured) else DEFAULT_NOTIFY_TIMEOUT
+        )
+    elif not _valid_timeout(notify_timeout):
+        raise ValueError("notify_timeout must be a finite number greater than zero")
 
     model_configs = conf.get("openai", {})
     if not isinstance(model_configs, dict) or not model_configs:
@@ -94,7 +109,7 @@ def run_agent(
     try:
         output_context = run_console.suppressed() if quiet else nullcontext()
         with output_context:
-            response = agent.execute(task)
+            response = agent.execute(task, notify_timeout=float(notify_timeout))
         return AgentRunResult(
             response=response,
             outcome=agent._last_turn_outcome,
@@ -103,6 +118,15 @@ def run_agent(
         )
     finally:
         agent.close()
+
+
+def _valid_timeout(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
 
 
 __all__ = ["AgentRunResult", "TurnOutcome", "run_agent"]

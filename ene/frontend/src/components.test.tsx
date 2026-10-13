@@ -211,9 +211,34 @@ describe('interaction components', () => {
     )
     expect(screen.getByText('follow up later')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('Queue a message...')).not.toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: /Pending/ }))
     expect(onWithdraw).toHaveBeenCalled()
+  })
+
+  it.each([
+    ['also check the tests', true, true],
+    ['/compact', true, false],
+    ['!ls', true, false],
+    ['also check the tests', false, false],
+  ])('appends %j to a pending message with appendable=%s: %s', (draft, appendable, appends) => {
+    const onSend = vi.fn()
+    render(
+      <Composer
+        operationId="op"
+        pending={{ id: 'p', text: 'follow up later', source: 'terminal', action_id: null, appendable }}
+        busy={false}
+        draft={draft}
+        onDraftChange={() => undefined}
+        onSend={onSend}
+        onWithdraw={() => undefined}
+        onCancel={() => undefined}
+      />,
+    )
+    const send = screen.getByRole('button', { name: 'Send' })
+    if (appends) expect(send).not.toBeDisabled()
+    else expect(send).toBeDisabled()
+    fireEvent.click(send)
+    expect(onSend).toHaveBeenCalledTimes(appends ? 1 : 0)
   })
 
   it('highlights the command in a permission prompt', () => {
@@ -327,7 +352,7 @@ describe('interaction components', () => {
           running: 2,
           finished: 1,
           processes: [
-            { process_id: '1', label: 'review parser', elapsed_seconds: 12, last_line: 'reading src/parse.py' },
+            { process_id: '1', label: 'review parser', elapsed_seconds: 12, last_line: 'reading src/parse.py', watching: true },
             { process_id: '2', label: 'run tests', elapsed_seconds: 75, last_line: '' },
           ],
         }}
@@ -342,6 +367,9 @@ describe('interaction components', () => {
     expect(within(panel).getByText('Waiting for output…')).toBeInTheDocument()
     expect(within(panel).queryByText('Background tasks')).not.toBeInTheDocument()
     expect(within(panel).queryByText('1 finished')).not.toBeInTheDocument()
+    // Watchers and silent background processes carry different markers.
+    expect(within(panel).getByTitle('Notifies the agent')).toHaveTextContent('↻')
+    expect(within(panel).getByTitle('Runs without notifying the agent')).toHaveTextContent('⚙')
   })
 
   it('keeps context usage visible while idle', () => {
@@ -716,5 +744,29 @@ describe('session status indicators', () => {
     expect(screen.getByRole('button', { name: 't' })).toHaveAttribute(
       'title', expect.stringContaining('Attached in a terminal'),
     )
+  })
+
+  it('marks watchers and background processes on session rows', () => {
+    render(
+      <SessionSidebar
+        sessions={[
+          summary({ id: 'q', name: 'q', attached_by: 'web', state: 'waiting', watchers: 2, background: 1 }),
+          summary({ id: 'd', name: 'd', attached_by: 'web', state: 'done' }),
+        ]}
+        activeId={null}
+        busyId={null}
+        open={false}
+        onSelect={() => undefined}
+        onAttach={() => undefined}
+        onDetach={() => undefined}
+        onClose={() => undefined}
+      />,
+    )
+    const waiting = screen.getByRole('button', { name: 'q' })
+    expect(waiting).toHaveTextContent('↻2 ⚙1')
+    expect(waiting).toHaveAttribute(
+      'title', expect.stringContaining('2 watching, 1 in background'),
+    )
+    expect(screen.getByRole('button', { name: 'd' }).querySelector('.session-marker')).toBeNull()
   })
 })

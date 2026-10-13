@@ -97,22 +97,21 @@ For read-only investigations, disjoint files, or separate worktrees:
    output as it runs, so `inspect_processes` and `/ps <label|process-id>` can
    show current progress. If `start_process` itself fails, do not add that child
    to the active set.
-4. Call `wait_processes` once with all active process IDs and no timeout. When it
-   reports exits, inspect those processes with a bounded log tail and parse each
-   process's final `ENE_SUBAGENT_RESULT=` line. Read the log file directly only
-   if needed. An
-   immediate inspection requested by the user is fine; do not poll logs for
-   routine progress.
-5. Remove an exited child's task file after its result has been read. Call
-   `wait_processes` again with the remaining active IDs until none remain.
+4. End your turn with a short status. Each child's exit arrives as an inbox
+   notification (`notify=exit`, the default). When one arrives, inspect that
+   process with a bounded log tail and parse its final `ENE_SUBAGENT_RESULT=`
+   line. Read the log file directly only if needed. An immediate inspection
+   requested by the user is fine; do not poll logs for routine progress.
+5. Remove an exited child's task file after its result has been read. End your
+   turn again while other children are still running.
 6. If abandoning the group because of a deadline, failure, or user request,
    call `stop_process` for every child still running, then remove their task
    files after confirming they stopped.
 
 Managed background processes use the monitor skill's lifecycle rather than an
-`exec_command` timeout. Do not poll with `wait` and `inspect_processes`, and do
-not set routine timeout wakeups. Prefer one foreground child unless parallel
-execution is materially useful.
+`exec_command` timeout. Do not poll with `inspect_processes`, do not start
+children with `notify=none`, and do not set routine timer wakeups. Prefer one
+foreground child unless parallel execution is materially useful.
 
 ## Validate and integrate
 

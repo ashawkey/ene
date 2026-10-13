@@ -20,7 +20,6 @@ from .constants import (
     MAX_PROCESS_LOG_TAIL_CHARS,
     MAX_TOOL_OUTPUT_CHARS,
 )
-from ene.utils.interrupt import CancelWatcher
 from ene.utils.process import (
     agent_process_env,
     decode_output_text,
@@ -35,6 +34,22 @@ from .process_util import (
     _terminate_process,
     _windows_job_active_processes,
 )
+
+
+# Status markers: a watcher can still notify the agent; a background process
+# runs without ever notifying it.
+WATCHER_GLYPH = "↻"
+BACKGROUND_GLYPH = "⚙"
+
+
+def format_background_counts(watchers: int, background: int) -> str:
+    """Compact marker such as ``↻2 ⚙1``; empty when nothing is running."""
+    parts = []
+    if watchers:
+        parts.append(f"{WATCHER_GLYPH}{watchers}")
+    if background:
+        parts.append(f"{BACKGROUND_GLYPH}{background}")
+    return " ".join(parts)
 
 
 def _format_process_elapsed(seconds: float) -> str:
@@ -65,6 +80,7 @@ def process_status_snapshot(
             "label": _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS],
             "elapsed_seconds": max(0, float(item["elapsed_seconds"])),
             "last_line": _clean_process_line(item.get("last_line", "")),
+            "watching": bool(item.get("watching")),
         })
     return {"running": running, "finished": finished, "processes": processes}
 
@@ -77,14 +93,16 @@ def format_process_status(
     """Return the multiline process summary used by the terminal UI."""
     if running <= 0:
         return ""
-    noun = "process" if running == 1 else "processes"
-    lines = [f"{running} {noun} running · {finished} finished"]
     active = process_status_snapshot(running, finished, activity)["processes"]
+    watchers = sum(item["watching"] for item in active)
+    counts = format_background_counts(watchers, len(active) - watchers)
+    lines = [f"{running} running" + (f" ({counts})" if counts else "") + f" · {finished} finished"]
     for index, item in enumerate(active):
         marker = "└" if index == len(active) - 1 else "├"
+        glyph = WATCHER_GLYPH if item["watching"] else BACKGROUND_GLYPH
         elapsed = _format_process_elapsed(item["elapsed_seconds"])
         lines.append(
-            f"{marker} {item['process_id']} [{item['label']}] ({elapsed}) "
+            f"{marker} {glyph} {item['process_id']} [{item['label']}] ({elapsed}) "
             f"{item['last_line']}".rstrip()
         )
     return "\n".join(lines)
@@ -92,10 +110,13 @@ def format_process_status(
 
 _PROCESS_LABEL_MAX_CHARS = 40
 _PROCESS_LINE_MAX_CHARS = 80
-# Log bytes still reach the file and wait_processes immediately; only live
-# status refreshes are coalesced.
+# Log bytes still reach the file and output notifications immediately; only
+# live status refreshes are coalesced.
 _ACTIVITY_NOTIFY_INTERVAL = 0.5
 _LAST_LINE_MAX_CHARS = 80
+NOTIFY_MODES = ("exit", "output", "jsonl", "none")
+# Output notifications carry one line each; the inbox bounds the backlog.
+_NOTIFY_LINE_MAX_BYTES = 8192
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
@@ -119,6 +140,8 @@ class ProcessManagerMixin:
         self._last_process_counts = (0, 0)
         self._process_status_callback = None
         self._activity_flush_timer: threading.Timer | None = None
+        # Called whenever background_counts() may have changed.
+        self.background_callback: Callable[[], None] | None = None
 
     def add_process_listener(
         self, listener: Callable[[int, int], None], *, notify: bool = True
@@ -159,7 +182,12 @@ class ProcessManagerMixin:
         with self._process_lock:
             records = list(self._processes.values())
             snapshots = [
-                (self._process_info(record), record["started_at"], record.get("last_line") or "")
+                (
+                    self._process_info(record),
+                    record["started_at"],
+                    record.get("last_line") or "",
+                    self._is_watcher(record),
+                )
                 for record in records
             ]
         return [
@@ -167,15 +195,27 @@ class ProcessManagerMixin:
                 **info,
                 "elapsed_seconds": time.time() - started_at,
                 "last_line": _clean_process_line(last_line),
+                "watching": watching,
             }
-            for info, started_at, last_line in snapshots
+            for info, started_at, last_line, watching in snapshots
         ]
+
+    def _notify_background_changed(self) -> None:
+        callback = self.background_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            # Like process listeners, a status observer must not break work.
+            pass
 
     def _notify_process_status(self, *, force: bool = False) -> None:
         # Lifecycle changes can arrive from several capture threads. Serialize
         # both the count snapshot and callback delivery so an older update can
         # never overtake a newer one in the terminal or Web UI.
         with self._process_notify_lock:
+            self._notify_background_changed()
             counts = self.process_counts()
             with self._process_lock:
                 if not force and counts == self._last_process_counts:
@@ -238,6 +278,7 @@ class ProcessManagerMixin:
             "command": record["command"],
             "label": record["label"],
             "cwd": record["cwd"],
+            "notify": record["notify"],
             "log_path": record["log_path"],
             "log_truncated": record["log_truncated"],
             "log_error": record.get("log_error"),
@@ -249,15 +290,44 @@ class ProcessManagerMixin:
         return self._processes.get(process_id)
 
     def _start_process(
-        self, command: str, cwd: str | None = None, label: str | None = None,
+        self,
+        command: str,
+        cwd: str | None = None,
+        label: str | None = None,
+        notify: str = "exit",
+        pattern: str | None = None,
     ) -> dict[str, Any]:
-        """Start a session-managed background process with file-backed output."""
+        """Start a session-managed background process with file-backed output.
+
+        Unless *notify* is ``"none"``, exit (other than through ``stop_process``)
+        posts an inbox notification; ``"output"`` and ``"jsonl"`` also post
+        selected output lines as they arrive.
+        """
         if label is not None:
             if not isinstance(label, str):
                 return {"error": "label must be a string", "success": False}
             label = " ".join(label.split())
             if not label:
                 return {"error": "label must not be empty", "success": False}
+        if notify not in NOTIFY_MODES:
+            return {
+                "error": f"notify must be one of: {', '.join(NOTIFY_MODES)}",
+                "success": False,
+            }
+        line_filter = None
+        if pattern is not None:
+            if notify != "output":
+                return {"error": "pattern requires notify=output", "success": False}
+            if not isinstance(pattern, str) or not pattern:
+                return {"error": "pattern must be a non-empty string", "success": False}
+            try:
+                line_filter = re.compile(pattern)
+            except re.error as exc:
+                return {"error": f"Invalid pattern: {exc}", "success": False}
+        sink = self.inbox_sink if notify != "none" else None
+        if sink is None:
+            # A bare executor has no agent to wake; report the effective mode.
+            notify = "none"
         cwd = str(self._resolve_path(cwd or "."))
         with self._process_lock:
             process_id = str(self._next_process_number)
@@ -345,6 +415,12 @@ class ProcessManagerMixin:
             "command": command,
             "label": label,
             "cwd": cwd,
+            "notify": notify,
+            "stop_requested": False,
+            # Held while posting a notification and while requesting a stop,
+            # so no notification is posted once a stop has been requested.
+            "notify_lock": threading.Lock(),
+            "exit_handled": False,
             "log_path": str(log_path.relative_to(self._resolve_path("."))),
             "started_at": time.time(),
             "log_truncated": False,
@@ -356,12 +432,73 @@ class ProcessManagerMixin:
             "state_lock": threading.Lock(),
         }
 
+        source = f"process:{process_id}" + (f" {label}" if label else "")
+
+        def post(text: str) -> None:
+            # A deliberate stop ends every notification, including output
+            # still draining from the pipe after the stop.
+            with record["notify_lock"]:
+                if not record["stop_requested"]:
+                    sink(text, source)
+
+        def notify_line(raw: bytes) -> None:
+            # Carriage returns redraw a terminal line (progress bars); only
+            # the final redraw is what the line shows.
+            raw = raw.rstrip(b"\r").rsplit(b"\r", 1)[-1]
+            text = _ANSI_RE.sub("", decode_output_text(raw[:_NOTIFY_LINE_MAX_BYTES]))
+            if not text.strip():
+                return
+            if notify == "jsonl":
+                try:
+                    if not isinstance(json.loads(text), dict):
+                        return
+                # Deep nesting raises RecursionError, not a decode error.
+                except (ValueError, RecursionError):
+                    return
+            elif line_filter is not None and not line_filter.search(text):
+                return
+            post(text)
+
+        def notify_exit() -> None:
+            info = self._process_info(record)
+            message = (
+                f"Process {process_id}"
+                + (f" [{label}]" if label else "")
+                + f" exited with code {info['exit_code']}. Log: {info['log_path']}"
+            )
+            last_line = _clean_process_line(record.get("last_line") or "")
+            if last_line:
+                message += f"\nLast output line: {last_line}"
+            post(message)
+
+        def post_notification(post: Callable[..., None], *args: Any) -> None:
+            # A failed notification must not stop log capture, skip the exit
+            # notification, or leave the process looking pending forever.
+            try:
+                post(*args)
+            except Exception:
+                pass
+
         def capture_output() -> None:
             written = 0
             log_enabled = True
             tail = b""
+            partial = b""
             try:
                 while chunk := proc.stdout.read1(65536):
+                    if notify in ("output", "jsonl"):
+                        *lines, partial = (partial + chunk).split(b"\n")
+                        # Keep only the latest redraw of a line still being
+                        # rewritten with carriage returns.
+                        redraw = partial.rstrip(b"\r").rfind(b"\r")
+                        if redraw >= 0:
+                            partial = partial[redraw + 1:]
+                        # An unterminated line still notifies once it is long.
+                        if len(partial) > _NOTIFY_LINE_MAX_BYTES:
+                            lines.append(partial)
+                            partial = b""
+                        for line in lines:
+                            post_notification(notify_line, line)
                     remaining = MAX_PROCESS_LOG_BYTES - written
                     if remaining > 0 and log_enabled:
                         data = chunk[:remaining]
@@ -391,21 +528,31 @@ class ProcessManagerMixin:
             except OSError as exc:
                 record["capture_error"] = str(exc)
             finally:
-                proc.stdout.close()
-                log_file.close()
-                proc.wait()
-                with record["state_lock"]:
-                    record["exit_code"] = proc.returncode
-                if record["process_backend"] == "windows_job":
-                    while record["job_handle"] is not None:
-                        self._release_completed_windows_job(record)
-                        if record["job_handle"] is not None:
-                            time.sleep(0.1)
-                with record["state_lock"]:
-                    record["process"] = None
-                with self._process_condition:
-                    self._process_condition.notify_all()
-                self._notify_process_status()
+                try:
+                    proc.stdout.close()
+                    log_file.close()
+                    proc.wait()
+                    with record["state_lock"]:
+                        record["exit_code"] = proc.returncode
+                    if record["process_backend"] == "windows_job":
+                        while record["job_handle"] is not None:
+                            self._release_completed_windows_job(record)
+                            if record["job_handle"] is not None:
+                                time.sleep(0.1)
+                    with record["state_lock"]:
+                        record["process"] = None
+                    with self._process_condition:
+                        self._process_condition.notify_all()
+                    self._notify_process_status()
+                finally:
+                    if sink is not None:
+                        if partial:
+                            post_notification(notify_line, partial)
+                        post_notification(notify_exit)
+                    # Waiters treat the process as pending until this is set,
+                    # so it is set however the teardown above ends.
+                    record["exit_handled"] = True
+                    self._notify_background_changed()
 
         capture_thread = threading.Thread(target=capture_output, daemon=True)
         record["capture_thread"] = capture_thread
@@ -496,147 +643,53 @@ class ProcessManagerMixin:
             result["count"] = len(processes)
         return result
 
-    def wait_processes(
-        self,
-        process_ids: list[str],
-        timeout: float | None = None,
-        wake_on_output: bool = False,
-    ) -> dict[str, Any]:
-        """Block until a selected process exits, emits output, or times out.
-
-        With no timeout, the call waits until an event or user cancellation, so
-        a long quiet interval consumes no model rounds. Output wakeups observe
-        only bytes written after this call begins. User cancellation interrupts
-        the wait but leaves every managed process running.
-        """
-        if (
-            not isinstance(process_ids, list)
-            or not process_ids
-            or any(not isinstance(item, str) or not item for item in process_ids)
-        ):
-            return {
-                "error": "process_ids must be a non-empty list of process ID strings",
-                "success": False,
-            }
-        if len(set(process_ids)) != len(process_ids):
-            return {"error": "process_ids must not contain duplicates", "success": False}
-        if timeout is not None and (
-            not isinstance(timeout, (int, float))
-            or isinstance(timeout, bool)
-            or not math.isfinite(timeout)
-            or timeout <= 0
-        ):
-            return {
-                "error": "timeout must be omitted or a finite number greater than zero",
-                "success": False,
-            }
-        if not isinstance(wake_on_output, bool):
-            return {"error": "wake_on_output must be a boolean", "success": False}
-
-        with self._process_lock:
-            records = [self._find_process_record_locked(item) for item in process_ids]
-            unknown = [item for item, record in zip(process_ids, records) if record is None]
-            if unknown:
-                return {
-                    "error": f"Unknown managed process: {unknown[0]}",
-                    "success": False,
-                }
-            selected = [record for record in records if record is not None]
-            baseline_bytes = {
-                record["process_id"]: record.get("log_bytes", 0) for record in selected
-            }
-
-        deadline = None if timeout is None else time.monotonic() + float(timeout)
-        interrupted = False
-        event = "timeout"
-        changed: list[dict[str, Any]] = []
-
-        try:
-            with self.console.thinking(
-                label="Waiting for processes",
-                countdown=float(timeout) if timeout is not None else None,
-            ):
-                with CancelWatcher(self.cancellation) as watcher:
-                    while True:
-                        with self._process_condition:
-                            exited = [
-                                record for record in selected
-                                if self._process_info(record)["status"] == "exited"
-                            ]
-                            output = [
-                                record for record in selected
-                                if (
-                                    wake_on_output
-                                    and record.get("log_bytes", 0)
-                                    > baseline_bytes[record["process_id"]]
-                                )
-                            ]
-                            if exited:
-                                event = "process_exit"
-                                changed = exited
-                                break
-                            if output:
-                                event = "log_output"
-                                changed = output
-                                break
-                            if watcher.is_cancelled:
-                                interrupted = True
-                                break
-                            remaining = None if deadline is None else deadline - time.monotonic()
-                            if remaining is not None and remaining <= 0:
-                                break
-                            # A short cap keeps web cancellation responsive; lifecycle
-                            # and output changes wake the condition immediately.
-                            self._process_condition.wait(
-                                timeout=0.1 if remaining is None else min(0.1, remaining)
-                            )
-        except KeyboardInterrupt:
-            interrupted = True
-
-        if interrupted:
-            return {
-                "error": "Process wait was interrupted by the user; managed processes are still running.",
-                "success": False,
-                "interrupted": True,
-            }
-
-        selected_infos = [self._process_info(record) for record in selected]
-        info_by_id = {info["process_id"]: info for info in selected_infos}
-        process_infos = []
-        for record in changed:
-            info = info_by_id[record["process_id"]]
-            if event == "log_output":
-                info["log_bytes_added"] = (
-                    record.get("log_bytes", 0) - baseline_bytes[record["process_id"]]
-                )
-            process_infos.append(info)
-        pending = [
-            info["process_id"] for info in selected_infos if info["status"] == "running"
-        ]
-        return {
-            "event": event,
-            "processes": process_infos,
-            "count": len(process_infos),
-            "pending_process_ids": pending,
-            "timed_out": event == "timeout",
-            "success": True,
-        }
-
-    def _wait_processes(
-        self,
-        process_ids: list[str],
-        timeout: float | None = None,
-        wake_on_output: bool = False,
-    ) -> dict[str, Any]:
-        return self.wait_processes(process_ids, timeout, wake_on_output)
-
     def _inspect_processes(
         self, process_id: str | None = None, log_tail_chars: int = 0
     ) -> dict[str, Any]:
         return self.inspect_processes(process_id, log_tail_chars)
 
     @staticmethod
+    def _is_watcher(record: dict[str, Any]) -> bool:
+        """Whether a process may still notify the agent.
+
+        Pending until the capture thread has posted the exit notification, so
+        a waiter cannot observe the exit before the notification exists.
+        """
+        return (
+            record["notify"] != "none"
+            and not record["stop_requested"]
+            and not record["exit_handled"]
+        )
+
+    def has_pending_notifications(self) -> bool:
+        """Whether a running process or scheduled wakeup may still notify."""
+        with self._process_lock:
+            if any(self._is_watcher(record) for record in self._processes.values()):
+                return True
+        return self.pending_wakeups() > 0
+
+    def background_counts(self) -> tuple[int, int]:
+        """Return ``(watchers, background)``.
+
+        Watchers are processes and wakeups that may still notify the agent;
+        background processes are running ones that never will.
+        """
+        with self._process_lock:
+            records = list(self._processes.values())
+        watchers = background = 0
+        for record in records:
+            if self._is_watcher(record):
+                watchers += 1
+            elif self._process_info(record)["status"] == "running":
+                background += 1
+        return watchers + self.pending_wakeups(), background
+
+    @staticmethod
     def _stop_process_record(record: dict[str, Any]) -> None:
+        # Deliberate stops do not notify; only unexpected exits do. Once this
+        # returns, no notification from the process can still be in flight.
+        with record["notify_lock"]:
+            record["stop_requested"] = True
         with record["state_lock"]:
             proc = record["process"]
         if proc is None:
@@ -685,7 +738,11 @@ class ProcessManagerMixin:
         return {**self._process_info(record), "success": True}
 
     def shutdown_processes(self, clear: bool = False) -> None:
-        """Stop all running managed processes, optionally forgetting their records."""
+        """Stop all managed processes and pending wakeups.
+
+        Records are optionally forgotten. Nothing stopped here notifies.
+        """
+        self.cancel_wakeups()
         with self._process_notify_lock:
             timer, self._activity_flush_timer = self._activity_flush_timer, None
         if timer is not None:

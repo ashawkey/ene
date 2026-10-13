@@ -444,6 +444,17 @@ def start_session(*, name: str, workspace: str, options: dict[str, Any]) -> dict
         raise
 
 
+def notify_session(record: dict[str, Any], text: str, source: str = "") -> None:
+    """Queue an inbox notification in a live session, waking it when idle."""
+    try:
+        with connect(record, "notify", text=text, source=source):
+            pass
+    except LiveError:
+        raise
+    except (OSError, EOFError, ValueError, json.JSONDecodeError) as exc:
+        raise LiveError("Lost connection while notifying the live session") from exc
+
+
 def kill_session(record: dict[str, Any]) -> None:
     try:
         pid = int(record.get("pid", 0))

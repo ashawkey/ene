@@ -27,6 +27,7 @@ from ene.config import CONFIG_PATH, conf
 from ene.model_config import resolve_session_model
 from ene.models import MODEL_CATALOG, REASONING_EFFORTS, ReasoningEffort, resolve_model_profile
 from ene.providers import provider_names
+from ene.tools.process_manager import format_background_counts
 from ene.ui import AgentConsole
 
 
@@ -379,12 +380,25 @@ def _live_state(record: dict) -> str:
     return "waiting"
 
 
+_LIVE_STATE_LABELS = {
+    "working": "● working",
+    "done": "✓ done",
+    "waiting": "○ waiting",
+}
+
+
+def _background_marker(record: dict) -> str:
+    """``↻`` watchers that can wake the session, ``⚙`` silent processes."""
+    def count(key: str) -> int:
+        value = record.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    marker = format_background_counts(count("watchers"), count("background"))
+    return f" {marker}" if marker else ""
+
+
 def _live_status_label(record: dict) -> str:
-    return {
-        "working": "● working",
-        "done": "✓ done · needs review",
-        "waiting": "○ waiting",
-    }[_live_state(record)]
+    return _LIVE_STATE_LABELS[_live_state(record)] + _background_marker(record)
 
 
 def _live_picker_sort_key(record: dict) -> tuple[int, float]:
@@ -550,7 +564,7 @@ def cmd_live_list() -> None:
         elif record.get("attached"):
             owner = record.get("attached_by") or "terminal"
             activity = "● working" if record.get("busy") else "○ waiting"
-            state = f"{activity} · attached ({owner})"
+            state = f"{activity}{_background_marker(record)} · attached ({owner})"
         else:
             state = _live_status_label(record)
         table.add_row(
@@ -621,6 +635,20 @@ def cmd_kill(identifier: str | None) -> None:
             console.error(f"Could not kill session '{label}': {exc}")
 
 
+def cmd_notify(identifier: str, text: str | None, source: str) -> int:
+    from ene.live import LiveError, notify_session, resolve
+
+    console = AgentConsole()
+    if text is None or text == "-":
+        text = sys.stdin.read()
+    try:
+        notify_session(resolve(identifier), text, source)
+    except LiveError as exc:
+        console.error(str(exc))
+        return 1
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -668,6 +696,12 @@ def build_parser() -> argparse.ArgumentParser:
         "kill", aliases=["k"], help="terminate a live session"
     )
     kill.add_argument("session", nargs="?", metavar="NAME_OR_ID")
+    notify = commands.add_parser(
+        "notify", help="send an inbox notification to a live session"
+    )
+    notify.add_argument("session", metavar="NAME_OR_ID")
+    notify.add_argument("text", nargs="?", metavar="TEXT", help="message (default: read stdin)")
+    notify.add_argument("--source", default="", help="label shown as notify:<SOURCE>")
     commands.add_parser("status", help="show project .ene storage usage")
     clean = commands.add_parser("clean", help="clean disposable project .ene storage")
     clean.add_argument("entries", nargs="*", metavar="ENTRY")
@@ -689,7 +723,7 @@ def _normalize_invocation(raw_args: list[str]) -> list[str]:
         return ["new"]
     if raw_args[0] in {
         "new", "resume", "r", "models", "list", "ls", "l", "attach", "a", "kill", "k",
-        "status", "clean", "hub", "update", "lib",
+        "notify", "status", "clean", "hub", "update", "lib",
     } or raw_args[0] in {"-h", "--help"}:
         return raw_args
     return ["new", *raw_args]
@@ -712,6 +746,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd_attach(args.session)
     elif args.command in {"kill", "k"}:
         cmd_kill(args.session)
+    elif args.command == "notify":
+        return cmd_notify(args.session, args.text, args.source)
     elif args.command == "status":
         cmd_storage()
     elif args.command == "clean":

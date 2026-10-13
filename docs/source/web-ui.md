@@ -56,7 +56,7 @@ The sidebar lists every live session on the machine:
 
 - **Activity:** conversation, tools, selections, queued input, and process status are visible per session.
 - **Process dock:** stays above the composer; scrollable rows show ID, label, runtime, and latest output.
-- **Queue:** one message per active round; refusals are reported, not silently dropped.
+- **Queue:** follow-up messages append to the pending one; commands cannot join it. Refusals are reported, not silently dropped.
 
 ### Composer shortcuts
 

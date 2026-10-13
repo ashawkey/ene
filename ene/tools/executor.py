@@ -76,6 +76,7 @@ class ToolExecutor(
         self.registry = ToolRegistry()
         self._tool_resource_cleanups: dict[str, Any] = {}
         self._init_process_registry()
+        self._init_wakeups()
 
     def execute(self, function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch and execute a tool call. Returns dict with success key."""

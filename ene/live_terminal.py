@@ -26,6 +26,7 @@ from ene.live import (
 )
 from ene.terminal import SessionDetach, SessionKill, SessionSwitch, TerminalInput
 from ene.ui import AgentConsole, ContextStatus, ResponseStream, ThinkingIndicator
+from ene.utils.io import is_local_query
 from ene.utils.paths import get_ene_dir
 
 
@@ -185,7 +186,7 @@ class LiveTerminal:
             cancel=self._cancel_operation,
             pending_text=lambda: self.pending.get("text") if self.pending else None,
             edit_pending=self._edit_pending,
-            can_submit_while_pending=self._is_instant_command,
+            can_submit_while_pending=self._can_submit_while_pending,
         )
         self.console.interactive_input = True
         self.console.status_sink = self.terminal.set_status
@@ -388,6 +389,16 @@ class LiveTerminal:
         # for the reader to observe that close prevents Ctrl+S from racing an
         # immediate reattach to the same session.
         self.stopped.wait()
+
+    def _can_submit_while_pending(self, text: str) -> bool:
+        """Instant commands run now; plain messages append to the pending one."""
+        if self._is_instant_command(text):
+            return True
+        return bool(
+            self.pending
+            and self.pending.get("appendable")
+            and not is_local_query(text.strip())
+        )
 
     def _is_instant_command(self, text: str) -> bool:
         parts = text.split(maxsplit=1)

@@ -23,7 +23,10 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
             "name": "start_process",
             "description": (
                 "Start a managed background process and return immediately. "
-                "Its combined output is written to a readable log file."
+                "Its combined output is written to a readable log file. The harness "
+                "notifies you through an inbox message when it exits (unless stopped "
+                "with stop_process) or emits selected output, starting a new round if "
+                "you are idle. Do not wait or poll: end your turn and resume when notified."
             ),
             "parameters": {
                 "type": "object",
@@ -33,6 +36,25 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                     "label": {
                         "type": "string",
                         "description": "Concise human-readable process label (optional)",
+                    },
+                    "notify": {
+                        "type": "string",
+                        "enum": ["exit", "output", "jsonl", "none"],
+                        "default": "exit",
+                        "description": (
+                            "exit: notify when it exits; output: also notify for each output "
+                            "line matching pattern (every line when pattern is omitted); "
+                            "jsonl: also notify for each output line that is a JSON object; "
+                            "none: never notify"
+                        ),
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": (
+                            "Python regular expression searched in each output line "
+                            "(notify=output only); keep it simple, such as a literal or "
+                            "an anchored alternation, because it runs on every line"
+                        ),
                     },
                 },
                 "required": ["command"],
@@ -63,45 +85,6 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                     },
                 },
                 "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "wait_processes",
-            "description": (
-                "Block without additional model rounds until any selected managed process exits, "
-                "optionally emits new output, or an optional timeout expires. For finite jobs, omit "
-                "timeout so the call wakes on exit instead of polling; use a timeout only for a real "
-                "deadline or scheduled health check. Returns only processes that triggered the "
-                "wakeup; interruption leaves them running."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "process_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "uniqueItems": True,
-                        "description": "Managed process IDs returned by start_process",
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "description": (
-                            "Optional maximum seconds to wait. Omit by default to wait until a "
-                            "process event; do not use short timeouts to poll progress."
-                        ),
-                    },
-                    "wake_on_output": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Also return when a selected process writes new log output",
-                    },
-                },
-                "required": ["process_ids"],
             },
         },
     },
@@ -264,11 +247,12 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
         {
             "type": "function",
             "function": {
-                "name": "wait",
+                "name": "schedule_wakeup",
                 "description": (
-                    "Pause before subsequent sequential tool calls. Use this for monitoring intervals: "
-                    "call wait first, then place the status or inspection calls after it in the same "
-                    "tool-call batch. Do not use it in a parallel tool-call group."
+                    "Schedule an inbox notification after a delay and return immediately. "
+                    "Use it for periodic checks or deadlines with no process to watch: "
+                    "schedule, end your turn, and act when the wakeup arrives. At most 100 "
+                    "may be pending; they are discarded when the session ends."
                 ),
                 "parameters": {
                     "type": "object",
@@ -276,10 +260,15 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                         "seconds": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "description": "Seconds to wait",
+                            "maximum": 604800,
+                            "description": "Delay in seconds",
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": "What to do when it fires; returned in the notification",
                         },
                     },
-                    "required": ["seconds"],
+                    "required": ["seconds", "note"],
                 },
             },
         },

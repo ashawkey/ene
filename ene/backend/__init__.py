@@ -14,6 +14,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from ene.backend.batch import BatchCompletionMixin
 from ene.backend.commands import AgentCommandsMixin
+from ene.backend.inbox import format_inbox_message, idle_timeout_notice
 from ene.personas import (
     DEFAULT_PERSONA,
     PersonaContext,
@@ -73,6 +74,7 @@ from ene.models import (
     resolve_model_profile,
 )
 from ene.utils.interrupt import (
+    CancelWatcher,
     run_interruptible,
     RequestInterrupted,
     TurnOutcome,
@@ -83,7 +85,12 @@ from ene.utils.io import (
     InputBroker,
     PromptBroker,
     UserSubmission,
+    is_local_query,
 )
+
+# A one-shot run that hears nothing for this long stops its background work
+# and asks for the final answer, so a forgotten process cannot hold it open.
+DEFAULT_NOTIFY_TIMEOUT = 3600.0
 
 # HTTP status codes that represent transient failures worth retrying even
 # though they are 4xx. Everything else in the 4xx range is a permanent client
@@ -188,10 +195,6 @@ def _strip_at_marks(query: str) -> str:
     untouched.
     """
     return _AT_PATH_RE.sub(r"\1", query)
-
-
-def _is_local_query(query: str) -> bool:
-    return query.lower() in ("exit", "quit") or query.startswith(("!", "/"))
 
 
 def _repair_tool_call_arguments(message: Message) -> Message:
@@ -380,6 +383,12 @@ class LLMAgent(
         )
         self._process_status_sink = None
         self.tool_executor.set_process_status_callback(self._process_status_changed)
+        self.tool_executor.inbox_sink = self.input_broker.post_event
+        self._background_lock = threading.Lock()
+        self._background_counts = (0, 0)
+        self.tool_executor.background_callback = self._background_changed
+        # Set while execute() runs: its last inbox delivery asks for the result.
+        self._one_shot = False
         self.context = ContextManager(self.system_prompt)
 
         self.round_id = 0
@@ -494,6 +503,21 @@ class LLMAgent(
             self._process_status_sink(status)
         if self.events is not None:
             self.events.publish("process_status", text=status, **snapshot)
+
+    def _background_changed(self) -> None:
+        """Publish watcher and background-process counts when they change."""
+        if self.events is None:
+            return
+        # Counted and published under one lock, so a stale count from a
+        # concurrent caller can never follow a newer one.
+        with self._background_lock:
+            counts = self.tool_executor.background_counts()
+            if counts == self._background_counts:
+                return
+            self._background_counts = counts
+            self.events.publish(
+                "background_status", watchers=counts[0], background=counts[1]
+            )
 
     def _status_suffix(self) -> ContextStatus:
         """Context-window progress shown in the status bar."""
@@ -1166,19 +1190,20 @@ class LLMAgent(
             self.context.drop_last(message)
 
     def _inject_pending_steer(self) -> bool:
-        """Add pending conversational input before the next agentic iteration."""
+        """Add pending input and notifications before the next agentic iteration."""
         if self.input_broker is None:
             return False
+        injected = self._inject_inbox()
         submission = self.input_broker.submission
         if submission is None or not submission.steer:
-            return False
+            return injected
         query = _strip_at_marks(submission.text.strip())
-        if not query or _is_local_query(query):
-            return False
+        if not query or is_local_query(query):
+            return injected
         try:
             submission = self.input_broker.get_nowait(submission.id)
         except queue.Empty:
-            return False
+            return injected
 
         self.console.user_input(
             query,
@@ -1187,6 +1212,33 @@ class LLMAgent(
             steer=True,
         )
         self.context.add(Message.user(query))
+        return True
+
+    def _inject_inbox(self, *, steer: bool = True) -> bool:
+        """Deliver queued notifications as one inbox message.
+
+        In a one-shot run, the delivery that leaves nothing queued and nothing
+        able to notify is marked final, because its reply is the result. This
+        holds mid-round too: a process may exit while the model is working.
+        """
+        if self.input_broker is None:
+            return False
+        events, dropped = self.input_broker.drain_events()
+        if not events and not dropped:
+            return False
+        # Decided after draining: a large backlog is delivered in several batches.
+        final = (
+            self._one_shot
+            and self.input_broker.inbox_size == 0
+            and not self.tool_executor.has_pending_notifications()
+        )
+        text, display = format_inbox_message(events, dropped, final=final)
+        if not steer:
+            self.console.rule()
+            # Announced before the notifications so they stay last.
+            self._maybe_announce_peers()
+        self.console.user_input(display, source="inbox", steer=steer, with_rule=False)
+        self.context.add(Message.inbox(text, display_content=display))
         return True
 
     def get_response(self):
@@ -1384,7 +1436,7 @@ class LLMAgent(
         self.tool_compaction_totals = {key: 0 for key in self.tool_compaction_totals}
         self.compaction_totals = {key: 0 for key in self.compaction_totals}
         self._compaction_floor_tokens = None
-        self.tool_executor.shutdown_processes(clear=True)
+        self._discard_background_work()
         self.tool_executor.reset_skill_tools()
         self.tool_executor._loaded_skills.clear()
         self.tool_executor._skill_loads.clear()
@@ -1424,7 +1476,10 @@ class LLMAgent(
             cancel=cancel,
             pending_text=pending_text,
             edit_pending=edit_pending,
-            can_submit_while_pending=self.is_instant_command,
+            can_submit_while_pending=lambda text: (
+                self.is_instant_command(text)
+                or self.input_broker.accepts_while_pending(text)
+            ),
         )
         if self.cancellation is not None:
             self.cancellation.watch_keyboard = False
@@ -1539,20 +1594,19 @@ class LLMAgent(
                         if draft is not None:
                             self._rewind_draft = None
                             await prompts.restart(draft)
-                        if self.input_broker.ready:
+                        if self.input_broker.has_work:
                             stop_wait_indicator()
                             active = executor.submit(self._run_round)
                             terminal.set_busy(True)
 
-                    if self.input_broker.pending:
-                        if active is None and self.input_broker.ready:
-                            stop_wait_indicator()
-                            active = executor.submit(self._run_round)
-                            terminal.set_busy(True)
-                        else:
-                            # The round owns the conversation, not this loop, so
-                            # a command that stays clear of it answers now.
-                            self._run_instant_command()
+                    if active is None and self.input_broker.has_work:
+                        stop_wait_indicator()
+                        active = executor.submit(self._run_round)
+                        terminal.set_busy(True)
+                    elif self.input_broker.pending:
+                        # The round owns the conversation, not this loop, so
+                        # a command that stays clear of it answers now.
+                        self._run_instant_command()
 
                     # Only act on the prompt this iteration waited on: a pause
                     # that started meanwhile owns the editor and will restart it.
@@ -1595,7 +1649,7 @@ class LLMAgent(
                                 continue
                         await prompts.restart()
                         terminal.app.invalidate()
-                        if active is None and self.input_broker.ready:
+                        if active is None and self.input_broker.has_work:
                             stop_wait_indicator()
                             active = executor.submit(self._run_round)
                             terminal.set_busy(True)
@@ -1650,8 +1704,23 @@ class LLMAgent(
         try:
             submission = self.input_broker.get_nowait()
         except queue.Empty:
-            return False
+            return self._process_inbox()
         return self._process_query(submission)
+
+    def _process_inbox(self) -> bool:
+        """Run one round that delivers queued notifications to the model."""
+        if not self._inject_inbox(steer=False):
+            return False
+        self.round_id += 1
+        self.console.rule()
+        with AgentCommandsMixin._round_timer(self):
+            with self._operation("agent response"):
+                self.get_response()
+        try:
+            self.save_session(self._session_id, reason="round")
+        except Exception as e:
+            self.console.warn(f"Could not save session round: {e}")
+        return False
 
     def _run_command(self, query: str) -> bool:
         """Dispatch a built-in /command. Returns True when chat should stop."""
@@ -1865,11 +1934,10 @@ class LLMAgent(
                 elif not should_wait and wait_indicator is not None:
                     wait_indicator.__exit__(None, None, None)
                     wait_indicator = None
-                if self.input_broker.pending:
-                    if active is None and self.input_broker.ready:
-                        active = executor.submit(self._run_round)
-                    elif active is not None:
-                        self._run_instant_command()
+                if active is None and self.input_broker.has_work:
+                    active = executor.submit(self._run_round)
+                elif active is not None and self.input_broker.pending:
+                    self._run_instant_command()
                 wake.wait(0.1 if active is not None else 0.5)
                 wake.clear()
         finally:
@@ -1950,7 +2018,13 @@ class LLMAgent(
                     finally:
                         self.presence.close()
 
-    def execute(self, query: str, *, manage_operation: bool = True):
+    def execute(
+        self,
+        query: str,
+        *,
+        manage_operation: bool = True,
+        notify_timeout: float = DEFAULT_NOTIFY_TIMEOUT,
+    ):
         self.console.system(f"Executing query: {query}")
         t0 = time.time()
 
@@ -1975,15 +2049,93 @@ class LLMAgent(
 
         self.console.rule()
 
-        operation = self._operation("agent response") if manage_operation else nullcontext()
-        with AgentCommandsMixin._round_timer(self):
-            with operation:
-                response = self.get_response()
+        self._one_shot = True
+        try:
+            operation = self._operation("agent response") if manage_operation else nullcontext()
+            with AgentCommandsMixin._round_timer(self):
+                with operation:
+                    response = self.get_response()
+            # A one-shot run is not finished while its work can still notify:
+            # deliver each notification as a further round, like an idle session.
+            # The last delivery asks for the complete answer, because that reply
+            # becomes the run's result; a round without a reply keeps the earlier one.
+            while True:
+                operation = (
+                    self._operation("waiting for notifications")
+                    if manage_operation else nullcontext()
+                )
+                with operation:
+                    status = self._await_inbox(notify_timeout)
+                if status == "done":
+                    break
+                if status == "cancelled":
+                    self.console.system("Stopped waiting for notifications.")
+                    self._last_interrupted = True
+                    self._last_turn_outcome = TurnOutcome.USER_INTERRUPTED
+                    break
+                if status == "timeout":
+                    # Nothing left can notify, so this delivery is the final one.
+                    self.tool_executor.shutdown_processes()
+                    self.input_broker.post_event(idle_timeout_notice(notify_timeout), "harness")
+                operation = self._operation("agent response") if manage_operation else nullcontext()
+                with AgentCommandsMixin._round_timer(self):
+                    with operation:
+                        self._inject_inbox(steer=False)
+                        self.round_id += 1
+                        round_response = self.get_response()
+                if round_response is not None:
+                    response = round_response
+        finally:
+            self._one_shot = False
 
         t1 = time.time()
         self.console.system(f"Execution time: {t1 - t0:.2f} seconds")
         self._print_token_summary()
         return response
+
+    def _await_inbox(self, timeout: float) -> str:
+        """Wait for a one-shot run's next notification.
+
+        Returns ``"deliver"`` when one is queued, ``"done"`` when the last turn
+        did not complete or nothing remains that could notify, ``"timeout"``
+        after *timeout* seconds without a notification, and ``"cancelled"``
+        when the user cancels the wait.
+        """
+        broker = self.input_broker
+        if broker is None:
+            return "done"
+        wake = threading.Event()
+        broker.add_listener(wake.set)
+        deadline = time.monotonic() + timeout
+        indicator = None
+        try:
+            with CancelWatcher(self.cancellation) as watcher:
+                while True:
+                    if self._last_turn_outcome != TurnOutcome.COMPLETED:
+                        return "done"
+                    if broker.inbox_ready:
+                        return "deliver"
+                    if not self.tool_executor.has_pending_notifications():
+                        return "deliver" if broker.inbox_size else "done"
+                    if watcher.is_cancelled:
+                        return "cancelled"
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return "timeout"
+                    if indicator is None:
+                        indicator = self.console.thinking(
+                            label="Waiting for notifications", countdown=timeout
+                        )
+                        indicator.__enter__()
+                    # Short enough to notice a cancellation promptly.
+                    wake.wait(min(0.1, remaining))
+                    wake.clear()
+        except KeyboardInterrupt:
+            return "cancelled"
+        finally:
+            if indicator is not None:
+                indicator.__exit__(None, None, None)
+            broker.remove_listener(wake.set)
 
     def _tool_compaction_summary(self) -> str:
         totals = self.tool_compaction_totals

@@ -65,11 +65,21 @@ class _Agent(SessionMixin):
         self.session_name = ""
         self._isolated_turn_active = False
         self._session_changed = None
+        self.shutdowns = 0
+        self.input_broker = types.SimpleNamespace(clear_events=self._clear_events, cleared=0)
         self.tool_executor = types.SimpleNamespace(
-            shutdown_processes=lambda **kwargs: None,
+            shutdown_processes=self._shutdown_processes,
             _work_dir=str(tracker.work_dir),
             _change_tracker=tracker,
         )
+
+    def _shutdown_processes(self, clear=False):
+        self.shutdowns += 1
+
+    def _clear_events(self):
+        # Stale notifications are dropped only after their producers stopped.
+        assert self.shutdowns
+        self.input_broker.cleared += 1
 
     def save_session(self, name=None, *, reason="autosave"):
         revision_id, code_revision_id, _ = self._session_store.commit(
@@ -203,6 +213,8 @@ def test_fork_starts_named_session_at_selected_prompt_boundary(tmp_path: Path):
     assert agent.replayed == 1
     assert changed == [("fork", "alternate approach")]
     assert agent.changes.session_id == "fork"
+    # The old session's background work and its notifications stay behind.
+    assert agent.shutdowns == 1 and agent.input_broker.cleared == 1
     assert SessionStore(tmp_path / "sessions", "session").summary()["round_id"] == 2
     fork = SessionStore(tmp_path / "sessions", "fork")
     assert fork.summary()["session_name"] == "alternate approach"
@@ -221,6 +233,7 @@ def test_cancelled_fork_keeps_current_session(tmp_path: Path):
     agent._cmd_fork("/fork")
 
     assert agent._session_id == "session"
+    assert agent.input_broker.cleared == 0
     assert not (tmp_path / "sessions" / "fork").exists()
     assert "Fork cancelled." in console.text
 

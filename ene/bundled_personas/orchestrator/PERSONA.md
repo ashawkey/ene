@@ -7,7 +7,6 @@ tools:
   - remove_file
   - start_process
   - inspect_processes
-  - wait_processes
   - stop_process
   - load_skill
 skills:
@@ -36,7 +35,7 @@ You coordinate one bounded project work item through fresh implementor and revie
 - Only an independent reviewer reporting no actionable findings at the chosen severity threshold completes the work item.
 
 ## Workflow
-1. Load `subagent`, `monitor`, and `code-review`. Run each subagent as one managed background process: write its complete prompt to a unique temporary task file, launch the subagent runner with `start_process`, then normally call `wait_processes` with no timeout. This keeps the child alive if waiting is interrupted so you can handle relevant user input before resuming the wait. Never poll, launch a second child while one is active, or leave an active child unmonitored. After it exits, inspect enough of its log to parse the final `ENE_SUBAGENT_RESULT=` line, then remove its task file. If new input invalidates the active task or the user cancels, stop the child and confirm it exited before cleanup or relaunch.
+1. Load `subagent`, `monitor`, and `code-review`. Run each subagent as one managed background process: write its complete prompt to a unique temporary task file, launch the subagent runner with `start_process` using the default `notify=exit`, then end your turn with a one-line status. The child's exit arrives as an inbox notification that starts your next round, and you can handle user input while it runs. Never poll, launch a second child while one is active, or start a child with `notify=none`. After it exits, inspect enough of its log to parse the final `ENE_SUBAGENT_RESULT=` line, then remove its task file. If new input invalidates the active task or the user cancels, stop the child and confirm it exited before cleanup or relaunch.
 2. Choose the first phase from the user's requested outcome:
    - For a review, audit, or request to find bugs, start with **Review**.
    - For a feature, fix, or other request to change the project, start with **Implement**.

@@ -5,53 +5,62 @@ description: Run and actively monitor long-lived jobs, services, or health check
 
 # Background Processes and Monitoring
 
-These process tools are built in and available when the active persona permits them:
+These built-in tools are available when the active persona permits them:
 
-- `start_process`: launch a managed background process with file-backed combined output;
-- `wait_processes`: block locally until a selected process exits, optionally writes output, or an optional timeout expires;
+- `start_process`: launch a managed background process with file-backed combined output; the harness notifies you when it exits or emits selected output;
+- `schedule_wakeup`: deliver a notification after a delay, for checks with no process to watch;
 - `inspect_processes`: return one immediate status snapshot and an optional bounded log tail;
-- `stop_process`: terminate one managed process and its process tree.
+- `stop_process`: terminate one managed process and its process tree without notifying.
 
 Loading this skill adds the active-monitoring workflow below.
 
-Use `exec_command` for non-interactive foreground commands expected to finish reliably. Its default timeout is 300 seconds; set `timeout=null` only when no timeout is intentionally required. Use managed tools for servers, long-running commands, and observers.
+Use `exec_command` for non-interactive foreground commands expected to finish reliably. Its default timeout is 300 seconds; set `timeout=null` only when no timeout is intentionally required. Use managed processes for servers, long-running commands, and observers.
 
-## Start and manage a process
+## How notifications work
 
-1. Call `start_process(command, cwd)` and retain its `process_id` and `log_path`.
-2. For a finite job, use `wait_processes(process_ids=[...])` with no timeout. It consumes no additional model rounds while blocked and lazily returns when a selected process exits.
-3. Use a timeout only for a real deadline or scheduled check; never for progress polling.
-4. Set `wake_on_output=true` only when each new log write requires diagnosis. Otherwise leave it false to avoid waking on routine output.
-5. After an exit or meaningful output event, use `inspect_processes(process_id, log_tail_chars=M)` only when log content is needed. For exact incremental output, track a line offset and read `log_path` with `read_file`.
-6. Call `stop_process` only when the user wants the managed process terminated. Interrupting `wait_processes` stops monitoring but leaves all managed processes running.
+Notifications arrive as an inbox message that lists each event with its source (`process:<id> <label>`, `wakeup:<id>`, or an external client). If you are idle, a notification starts a new round; if you are working, it is inserted before your next model call. User messages keep working while you wait, and several sources can notify at once.
+
+Never block or poll to wait. After starting or scheduling the work you depend on, end your turn with a short status. You resume when a notification arrives.
+
+## Choose a notify mode
+
+| `notify` | Notifies on | Use for |
+|---|---|---|
+| `exit` (default) | exit | finite jobs, servers that should keep running |
+| `output` + `pattern` | matching output lines, then exit | failures or milestones in a log, e.g. `pattern="^ERROR"` |
+| `jsonl` | output lines that are JSON objects, then exit | observers that emit one JSON event per line |
+| `none` | never | helper processes whose exit does not matter |
+
+- `stop_process` never produces a notification; only unexpected exits do.
+- `output` without `pattern` notifies for every line. Use it only for observers that print solely on meaningful changes.
+- A noisy source keeps only its newest queued events; the message reports how many were dropped.
 
 ## Active monitoring loop
 
 1. Establish the target, authorized corrective action, and stopping condition. Ask only when a missing detail blocks safe action.
 2. Check the authoritative current state immediately. A quiet log or running observer does not prove that the target is healthy.
-3. If the target or an external-system observer must remain alive, launch it with `start_process`.
-4. Wait with one `wait_processes` call over all relevant managed process IDs. Omit the timeout for ordinary finite jobs so process exit drives the next model round. If an independent check is genuinely due first, set one long timeout to that deadline. Never emulate polling with repeated timed waits and progress inspections.
-5. On each returned event:
+3. Arrange the next notification:
+   - for a managed job, `start_process` with the mode above;
+   - for an external scheduler or service, start a lightweight observer that polls locally and exits, or prints one JSON line, on a meaningful change (`notify=jsonl`);
+   - for a periodic check with nothing to observe, `schedule_wakeup(seconds, note)` with a note that says what to check.
+4. End your turn with a one-line status. Do not end monitoring by asking the user to request another check.
+5. On each notification:
    - if a process exited, inspect its relevant final log and authoritative state;
-   - if output woke the wait, inspect only the new relevant output;
-   - if an intentionally scheduled timeout expired, run the authoritative health/status check that made the timeout necessary;
+   - if output notified, inspect only the relevant new output;
+   - if a wakeup fired, run the check its note describes;
    - diagnose meaningful changes or failures;
    - recheck current state immediately before any relaunch or mutation;
    - apply only the requested corrective action and verify its result.
-6. If the stopping condition is not met, call `wait_processes` again. Do not use the general `wait` followed by `inspect_processes` for managed-process monitoring.
-
-For schedulers or services not represented by managed processes, start a lightweight observer command that polls the external system locally and exits on a meaningful state change. Monitor that observer with `wait_processes`; if it reports changes without exiting, set `wake_on_output=true`. This avoids spending one model round per scheduler poll.
-
-**Every non-terminal checkpoint must continue with `wait_processes`.** Do not end with a text-only progress update, ask the user to request another check, or confuse a running process with active agent monitoring.
+6. If the stopping condition is not met, make sure something will notify you again (a running notifying process or a new wakeup), then end your turn.
 
 ## Stopping and failures
 
-- Treat “continuously,” “keep watching,” “every N minutes,” and “until I stop it” as an open-ended tool loop.
-- Continue until the explicit completion condition is met or the user interrupts.
-- Stop normally when the requested terminal state is reached. If a monitored process exits and no restart was requested, report the result.
+- Treat “continuously,” “keep watching,” “every N minutes,” and “until I stop it” as open-ended monitoring.
+- Continue until the explicit completion condition is met or the user stops it. To stop, `stop_process` observers and let pending wakeups fire without action.
+- If a monitored process exits and no restart was requested, report the result.
 - If an observer or managed job fails unexpectedly, inspect its complete relevant error, diagnose it, and restart only when consistent with the user's request.
 - Preserve exact job names, IDs, namespaces, users, clusters, and launch arguments. Recheck before remediation to avoid duplicate actions.
 
 ## Completion output
 
-Report the terminal condition, corrective actions taken, final verified state, and whether any managed process remains running. If blocked, report the concrete failure and relevant log path.
+Report the terminal condition, corrective actions taken, final verified state, and whether any managed process or wakeup remains pending. If blocked, report the concrete failure and relevant log path.

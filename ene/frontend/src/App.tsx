@@ -42,6 +42,7 @@ function parseProcessStatus(data: Record<string, unknown>): ProcessStatus {
         label: process.label,
         elapsed_seconds: process.elapsed_seconds,
         last_line: process.last_line,
+        watching: process.watching === true,
       }]
     })
     : []
@@ -205,6 +206,7 @@ function SessionPane({
           text: typeof data.text === 'string' ? data.text : '',
           source: typeof data.source === 'string' ? data.source : '',
           action_id: typeof data.action_id === 'string' ? data.action_id : null,
+          appendable: data.appendable === true,
         })
         if (typeof data.action_id === 'string' && data.action_id === submitActionRef.current) {
           onDraftChange('')
@@ -303,7 +305,8 @@ function SessionPane({
         break
       case 'user_message': {
         const text = typeof data.text === 'string' ? data.text : ''
-        if (text) setCommandHistory((current) => [...current, text])
+        // Inbox notifications are not commands the user typed.
+        if (text && data.source !== 'inbox') setCommandHistory((current) => [...current, text])
         showEvent(message.type, text, data, message.seq)
         break
       }
@@ -420,7 +423,7 @@ function SessionPane({
           fetchPathCompletions={fetchPathCompletions}
           onDraftChange={onDraftChange}
           onSend={(text) => {
-            if (pending || submitAction) return
+            if (submitAction) return
             const actionId = newActionId()
             if (!send({ type: 'submit', text, action_id: actionId })) return
             submitActionRef.current = actionId

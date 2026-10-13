@@ -8,6 +8,7 @@ import pytest
 from ene.config import conf
 from ene import AgentRunResult, TurnOutcome, run_agent
 from ene import api
+from ene.backend.inbox import FINAL_DELIVERY_NOTE
 from ene.messages import Message, ToolCall
 from ene.providers import CompletionResult
 
@@ -51,7 +52,7 @@ def test_run_agent_constructs_exec_agent_and_closes(monkeypatch, model_config, t
             self.closed = False
             created.append(self)
 
-        def execute(self, task):
+        def execute(self, task, *, notify_timeout):
             assert task == "inspect this"
             return "done"
 
@@ -96,7 +97,7 @@ def test_run_agent_returns_failed_outcome(monkeypatch, model_config):
             self.token_totals = {"total": 0}
             self.closed = False
 
-        def execute(self, task):
+        def execute(self, task, *, notify_timeout):
             return None
 
         def close(self):
@@ -144,7 +145,7 @@ def test_run_agent_closes_when_execution_raises(monkeypatch, model_config):
             self.closed = False
             created.append(self)
 
-        def execute(self, task):
+        def execute(self, task, *, notify_timeout):
             raise LookupError("boom")
 
         def close(self):
@@ -170,3 +171,108 @@ def test_run_agent_rejects_ambiguous_alias_before_constructing_agent(monkeypatch
     monkeypatch.setattr(api, "LLMAgent", lambda **kwargs: pytest.fail("constructed an ambiguous model"))
     with pytest.raises(ValueError, match="Ambiguous model 'tes'. Matches: test, test-other"):
         run_agent("task", model_alias="tes")
+
+
+def test_run_agent_stays_open_until_process_notification(monkeypatch, model_config, tmp_path):
+    requests = []
+    start = ToolCall(
+        "start", "start_process",
+        # The delay keeps the exit after this turn, so it must wake a new round.
+        '{"command": "python -c \\"import time; time.sleep(0.5); print(42)\\"", '
+        '"label": "answer"}',
+    )
+    replies = [
+        CompletionResult(Message.assistant(None, tool_calls=[start]), None, "tool_calls"),
+        CompletionResult(Message.assistant("Started; waiting."), None, "stop"),
+        CompletionResult(Message.assistant("The job printed 42."), None, "stop"),
+    ]
+
+    def complete(request):
+        requests.append(request)
+        return replies.pop(0)
+
+    provider = NS(complete=complete, close=lambda: None, cancel=lambda: None)
+    monkeypatch.setattr("ene.backend.create_provider", lambda *_args: provider)
+
+    result = run_agent("run the job", model_alias="test", work_dir=tmp_path)
+
+    assert result.success
+    assert result.response == "The job printed 42."
+    inbox = requests[-1].messages[-1].text
+    assert '<event source="process:1 answer"' in inbox
+    assert "exited with code 0" in inbox and "Last output line: 42" in inbox
+
+
+def test_run_agent_returns_when_nothing_can_notify(monkeypatch, model_config, tmp_path):
+    calls = []
+
+    def complete(request):
+        calls.append(request)
+        return CompletionResult(Message.assistant("done"), None, "stop")
+
+    provider = NS(complete=complete, close=lambda: None, cancel=lambda: None)
+    monkeypatch.setattr("ene.backend.create_provider", lambda *_args: provider)
+
+    result = run_agent("answer", model_alias="test", work_dir=tmp_path)
+
+    assert result.response == "done" and len(calls) == 1
+
+
+def test_run_agent_final_delivery_asks_for_the_complete_answer(monkeypatch, model_config, tmp_path):
+    requests = []
+    start = ToolCall(
+        "start", "start_process",
+        '{"command": "python -c \\"import time; time.sleep(0.5)\\"", "label": "job"}',
+    )
+    replies = [
+        CompletionResult(Message.assistant(None, tool_calls=[start]), None, "tool_calls"),
+        CompletionResult(Message.assistant("The answer is 42."), None, "stop"),
+        # A notification round without a reply keeps the earlier answer.
+        CompletionResult(Message.assistant(""), None, "content_filter"),
+    ]
+
+    def complete(request):
+        requests.append(request)
+        return replies.pop(0)
+
+    provider = NS(complete=complete, close=lambda: None, cancel=lambda: None)
+    monkeypatch.setattr("ene.backend.create_provider", lambda *_args: provider)
+
+    result = run_agent("answer after the job", model_alias="test", work_dir=tmp_path)
+
+    inbox = requests[2].messages[-1]
+    assert inbox.is_inbox and FINAL_DELIVERY_NOTE in inbox.text
+    assert result.response == "The answer is 42."
+
+
+def test_run_agent_resolves_notify_timeout(monkeypatch, model_config):
+    timeouts = []
+
+    class Agent:
+        _last_turn_outcome = TurnOutcome.COMPLETED
+        _last_error = None
+        token_totals = {}
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def execute(self, _task, *, notify_timeout):
+            timeouts.append(notify_timeout)
+            return "done"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(api, "LLMAgent", Agent)
+    run_agent("task", model_alias="test")
+    monkeypatch.setitem(conf, "notify_timeout", 90)
+    run_agent("task", model_alias="test")
+    run_agent("task", model_alias="test", notify_timeout=5)
+    # An invalid configured value falls back like malformed configuration.
+    monkeypatch.setitem(conf, "notify_timeout", "soon")
+    run_agent("task", model_alias="test")
+    assert timeouts == [api.DEFAULT_NOTIFY_TIMEOUT, 90.0, 5.0, api.DEFAULT_NOTIFY_TIMEOUT]
+
+    for invalid in (0, -1, float("inf"), True, "5"):
+        with pytest.raises(ValueError, match="notify_timeout"):
+            run_agent("task", model_alias="test", notify_timeout=invalid)

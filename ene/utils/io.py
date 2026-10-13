@@ -18,6 +18,15 @@ from typing import Any, Awaitable, Callable
 # Cap per-field payload of published events so the EventHub's replay
 # history stays bounded even for large file writes or tool outputs.
 EVENT_TEXT_LIMIT = 64 * 1024
+# Bounds for asynchronous inbox notifications. A noisy source loses its oldest
+# events first, so one chatty process cannot crowd out every other source.
+INBOX_MAX_EVENTS = 200
+INBOX_MAX_EVENTS_PER_SOURCE = 50
+INBOX_EVENT_TEXT_LIMIT = 8 * 1024
+INBOX_SOURCE_LIMIT = 80
+# Notifications that wake an idle agent wait this long for companions, so a
+# chatty source starts one round per burst instead of one per line.
+INBOX_BATCH_SECONDS = 0.5
 _WAIT_UNITS = {
     "s": 1,
     "sec": 1,
@@ -62,6 +71,11 @@ def parse_wait_command(text: str) -> tuple[float, str] | None:
     if not prompt:
         raise ValueError("A prompt is required after the wait duration.")
     return delay, prompt
+
+
+def is_local_query(text: str) -> bool:
+    """Whether input is handled locally (command, shell, exit), not by the model."""
+    return text.lower() in ("exit", "quit") or text.startswith(("!", "/"))
 
 
 def sanitize_unicode(value: Any) -> Any:
@@ -185,15 +199,44 @@ class UserSubmission:
     def ready(self) -> bool:
         return self.ready_at is None or time.monotonic() >= self.ready_at
 
+    @property
+    def appendable(self) -> bool:
+        """Whether plain follow-up messages may join this one while it is pending."""
+        return self.ready_at is None and not is_local_query(self.text)
+
+
+
+@dataclass(frozen=True)
+class InboxEvent:
+    """One asynchronous notification waiting to wake the agent."""
+
+    text: str
+    source: str
+    id: str
+    created_at: float
 
 
 class InputBroker:
-    """Single pending submission shared by terminal and web clients."""
+    """User submissions and asynchronous notifications that wake the agent.
+
+    Terminal and web clients share a single editable pending submission;
+    plain follow-up messages are appended to it.
+    Notifications from processes, timers, and external clients queue
+    separately in a bounded FIFO inbox and are delivered in batches.
+    """
 
     def __init__(self, events: EventHub):
         self.events = events
         self._lock = threading.Lock()
         self._submission: UserSubmission | None = None
+        self._inbox: deque[InboxEvent] = deque()
+        self._inbox_counts: dict[str, int] = {}
+        self._inbox_dropped: dict[str, int] = {}
+        # Set once queued notifications have waited out the batch window.
+        self._inbox_batched = False
+        self._inbox_timer: threading.Timer | None = None
+        # Identifies the current window, so a stale timer cannot close a new one.
+        self._inbox_window = 0
         self._listeners: set[Callable[[], None]] = set()
         self._ready_timer: threading.Timer | None = None
 
@@ -246,8 +289,30 @@ class InputBroker:
             steer=steer,
         )
         with self._lock:
-            if self._submission is not None:
-                raise ValueError("Another message is already pending.")
+            existing = self._submission
+            if existing is not None:
+                # Plain follow-ups append to the pending message, so a user can
+                # keep typing while a round runs. The merged message gets a new
+                # ID: a consumer holding the old ID must not take the longer
+                # text while acting on the shorter one.
+                if not self.can_append(existing, item):
+                    raise ValueError(
+                        "Another message is already pending; commands and /wait "
+                        "messages cannot be combined with it."
+                    )
+                merged = f"{existing.text}\n\n{item.text}"
+                if len(merged.encode("utf-8")) > EVENT_TEXT_LIMIT:
+                    raise ValueError("Combined pending message is too large.")
+                item = UserSubmission(
+                    text=merged,
+                    source=item.source,
+                    id=item.id,
+                    action_id=action_id,
+                    steer=existing.steer and item.steer,
+                )
+                self.events.publish(
+                    "pending_cleared", id=existing.id, reason="merged"
+                )
             self._submission = item
             self.events.publish(
                 "pending_set",
@@ -257,6 +322,7 @@ class InputBroker:
                 action_id=item.action_id,
                 delay=delay,
                 steer=item.steer,
+                appendable=item.appendable,
             )
             listeners = tuple(self._listeners)
             if delay:
@@ -266,6 +332,21 @@ class InputBroker:
                 timer.start()
         self._notify(listeners)
         return item
+
+    @staticmethod
+    def can_append(existing: UserSubmission, item: UserSubmission) -> bool:
+        """Whether *item* may be appended to the pending *existing* message."""
+        return existing.appendable and item.appendable
+
+    def accepts_while_pending(self, text: str) -> bool:
+        """Client-side hint: whether *text* could join the current pending message."""
+        with self._lock:
+            existing = self._submission
+        return (
+            existing is not None
+            and existing.appendable
+            and not is_local_query(text.strip())
+        )
 
     def get_nowait(self, submission_id: str | None = None) -> UserSubmission:
         """Consume the pending submission, optionally only when its ID matches."""
@@ -325,6 +406,128 @@ class InputBroker:
     def ready(self) -> bool:
         with self._lock:
             return self._submission is not None and self._submission.ready
+
+    def post_event(self, text: str, source: str) -> InboxEvent:
+        """Queue a notification and wake listeners; never blocks the producer."""
+        text = sanitize_unicode(str(text)).strip()
+        if not text:
+            raise ValueError("Notification cannot be empty.")
+        text = _clip_text(text, INBOX_EVENT_TEXT_LIMIT)
+        source = " ".join(sanitize_unicode(str(source)).split())[:INBOX_SOURCE_LIMIT]
+        item = InboxEvent(
+            text=text,
+            source=source or "external",
+            id=uuid.uuid4().hex,
+            created_at=time.time(),
+        )
+        with self._lock:
+            if self._inbox_counts.get(item.source, 0) >= INBOX_MAX_EVENTS_PER_SOURCE:
+                dropped = next(e for e in self._inbox if e.source == item.source)
+                self._inbox.remove(dropped)
+            elif len(self._inbox) >= INBOX_MAX_EVENTS:
+                dropped = self._inbox.popleft()
+            else:
+                dropped = None
+            if dropped is not None:
+                self._count_removed(dropped)
+                self._inbox_dropped[dropped.source] = (
+                    self._inbox_dropped.get(dropped.source, 0) + 1
+                )
+            self._inbox.append(item)
+            self._inbox_counts[item.source] = self._inbox_counts.get(item.source, 0) + 1
+            if INBOX_BATCH_SECONDS <= 0:
+                self._inbox_batched = True
+            elif not self._inbox_batched and self._inbox_timer is None:
+                # Wake listeners again once the batch window has passed.
+                self._inbox_window += 1
+                timer = threading.Timer(
+                    INBOX_BATCH_SECONDS, self._notify_inbox_ready, args=(self._inbox_window,)
+                )
+                timer.daemon = True
+                self._inbox_timer = timer
+                timer.start()
+            listeners = tuple(self._listeners)
+        self._notify(listeners)
+        return item
+
+    def _count_removed(self, event: InboxEvent) -> None:
+        remaining = self._inbox_counts[event.source] - 1
+        if remaining:
+            self._inbox_counts[event.source] = remaining
+        else:
+            del self._inbox_counts[event.source]
+
+    def _reset_inbox_window_locked(self) -> None:
+        self._inbox_batched = False
+        self._inbox_window += 1
+        if self._inbox_timer is not None:
+            self._inbox_timer.cancel()
+            self._inbox_timer = None
+
+    def _notify_inbox_ready(self, window: int) -> None:
+        with self._lock:
+            if window != self._inbox_window:
+                return
+            self._inbox_timer = None
+            self._inbox_batched = bool(self._inbox)
+            listeners = tuple(self._listeners) if self._inbox else ()
+        self._notify(listeners)
+
+    def drain_events(
+        self, max_chars: int = 4 * INBOX_EVENT_TEXT_LIMIT
+    ) -> tuple[list[InboxEvent], dict[str, int]]:
+        """Consume queued notifications in order, up to roughly *max_chars*.
+
+        At least one event is returned when any is queued; the remainder stays
+        queued for the next delivery. Also returns and resets per-source
+        counts of events dropped because the inbox overflowed.
+        """
+        with self._lock:
+            events: list[InboxEvent] = []
+            used = 0
+            while self._inbox:
+                size = len(self._inbox[0].text)
+                if events and used + size > max_chars:
+                    break
+                event = self._inbox.popleft()
+                self._count_removed(event)
+                events.append(event)
+                used += size
+            if not self._inbox:
+                self._reset_inbox_window_locked()
+            dropped, self._inbox_dropped = self._inbox_dropped, {}
+            listeners = tuple(self._listeners) if events else ()
+        self._notify(listeners)
+        return events, dropped
+
+    def clear_events(self) -> int:
+        """Discard every queued notification; return how many were dropped."""
+        with self._lock:
+            count = len(self._inbox)
+            self._inbox.clear()
+            self._inbox_counts.clear()
+            self._inbox_dropped = {}
+            self._reset_inbox_window_locked()
+        return count
+
+    @property
+    def inbox_size(self) -> int:
+        with self._lock:
+            return len(self._inbox)
+
+    @property
+    def inbox_ready(self) -> bool:
+        """Whether queued notifications have waited out the batch window."""
+        with self._lock:
+            return self._inbox_batched
+
+    @property
+    def has_work(self) -> bool:
+        """Whether a round can start now: a ready submission or batched notifications."""
+        with self._lock:
+            return self._inbox_batched or (
+                self._submission is not None and self._submission.ready
+            )
 
 
 @dataclass

@@ -65,6 +65,7 @@ Prefer `--api-key-env`: `--api-key` can expose secrets in shell history and proc
 | `ene list` (`ls`, `l`) | List live sessions and whether each is working or done. |
 | `ene attach [NAME_OR_ID]` (`a`) | Attach by unique name or ID prefix; omit it to open the picker. |
 | `ene kill [NAME_OR_ID]` (`k`) | Terminate one live session, or omit the identifier to select multiple sessions interactively. |
+| `ene notify NAME_OR_ID [TEXT] [--source LABEL]` | Send an [inbox notification](tools.md#inbox-notifications) to a live session; reads stdin when `TEXT` is omitted. |
 | `ene status` | Show disk usage for entries under the current project's `.ene/`. |
 | `ene clean [--history] [ENTRY ...]` | Remove disposable project state or selected entries; `--history` also removes sessions. |
 | `ene hub --web-port PORT` | Start the [Web UI](web-ui.md); default port: `8765`. |
@@ -77,7 +78,15 @@ See [Library](library.md) for `ene lib` workflows.
 
 - Ambiguous name or ID prefixes list all matching sessions. Copy an exact name (or the ID for an unnamed session) to retry `ene attach`; quote names containing spaces.
 - Replay shows the full conversation's prompts and final assistant responses, with omitted-message counts in place. `/resume` uses the same display.
-- Picker states: `● working`, `✓ done · needs review`, and `○ waiting`. Completed sessions appear first, newest status change first.
+- Picker states, completed sessions first, newest status change first:
+
+  | State | Meaning |
+  |---|---|
+  | `● working` | A round is running |
+  | `○ waiting` | Continues on its own: a queued message, notification, or watcher remains |
+  | `✓ done` | Finished; review it |
+
+- Markers after a state count background work: `↻2` watchers that can wake the session (processes that notify, and wakeups), `⚙1` processes running with `notify="none"`. The terminal status bar and Web UI use the same markers.
 - One owner per session: a terminal attachment waits briefly for another terminal to release it; Web UI ownership is refused immediately. Detach in the browser first.
 
 ### Clean project state
@@ -93,7 +102,7 @@ See [Library](library.md) for `ene lib` workflows.
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help message for all slash commands |
-| `/context [user\|assistant\|id]` | List clipped messages, filter by role, or inspect one in full; `-1` is newest |
+| `/context [user\|inbox\|assistant\|id]` | List clipped messages, filter by role, or inspect one in full; `-1` is newest |
 | `/system_prompt` | Print the current full system prompt |
 | `/compact` | Force context compaction via LLM summarization |
 | `/recap` | Summarize the conversation's task in one sentence, focusing on user requests |
@@ -166,8 +175,10 @@ Prefix a command with `!` to run it directly without involving the model:
 
 ## Working while a round is active
 
-- Submit one queued message, shown as `pending: … · runs next`; it starts after the current round.
+- Submit a queued message, shown as `pending: … · runs next`; it starts after the current round.
+- Further messages append to the queued one, from the terminal or the Web UI. Commands, `!` shell input, and `/wait` messages are never combined; they wait until the queue is empty.
 - Press `Up` at an empty prompt to edit the queued message.
+- [Inbox notifications](tools.md#inbox-notifications) queue separately and run after your messages.
 - Read-only commands such as `/usage`, `/context`, `/ps`, `/agents`, `/sa`, and `/auth` run immediately, as does `/name [name]`.
 - Commands that change conversation or provider state wait.
 

@@ -47,7 +47,6 @@ def test_bundled_personas_are_declarative():
             "remove_file",
             "start_process",
             "inspect_processes",
-            "wait_processes",
             "stop_process",
             "load_skill",
         }
@@ -63,7 +62,7 @@ def test_bundled_personas_are_declarative():
     assert "Do not maintain a backlog" in personas["orchestrator"].template
     assert "Run only one subagent at a time" in personas["orchestrator"].template
     assert "Run each subagent as one managed background process" in personas["orchestrator"].template
-    assert "normally call `wait_processes` with no timeout" in personas["orchestrator"].template
+    assert "then end your turn with a one-line status" in personas["orchestrator"].template
     assert "Never poll, launch a second child while one is active" in personas["orchestrator"].template
     assert "Only an independent reviewer reporting no actionable findings" in personas["orchestrator"].template
     assert "Review → Implement → Review" in personas["orchestrator"].template

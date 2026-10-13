@@ -30,6 +30,15 @@ _REASON_LABELS = {
 }
 
 
+def _draft_note(candidate: dict, rest: str = "") -> str:
+    """Closing note after a rewind or fork, naming what reached the editor."""
+    if candidate.get("inbox"):
+        lead = "The selected round was an inbox notification; nothing was placed in the editor"
+    else:
+        lead = "The selected prompt is ready to edit"
+    return f"{lead}; {rest}" if rest else f"{lead}."
+
+
 def _reason_label(reason: str) -> str:
     return _REASON_LABELS.get(reason, f"({reason})")
 
@@ -179,7 +188,7 @@ class SessionMixin:
                     pass
             return
         self._session_id = target
-        self.tool_executor.shutdown_processes(clear=True)
+        self._discard_background_work()
         self._install_change_tracker()
 
     def _cmd_name(self, raw: str):
@@ -289,12 +298,12 @@ class SessionMixin:
             self._session_revision_id = target_id
             self.save_session(self._session_id, reason="conversation-rewind")
 
-        self._set_rewind_draft(candidate["prompt"])
+        self._restore_candidate_draft(candidate)
         self.console.reset_timeline()
         self._replay_context()
         self.console.system(
             f"Checked out revision {self._session_revision_id[:10]} at round {self.round_id}. "
-            "The selected prompt is ready to edit; new work will branch from here."
+            + _draft_note(candidate, "new work will branch from here.")
         )
 
     def _cmd_fork(self, raw: str) -> None:
@@ -375,15 +384,15 @@ class SessionMixin:
         self._session_id = session_id
         self._session_store = target_store
         self._session_revision_id = target_store.head_id
-        self.tool_executor.shutdown_processes(clear=True)
+        self._discard_background_work()
         self._install_change_tracker()
-        self._set_rewind_draft(candidate["prompt"])
+        self._restore_candidate_draft(candidate)
         self.console.reset_timeline()
         self._replay_context()
         name_note = f" named '{requested_name}'" if requested_name else ""
         self.console.system(
             f"Forked session '{source_id}' at round {self.round_id} into "
-            f"new session '{session_id}'{name_note}. The selected prompt is ready to edit."
+            f"new session '{session_id}'{name_note}. " + _draft_note(candidate)
         )
 
     def _apply_code_plan(self, plan: CheckoutPlan, target_id: str) -> None:
@@ -409,6 +418,8 @@ class SessionMixin:
         for index, revision in enumerate(ordered_candidates, start=1):
             round_label = f"round {revision['round_id']}"
             prompt = revision["prompt"]
+            if revision.get("inbox"):
+                prompt = f"[inbox] {prompt}"
             if revision["reason"] == "initial":
                 prompt += f"  {_reason_label('initial')}"
             labels.append(
@@ -425,6 +436,22 @@ class SessionMixin:
         if picked is None:
             return None
         return ordered_candidates[labels.index(picked)]
+
+    def _discard_background_work(self) -> None:
+        """Stop processes and wakeups and drop their queued notifications.
+
+        Used when the conversation changes to another session: the old work
+        and anything it reported no longer belong to the active conversation.
+        Stopping comes first, so nothing it produced can arrive after the clear.
+        """
+        self.tool_executor.shutdown_processes(clear=True)
+        if self.input_broker is not None:
+            self.input_broker.clear_events()
+
+    def _restore_candidate_draft(self, candidate: dict) -> None:
+        """Return a rewound user prompt to the editors; notifications stay out."""
+        if not candidate.get("inbox"):
+            self._set_rewind_draft(candidate["prompt"])
 
     def _set_rewind_draft(self, prompt: str) -> None:
         """Put the selected, now-removed prompt back in terminal and web editors."""
@@ -704,7 +731,7 @@ class SessionMixin:
         msgs = compact_replay(
             self.context.messages,
             is_user=lambda msg: (
-                msg.is_user_input
+                (msg.is_user_input or msg.is_inbox)
                 and not msg.text.startswith(SUMMARY_MARKER)
             ),
             is_assistant=lambda msg: msg.is_assistant,
@@ -717,6 +744,8 @@ class SessionMixin:
         for msg in msgs:
             if isinstance(msg, HiddenMessages):
                 self.console.system(hidden_message(msg.count))
+            elif msg.is_inbox:
+                self.console.user_input(msg.display, source="inbox")
             elif msg.is_user:
                 self.console.user_input(msg.display)
             else:

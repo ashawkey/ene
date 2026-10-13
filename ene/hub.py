@@ -135,6 +135,11 @@ def _record_state(record: dict) -> str:
     return "waiting"
 
 
+def _count(value: object) -> int:
+    """Non-negative integer count from untrusted worker data."""
+    return max(0, int(value)) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
 def _registry_digest(records: list[dict]) -> list[tuple]:
     """Reduce records to the fields the browser session list actually shows."""
     return [
@@ -149,6 +154,8 @@ def _registry_digest(records: list[dict]) -> list[tuple]:
             record.get("attached_by", ""),
             record.get("last_user_message", ""),
             _record_state(record),
+            _count(record.get("watchers")),
+            _count(record.get("background")),
         )
         for record in records
     ]
@@ -170,6 +177,7 @@ def _process_snapshot(value: object) -> dict:
                 "label": item.get("label", ""),
                 "elapsed_seconds": item.get("elapsed_seconds", 0),
                 "last_line": item.get("last_line", ""),
+                "watching": item.get("watching") is True,
             }
             for item in items or []
             if isinstance(item, dict)
@@ -202,6 +210,8 @@ class RemoteSession:
         self.operation_id: str | None = None
         self.process_status = ""
         self.processes = _process_snapshot(None)
+        self.watchers = 0
+        self.background = 0
         self.context_status: dict | None = None
         self.active_indicator: dict | None = None
         self.commands: dict[str, str] = {}
@@ -219,6 +229,8 @@ class RemoteSession:
         self.operation_id = None
         self.process_status = ""
         self.processes = _process_snapshot(None)
+        self.watchers = 0
+        self.background = 0
         self.context_status = None
         self.active_indicator = None
         self.commands = {}
@@ -267,6 +279,8 @@ class RemoteSession:
         process_status = status.get("process_status", "")
         self.process_status = process_status if isinstance(process_status, str) else ""
         self.processes = _process_snapshot(status.get("processes"))
+        self.watchers = _count(status.get("watchers"))
+        self.background = _count(status.get("background"))
         context_status = status.get("context_status")
         self.context_status = (
             {
@@ -310,6 +324,7 @@ class RemoteSession:
                 "text": pending.get("text", ""),
                 "source": pending.get("source", ""),
                 "action_id": pending.get("action_id"),
+                "appendable": bool(pending.get("appendable")),
             }
             if isinstance(pending, dict)
             else None
@@ -345,6 +360,7 @@ class RemoteSession:
                 "text": data.get("text", ""),
                 "source": data.get("source", ""),
                 "action_id": data.get("action_id"),
+                "appendable": bool(data.get("appendable")),
             }
         elif etype == "pending_cleared":
             if self.pending is not None and self.pending["id"] == data.get("id"):
@@ -358,6 +374,9 @@ class RemoteSession:
             text = data.get("text", "")
             self.process_status = text if isinstance(text, str) else ""
             self.processes = _process_snapshot(data)
+        elif etype == "background_status":
+            self.watchers = _count(data.get("watchers"))
+            self.background = _count(data.get("background"))
         elif etype == "thinking_start":
             self.active_indicator = dict(data)
         elif etype == "thinking_update" and self.active_indicator is not None:
@@ -411,13 +430,15 @@ class RemoteSession:
             "preview": self.meta.get("preview", ""),
             "attached_by": "web",
             # Mirrors the worker's own three-way state (see Worker._status):
-            # a round is running, a message is queued, or the turn finished and
-            # is waiting to be reviewed.
+            # a round is running, the session will continue on its own (a
+            # queued message or a watcher), or the turn finished for review.
             "state": (
                 "working" if self.operation_id is not None
-                else "waiting" if self.pending is not None
+                else "waiting" if self.pending is not None or self.watchers
                 else "done"
             ),
+            "watchers": self.watchers,
+            "background": self.background,
         }
 
 
@@ -537,6 +558,8 @@ class Hub:
                     else ""
                 ),
                 "state": _record_state(record),
+                "watchers": _count(record.get("watchers")),
+                "background": _count(record.get("background")),
             })
         # A session attached by this hub is authoritative even if the poll
         # snapshot predates it.

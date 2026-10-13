@@ -152,9 +152,14 @@ class Worker:
         )
         self._state_busy = False
         self._state_pending = False
+        self._state_inbox = False
+        # Processes and wakeups that can still notify, and silent processes.
+        self._state_watchers = 0
+        self._state_background = 0
         self._active_indicator: dict[str, Any] | None = None
         self._last_user_message = ""
         self.events.add_listener(self._track_state)
+        self.inputs.add_listener(self._track_inbox)
         self.agent: LLMAgent | None = None
         self.server: socket.socket | None = None
         self._shutdown_lock = threading.Lock()
@@ -290,16 +295,38 @@ class Worker:
                 self._state_pending = True
             elif event.type == "pending_cleared":
                 self._state_pending = False
+            elif event.type == "background_status":
+                data = event.data or {}
+                self._state_watchers = int(data.get("watchers", 0))
+                self._state_background = int(data.get("background", 0))
             else:
                 return
-            state = (
-                "working" if self._state_busy
-                else "waiting" if self._state_pending
-                else "done"
-            )
-            if state != self._state:
-                self._state = state
-                self._state_changed_at = event.timestamp
+            self._update_state_locked(event.timestamp)
+
+    def _track_inbox(self) -> None:
+        """Queued notifications keep an idle session waiting until delivered."""
+        queued = self.inputs.inbox_size > 0
+        with self._state_lock:
+            if queued != self._state_inbox:
+                self._state_inbox = queued
+                self._update_state_locked(time.time())
+
+    @staticmethod
+    def _derive_state(busy: bool, pending: bool, inbox: bool, watchers: int) -> str:
+        """``waiting`` means the session will continue without the user."""
+        if busy:
+            return "working"
+        if pending or inbox or watchers:
+            return "waiting"
+        return "done"
+
+    def _update_state_locked(self, timestamp: float) -> None:
+        state = self._derive_state(
+            self._state_busy, self._state_pending, self._state_inbox, self._state_watchers
+        )
+        if state != self._state:
+            self._state = state
+            self._state_changed_at = timestamp
 
     def _state_timestamp(self, state: str) -> float:
         """Return the tracked transition time, with a fallback for test workers."""
@@ -318,18 +345,22 @@ class Worker:
         agent = self.agent
         operation_id = self.cancellation.operation_id
         submission = self.inputs.submission
-        state = (
-            "working" if operation_id is not None
-            else "waiting" if submission is not None
-            else "done"
-        )
         lock = getattr(self, "_state_lock", None)
+        watchers = background = 0
         if lock is None:
             active_indicator = None
         else:
             with lock:
+                watchers = self._state_watchers
+                background = self._state_background
                 indicator = getattr(self, "_active_indicator", None)
                 active_indicator = dict(indicator) if indicator is not None else None
+        state = self._derive_state(
+            operation_id is not None,
+            submission is not None,
+            bool(getattr(self.inputs, "inbox_size", 0)),
+            watchers,
+        )
         status = {
             "runtime_id": self.runtime_id,
             "name": self.record.get("name", ""),
@@ -342,6 +373,8 @@ class Worker:
             "busy": operation_id is not None,
             "operation_id": operation_id,
             "needs_attention": state == "done",
+            "watchers": watchers,
+            "background": background,
             "state_changed_at": self._state_timestamp(state),
             "created_at": self.record.get("created_at", 0),
         }
@@ -354,6 +387,7 @@ class Worker:
                 "source": submission.source,
                 "action_id": submission.action_id,
                 "steer": submission.steer,
+                "appendable": submission.appendable,
             }
         prompt = self.prompts.active
         if prompt is not None:
@@ -538,6 +572,19 @@ class Worker:
                 send_frame(sock, {"ok": True})
                 send_frame(sock, {"type": "stopping"})
                 self._request_stop()
+                return
+            if kind == "notify":
+                text, source = hello.get("text"), hello.get("source")
+                label = source.strip() if isinstance(source, str) else ""
+                try:
+                    self.inputs.post_event(
+                        text if isinstance(text, str) else "",
+                        f"notify:{label}" if label else "notify",
+                    )
+                except ValueError as exc:
+                    send_frame(sock, {"ok": False, "error": str(exc)})
+                    return
+                send_frame(sock, {"ok": True})
                 return
             if kind != "attach":
                 send_frame(sock, {"ok": False, "error": "Unknown request"})

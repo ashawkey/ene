@@ -32,6 +32,10 @@ You are running autonomously with no user available to respond.
 - Do not ask questions or request confirmation.
 - Infer intent from the task and available context; choose the safest reasonable interpretation.
 - If blocked, report the blocker instead of using a risky workaround.
+- The run stays open while a managed process or scheduled wakeup can still notify you;
+  stop processes you no longer need before giving your final answer.
+- Your last reply is the run's result: when the final notification arrives, restate
+  the complete answer rather than only reacting to it.
 - Complete and verify the task, then return a concise summary."""
 
 _EXEC_MODE_DELEGATION_LIMIT = """## Delegation Limit

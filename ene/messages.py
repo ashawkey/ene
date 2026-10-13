@@ -161,6 +161,9 @@ ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
 ROLE_TOOL = "tool"
 
+# Origin of a user-role message that the harness, not the user, wrote.
+ORIGIN_INBOX = "inbox"
+
 
 @dataclass
 class Message:
@@ -171,7 +174,9 @@ class Message:
     ``display_content`` carries the user-facing form when it differs from what
     the model sees; an empty display marks a hidden, synthetic user message.
     ``provider_state`` is opaque provider state (OpenAI Responses response items)
-    replayed verbatim on continuation requests.
+    replayed verbatim on continuation requests. ``origin`` marks a user-role
+    message the harness wrote (``ORIGIN_INBOX`` for delivered notifications);
+    it is sent to the model as an ordinary user message but is not user input.
     """
 
     role: str
@@ -181,6 +186,7 @@ class Message:
     display_content: str | None = None
     provider_state: dict[str, Any] | None = None
     reasoning_content: str | None = None
+    origin: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     # -- constructors -------------------------------------------------------
@@ -200,6 +206,16 @@ class Message:
         """Build a user message, optionally with a user-facing display form."""
         return cls(
             role=ROLE_USER, content=content, display_content=display_content
+        )
+
+    @classmethod
+    def inbox(cls, content: str, *, display_content: str | None = None) -> Message:
+        """Build a user-role message delivering asynchronous notifications."""
+        return cls(
+            role=ROLE_USER,
+            content=content,
+            display_content=display_content,
+            origin=ORIGIN_INBOX,
         )
 
     @classmethod
@@ -248,8 +264,12 @@ class Message:
 
     @property
     def is_user_input(self) -> bool:
-        """User-role content intended for the transcript, not a hidden payload."""
-        return self.is_user and self.display_content != ""
+        """Text the user wrote: not a hidden payload or a harness notification."""
+        return self.is_user and self.display_content != "" and self.origin is None
+
+    @property
+    def is_inbox(self) -> bool:
+        return self.is_user and self.origin == ORIGIN_INBOX
 
     @property
     def is_assistant(self) -> bool:
@@ -327,6 +347,8 @@ class Message:
             wire["provider_state"] = self.provider_state
         if self.reasoning_content is not None:
             wire["reasoning_content"] = self.reasoning_content
+        if self.origin is not None:
+            wire["origin"] = self.origin
         wire.update(self.extra)
         return wire
 
@@ -361,6 +383,8 @@ class Message:
                 message.provider_state = value
             elif key == "reasoning_content" and isinstance(value, str):
                 message.reasoning_content = value
+            elif key == "origin" and isinstance(value, str):
+                message.origin = value
             else:
                 message.extra[key] = value
         return message

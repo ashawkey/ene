@@ -39,13 +39,33 @@ function sessionLabel(session: SessionSummary) {
   return session.name || session.preview || 'New session'
 }
 
+// A watcher can still wake the agent; a background process never will.
+export const WATCHER_GLYPH = '↻'
+export const BACKGROUND_GLYPH = '⚙'
+
+export function backgroundMarker(watchers = 0, background = 0) {
+  return [
+    watchers > 0 ? `${WATCHER_GLYPH}${watchers}` : '',
+    background > 0 ? `${BACKGROUND_GLYPH}${background}` : '',
+  ].filter(Boolean).join(' ')
+}
+
+function backgroundTitle(watchers = 0, background = 0) {
+  return [
+    watchers > 0 ? `${watchers} watching` : '',
+    background > 0 ? `${background} in background` : '',
+  ].filter(Boolean).join(', ')
+}
+
 export function sessionStatus(session: SessionSummary) {
+  const counts = backgroundTitle(session.watchers, session.background)
+  const suffix = counts ? ` · ${counts}` : ''
   if (session.attached_by === 'terminal') {
-    return { kind: 'terminal', title: 'Attached in a terminal' }
+    return { kind: 'terminal', title: `Attached in a terminal${suffix}` }
   }
   const titles: Record<string, string> = {
     working: 'Working',
-    waiting: 'Waiting on queued input',
+    waiting: 'Waiting · continues on its own',
     done: 'Done · needs review',
   }
   // Finished work is green in an open tab (review it here) and yellow when
@@ -53,7 +73,13 @@ export function sessionStatus(session: SessionSummary) {
   // can act on now from review that is one click away.
   const kind =
     session.state === 'done' && session.attached_by !== 'web' ? 'review' : session.state
-  return { kind, title: titles[session.state] ?? session.state }
+  return { kind, title: `${titles[session.state] ?? session.state}${suffix}` }
+}
+
+function SessionMarker({ session }: { session: SessionSummary }) {
+  const marker = backgroundMarker(session.watchers, session.background)
+  // Decorative: the counts are spelled out in the row's tooltip.
+  return marker ? <span className="session-marker" aria-hidden="true">{marker}</span> : null
 }
 
 /**
@@ -128,6 +154,7 @@ export function SessionSidebar({
                       {/* Decorative: the full path is in the row's tooltip. */}
                       <span className="session-meta" aria-hidden="true">{sessionDir(session)}</span>
                     </span>
+                    <SessionMarker session={session} />
                   </button>
                   <button
                     type="button"
@@ -167,6 +194,7 @@ export function SessionSidebar({
                           <span className="session-name">{sessionLabel(session)}</span>
                           <span className="session-meta" aria-hidden="true">{sessionDir(session)}</span>
                         </span>
+                        <SessionMarker session={session} />
                       </button>
                     </li>
                   )
@@ -430,7 +458,12 @@ export function ActivityStatus({
           <ul>
             {processStatus.processes.map((process) => (
               <li key={process.process_id}>
-                <span className="process-indicator" aria-hidden="true" />
+                <span
+                  className={process.watching ? 'process-indicator watcher' : 'process-indicator'}
+                  title={process.watching ? 'Notifies the agent' : 'Runs without notifying the agent'}
+                >
+                  {process.watching ? WATCHER_GLYPH : BACKGROUND_GLYPH}
+                </span>
                 <span className="process-copy">
                   <strong><code>#{process.process_id}</code> {process.label}</strong>
                   {process.last_line ? <small>{process.last_line}</small> : <small>Waiting for output…</small>}
@@ -558,6 +591,17 @@ export function PromptDialog({
   )
 }
 
+// Commands, shell input, and exit run locally and cannot join a pending message.
+export function isLocalInput(text: string) {
+  const value = text.trim()
+  return value.startsWith('/') || value.startsWith('!') || ['exit', 'quit'].includes(value.toLowerCase())
+}
+
+// Plain follow-ups append to a pending message the session marks appendable.
+export function canAppendToPending(text: string, pending: PendingMessage | null) {
+  return pending === null || (Boolean(pending.appendable) && !isLocalInput(text))
+}
+
 export function Composer({
   activity,
   operationId,
@@ -680,7 +724,7 @@ export function Composer({
 
   function submit() {
     const value = text.trim()
-    if (!value || busy || pending) return
+    if (!value || busy || !canAppendToPending(value, pending)) return
     historyIndex.current = null
     savedDraft.current = ''
     onSend(value)
@@ -848,7 +892,7 @@ export function Composer({
           className="send-button"
           type="button"
           onClick={submit}
-          disabled={!connected || busy || Boolean(pending)}
+          disabled={!connected || busy || !canAppendToPending(text, pending)}
           aria-label="Send"
           title={connected ? 'Send' : 'Waiting for connection'}
         >

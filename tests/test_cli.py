@@ -321,7 +321,7 @@ def test_live_picker_has_cancel_option(monkeypatch):
     )
 
     assert selected is None
-    assert choices_seen[0] == "other   ✓ done · needs review  /tmp/project"
+    assert choices_seen[0] == "other   ✓ done           /tmp/project"
     assert choices_seen[-1] == "Cancel  stay in current"
 
 
@@ -345,6 +345,7 @@ def test_live_picker_prioritizes_recent_done_sessions(monkeypatch):
             "workspace": "/tmp/done-new",
             "busy": False,
             "needs_attention": True,
+            "background": 1,
             "state_changed_at": 40,
         },
         {
@@ -352,6 +353,7 @@ def test_live_picker_prioritizes_recent_done_sessions(monkeypatch):
             "workspace": "/tmp/waiting",
             "busy": False,
             "needs_attention": False,
+            "watchers": 2,
             "state_changed_at": 60,
         },
     ]
@@ -369,8 +371,9 @@ def test_live_picker_prioritizes_recent_done_sessions(monkeypatch):
     assert [choice.split()[0] for choice in choices_seen] == [
         "done-new", "done-old", "waiting", "worknew",
     ]
-    assert "✓ done · needs review" in choices_seen[0]
-    assert "○ waiting" in choices_seen[2]
+    assert "✓ done ⚙1" in choices_seen[0]
+    assert "✓ done  " in choices_seen[1]
+    assert "○ waiting ↻2" in choices_seen[2]
     assert "● working" in choices_seen[3]
 
 
@@ -546,7 +549,7 @@ def test_live_list_only_lists(monkeypatch):
     cli.cmd_live_list()
 
     assert len(tables) == 1
-    assert str(tables[0].columns[2]._cells[0]) == "✓ done · needs review"
+    assert str(tables[0].columns[2]._cells[0]) == "✓ done"
 
 
 def test_lib_dispatches_remaining_arguments(monkeypatch):
@@ -555,3 +558,30 @@ def test_lib_dispatches_remaining_arguments(monkeypatch):
 
     assert cli.main(["lib", "list", "--local"]) == 7
     assert received == [["list", "--local"]]
+
+
+def test_notify_sends_text_or_stdin_to_resolved_session(monkeypatch):
+    import io
+    from ene import live
+
+    sent = []
+    monkeypatch.setattr(live, "resolve", lambda identifier: {"runtime_id": identifier})
+    monkeypatch.setattr(
+        live, "notify_session",
+        lambda record, text, source: sent.append((record["runtime_id"], text, source)),
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO("from stdin\n"))
+
+    assert cli.main(["notify", "agent", "build done", "--source", "ci"]) == 0
+    assert cli.main(["notify", "agent"]) == 0
+    assert sent == [("agent", "build done", "ci"), ("agent", "from stdin\n", "")]
+
+
+def test_notify_reports_unknown_session(monkeypatch):
+    from ene import live
+
+    def missing(identifier):
+        raise live.LiveError(f"Live session not found: {identifier}")
+
+    monkeypatch.setattr(live, "resolve", missing)
+    assert cli.main(["notify", "nobody", "hi"]) == 1

@@ -607,7 +607,7 @@ def test_rejected_submission_is_reported_to_every_browser():
 
         forwarded = asyncio.new_event_loop().run_until_complete(
             hub._forward_to_worker(
-                "runtime-1", {"type": "submit", "text": "second", "action_id": "a2"}
+                "runtime-1", {"type": "submit", "text": "!second", "action_id": "a2"}
             )
         )
 
@@ -938,6 +938,13 @@ def test_attached_session_reports_done_when_idle():
 
     session.ingest({"type": "pending_cleared", "data": {"id": "p1"}})
     assert session.summary()["state"] == "done"
+
+    # Only watchers can continue the session; silent processes leave it done.
+    session.ingest({"type": "background_status", "data": {"watchers": 0, "background": 1}})
+    assert session.summary()["state"] == "done"
+    session.ingest({"type": "background_status", "data": {"watchers": 2, "background": 1}})
+    summary = session.summary()
+    assert (summary["state"], summary["watchers"], summary["background"]) == ("waiting", 2, 1)
 
 
 @pytest.mark.parametrize("channel", ["", "?session=s1"])

@@ -341,3 +341,17 @@ def test_unknown_model_profile_defaults():
     assert profile.max_output_tokens == 32_000
     assert profile.reasoning is None
     assert profile.supports_image_input is False
+
+
+def test_inbox_messages_reach_chat_providers_as_plain_user_messages():
+    from ene.providers.openai_compatible import OpenAICompatibleProvider
+    from ene.providers.registry import ProviderSettings
+    from ene.providers.types import CompletionRequest
+
+    message = Message.inbox("<event>done</event>", display_content="[process:1] done")
+    assert message.is_inbox and not message.is_user_input
+    assert Message.from_wire(message.to_wire()) == message
+
+    request = CompletionRequest(model="m", messages=[message])
+    wire = OpenAICompatibleProvider(ProviderSettings())._kwargs(request)["messages"]
+    assert wire == [{"role": "user", "content": "<event>done</event>"}]

@@ -202,7 +202,6 @@ RESULT_BUDGET_OVERRIDES = {
     "read_file": (0.06, 4_000, 16_000),
     "web_fetch": (0.04, 3_000, 10_000),
     "inspect_processes": (0.04, 3_000, 10_000),
-    "wait_processes": (0.02, 2_000, 6_000),
 }
 
 # Upper bound on the raw capture fed into the semantic reducers. Well above any
@@ -212,7 +211,7 @@ RESULT_BUDGET_OVERRIDES = {
 COMPACTION_INPUT_MAX_CHARS = 512_000
 
 PROACTIVE_TOOLS = frozenset({
-    "read_file", "exec_command", "inspect_processes", "wait_processes", "ls", "glob_files", "grep_files",
+    "read_file", "exec_command", "inspect_processes", "ls", "glob_files", "grep_files",
     "web_fetch", "web_search",
 })
 PREFIX_TOOLS = frozenset({
@@ -290,6 +289,7 @@ COMPACTION_MIN_YIELD_RATIO = 0.05
 # Growth required before retrying after any compaction attempt.
 COMPACTION_RETRY_GROWTH_RATIO = 0.10
 
+# wait_processes is retired but stays prunable in resumed session histories.
 PRUNABLE_TOOLS = frozenset({
     "read_file", "exec_command", "web_fetch", "inspect_processes", "wait_processes",
     "web_search", "glob_files", "grep_files", "ls",
@@ -1192,6 +1192,8 @@ def _render_summary_input(messages: list[Message]) -> list[str]:
 
         if msg.is_system:
             parts.append(f"[System]: {msg.text[:limit]}")
+        elif msg.is_inbox:
+            parts.append(f"Inbox notifications: {msg.text[:limit]}")
         elif msg.is_user:
             parts.append(f"User: {msg.text[:limit]}")
         elif msg.is_assistant:

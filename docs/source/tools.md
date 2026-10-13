@@ -11,17 +11,16 @@ Built-in tools (availability depends on the model and persona):
 | `multi_edit` | Apply an ordered batch of edits to one file atomically (all-or-nothing) |
 | `ls` | List a directory's immediate contents (gitignore-aware) |
 | `exec_command` | Run foreground shell commands with real-time streaming output |
-| `wait` | Pause before subsequent sequential tool calls, with an interruptible countdown |
+| `schedule_wakeup` | Deliver an inbox notification after a delay, without blocking |
 | `glob_files` | Find files matching a glob pattern (gitignore-aware) |
 | `grep_files` | Search file contents using ripgrep regex (gitignore-aware) |
 | `web_search` | Search the web via DuckDuckGo |
 | `web_fetch` | Fetch URL content (HTML as readable text, other text as-is, binary refused); interruptible 30-second timeout; honors proxy environment variables |
 | `remove_file` | Remove a file or directory |
 | `load_skill` | Load the full prompt instructions for a skill by name |
-| `start_process` | Start a managed background process with file-backed output and live status |
+| `start_process` | Start a managed background process with file-backed output, live status, and inbox notifications |
 | `inspect_processes` | Inspect one or all managed background processes, with an optional bounded log tail for one process |
-| `wait_processes` | Wait for process exit, optional output, or a timeout; omit timeout for finite jobs |
-| `stop_process` | Stop a managed background process and its child process tree |
+| `stop_process` | Stop a managed background process and its child process tree, without notifying |
 
 `web_fetch` honors `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SOCKS_PROXY`, and `NO_PROXY`.
 
@@ -52,7 +51,43 @@ Built-in tools (availability depends on the model and persona):
 | `/ps <label\|process-id> [tail-chars]` | Inspect details and recent output |
 | `/ps stop <label\|process-id>` | Stop a job |
 
-Use the bundled `monitor` skill for active monitoring. For periodic checks, call `wait` **before** inspection in the same sequential tool-call batch, never in parallel.
+Use the bundled `monitor` skill for active monitoring.
+
+## Inbox notifications
+
+The agent never blocks waiting for background work. Notifications queue in an inbox and wake the session:
+
+- **Idle:** after a 0.5-second batching window, a new round starts with every queued notification in one message.
+- **Working:** notifications are inserted before the next model call.
+- User messages run before queued notifications. Terminal and Web UI input keeps working throughout.
+
+| Source | Notifies when |
+|---|---|
+| `start_process(notify="exit")` (default) | The process exits on its own; `stop_process` never notifies |
+| `start_process(notify="output", pattern=REGEX)` | An output line matches, then on exit |
+| `start_process(notify="jsonl")` | An output line is a JSON object, then on exit |
+| `schedule_wakeup(seconds, note)` | The delay elapses (at most 100 pending) |
+| `ene notify NAME_OR_ID [TEXT]` | Another program sends a message ([command](commands.md#top-level-commands)) |
+
+- Use `notify="none"` for processes whose exit does not matter.
+- The inbox keeps at most 50 events per source and 200 overall; dropped counts are reported.
+- Delivered notifications are inbox messages, not user prompts: `/context inbox` lists them, and `/rewind` to a notification round leaves the editor empty.
+- Keep `pattern` simple; it runs on every output line.
+- A line rewritten with carriage returns, such as a progress bar, notifies with its final redraw.
+- Starting, resuming, or forking a session stops managed processes and wakeups and discards queued notifications.
+
+### One-shot runs
+
+- `run_agent()` stays open while a process or wakeup can still notify, and delivers each notification as another round.
+- The last delivery asks the model to restate its complete answer, which becomes the result; a round with no reply keeps the earlier answer.
+- After `notify_timeout` seconds without a notification, remaining processes and wakeups stop and the model gives its final answer.
+- ESC or Ctrl+C stops the wait and returns `TurnOutcome.USER_INTERRUPTED` with the latest answer.
+
+Set the default timeout in `~/.ene.yaml`, or pass `run_agent(..., notify_timeout=SECONDS)`:
+
+```yaml
+notify_timeout: 3600  # seconds; the default
+```
 
 ## Skill-provided tools
 
