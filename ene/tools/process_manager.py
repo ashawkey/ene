@@ -178,7 +178,8 @@ class ProcessManagerMixin:
         with self._process_lock:
             records = list(self._processes.values())
         running = sum(self._process_info(record)["status"] == "running" for record in records)
-        return running, len(records) - running
+        # A pending wakeup is shown like a running watcher until it fires.
+        return running + self.pending_wakeups(), len(records) - running
 
     def process_activity(self) -> list[dict[str, Any]]:
         """Return status-bar and ``/ps`` metadata for every managed process."""
@@ -193,7 +194,7 @@ class ProcessManagerMixin:
                 )
                 for record in records
             ]
-        return [
+        rows = [
             {
                 **info,
                 "elapsed_seconds": time.time() - started_at,
@@ -202,6 +203,18 @@ class ProcessManagerMixin:
             }
             for info, started_at, last_line, watching in snapshots
         ]
+        for wakeup in self.wakeup_activity():
+            rows.append({
+                "process_id": wakeup["wakeup_id"],
+                "status": "running",
+                "command": f"wakeup: {wakeup['note']}",
+                "label": f"wakeup: {wakeup['note']}",
+                "elapsed_seconds": wakeup["elapsed_seconds"],
+                "last_line": f"fires in {_format_process_elapsed(wakeup['due_in_seconds'])}"
+                f" (due {wakeup['due_at']})",
+                "watching": True,
+            })
+        return rows
 
     def _notify_background_changed(self) -> None:
         callback = self.background_callback
@@ -690,6 +703,9 @@ class ProcessManagerMixin:
             "truncated": truncated,
             "success": True,
         }
+        if process_id is None:
+            # Scheduled wakeups are not processes and never appear in ps.
+            result["wakeups"] = self.wakeup_activity()
         if truncated:
             result["truncation_reason"] = "log tail limit"
             result["guidance"] = "Request a different log tail, or read the log file in focused slices."

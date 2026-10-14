@@ -68,7 +68,8 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
             "name": "inspect_processes",
             "description": (
                 "Inspect managed background process status. Optionally include a bounded "
-                "tail from one process's log. Omit process_id to list all processes."
+                "tail from one process's log. Omit process_id to list all processes and "
+                "pending scheduled wakeups (wakeups are not processes)."
             ),
             "parameters": {
                 "type": "object",

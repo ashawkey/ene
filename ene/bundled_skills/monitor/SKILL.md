@@ -51,7 +51,7 @@ Never block or poll to wait. After starting or scheduling the work you depend on
    - diagnose meaningful changes or failures;
    - recheck current state immediately before any relaunch or mutation;
    - apply only the requested corrective action and verify its result.
-6. If the stopping condition is not met, make sure something will notify you again (a running notifying process or a new wakeup), then end your turn.
+6. If the stopping condition is not met, make sure something will notify you again (a running notifying process or a new wakeup), then end your turn. Before telling the user monitoring is active, verify it with `inspect_processes` (running notifying processes plus the `wakeups` list with due times) and state exactly which are pending; a wakeup is not a process, and an exited process no longer watches anything.
 
 ## Stopping and failures
 

@@ -1012,7 +1012,13 @@ def test_background_counts_separate_watchers_from_silent_processes(tmp_path):
         te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
         assert te.background_counts() == (2, 1)
         assert changes[-1] == (2, 1)
-        assert [item["watching"] for item in te.process_activity()] == [True, False]
+        assert [item["watching"] for item in te.process_activity()] == [True, False, True]
+        wakeup = te.process_activity()[-1]
+        assert wakeup["process_id"] == "w1"
+        assert wakeup["last_line"].startswith("fires in ")
+        listed = te.execute("inspect_processes", {})
+        assert [item["wakeup_id"] for item in listed["wakeups"]] == ["w1"]
+        assert te.process_counts()[0] == 3
         te.shutdown_processes()
         _wait_until(lambda: te.background_counts() == (0, 0))
         _wait_until(lambda: changes[-1] == (0, 0))

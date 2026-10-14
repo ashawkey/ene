@@ -54,15 +54,21 @@ class ControlToolsMixin:
                     sink(f"Scheduled wakeup {wakeup_id} fired: {note}", f"wakeup:{wakeup_id}")
                 finally:
                     self._wakeups.pop(wakeup_id, None)
-            self._notify_background_changed()
+            self._notify_process_status()
 
-        due_at = time.time() + seconds
+        scheduled_at = time.time()
+        due_at = scheduled_at + seconds
         timer = threading.Timer(seconds, fire)
         timer.daemon = True
         with self._wakeup_lock:
-            self._wakeups[wakeup_id] = {"timer": timer, "due_at": due_at, "note": note}
+            self._wakeups[wakeup_id] = {
+                "timer": timer,
+                "due_at": due_at,
+                "scheduled_at": scheduled_at,
+                "note": note,
+            }
         timer.start()
-        self._notify_background_changed()
+        self._notify_process_status()
         return {
             "wakeup_id": wakeup_id,
             "due_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(due_at)),
@@ -73,6 +79,22 @@ class ControlToolsMixin:
         with self._wakeup_lock:
             return len(self._wakeups)
 
+    def wakeup_activity(self) -> list[dict[str, Any]]:
+        """Pending wakeups as process-like rows for status displays."""
+        now = time.time()
+        with self._wakeup_lock:
+            items = list(self._wakeups.items())
+        return [
+            {
+                "wakeup_id": wakeup_id,
+                "note": wakeup["note"],
+                "due_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(wakeup["due_at"])),
+                "due_in_seconds": max(0.0, wakeup["due_at"] - now),
+                "elapsed_seconds": max(0.0, now - wakeup["scheduled_at"]),
+            }
+            for wakeup_id, wakeup in items
+        ]
+
     def cancel_wakeups(self) -> None:
         """Discard every pending wakeup (session end or reset)."""
         with self._wakeup_lock:
@@ -80,4 +102,4 @@ class ControlToolsMixin:
         for wakeup in wakeups.values():
             wakeup["timer"].cancel()
         if wakeups:
-            self._notify_background_changed()
+            self._notify_process_status()

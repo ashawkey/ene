@@ -69,6 +69,7 @@ The agent never blocks waiting for background work. Notifications queue in an in
 | `schedule_wakeup(seconds, note)` | The delay elapses (at most 100 pending) |
 | `ene notify NAME_OR_ID [TEXT]` | Another program sends a message ([command](commands.md#top-level-commands)) |
 
+- Pending wakeups appear in the process status with a countdown (`w1`), and in the `wakeups` list of `inspect_processes`.
 - Use `notify="none"` for processes whose exit does not matter.
 - The inbox keeps at most 50 events per source and 200 overall. Overflow counts are bounded and may be grouped under `[other sources]` to fit a delivery.
 - JSONL objects larger than 8 KiB arrive as `process_output_file` notifications. Read their `path` for the complete JSON, saved under `.ene/processes/`. Lines over 1 MiB produce an explicit size-limit notice; the process log may contain more, subject to its own limit.
