@@ -8,7 +8,6 @@ description: Run and actively monitor long-lived jobs, services, or health check
 These built-in tools are available when the active persona permits them:
 
 - `start_process`: launch a managed background process with file-backed combined output; the harness notifies you when it exits or emits selected output;
-- `schedule_wakeup`: deliver a notification after a delay, for checks with no process to watch;
 - `inspect_processes`: return one immediate status snapshot and an optional bounded log tail;
 - `stop_process`: terminate one managed process and its process tree without notifying.
 
@@ -18,7 +17,7 @@ Use `exec_command` for non-interactive foreground commands expected to finish re
 
 ## How notifications work
 
-Notifications arrive as an inbox message that lists each event with its source (`process:<id> <label>`, `wakeup:<id>`, or an external client). If you are idle, a notification starts a new round; if you are working, it is inserted before your next model call. User messages keep working while you wait, and several sources can notify at once.
+Notifications arrive as an inbox message that lists each event with its source (`process:<id> <label>` or an external client). If you are idle, a notification starts a new round; if you are working, it is inserted before your next model call. User messages keep working while you wait, and several sources can notify at once.
 
 Never block or poll to wait. After starting or scheduling the work you depend on, end your turn with a short status. You resume when a notification arrives.
 
@@ -42,25 +41,25 @@ Never block or poll to wait. After starting or scheduling the work you depend on
 3. Arrange the next notification:
    - for a managed job, `start_process` with the mode above;
    - for an external scheduler or service, start a lightweight observer that polls locally and exits, or prints one JSON line, on a meaningful change (`notify=jsonl`);
-   - for a periodic check with nothing to observe, `schedule_wakeup(seconds, note)` with a note that says what to check.
+   - for a periodic check with nothing to observe, a timer process such as `start_process(command="sleep 600", label="check deploy status")`; its label says what to check (use `Start-Sleep 600` in PowerShell).
 4. End your turn with a one-line status. Do not end monitoring by asking the user to request another check.
 5. On each notification:
    - if a process exited, inspect its relevant final log and authoritative state;
    - if output notified, inspect only the relevant new output;
-   - if a wakeup fired, run the check its note describes;
+   - if a timer exited, run the check its label describes;
    - diagnose meaningful changes or failures;
    - recheck current state immediately before any relaunch or mutation;
    - apply only the requested corrective action and verify its result.
-6. If the stopping condition is not met, make sure something will notify you again (a running notifying process or a new wakeup), then end your turn. Before telling the user monitoring is active, verify it with `inspect_processes` (running notifying processes plus the `wakeups` list with due times) and state exactly which are pending; a wakeup is not a process, and an exited process no longer watches anything.
+6. If the stopping condition is not met, make sure a running notifying process (an observer or a new timer) will notify you again, then end your turn. Before telling the user monitoring is active, verify it with `inspect_processes` and state exactly which processes are pending; an exited process no longer watches anything.
 
 ## Stopping and failures
 
 - Treat “continuously,” “keep watching,” “every N minutes,” and “until I stop it” as open-ended monitoring.
-- Continue until the explicit completion condition is met or the user stops it. To stop, `stop_process` observers and let pending wakeups fire without action.
+- Continue until the explicit completion condition is met or the user stops it. To stop, `stop_process` observers and timers.
 - If a monitored process exits and no restart was requested, report the result.
 - If an observer or managed job fails unexpectedly, inspect its complete relevant error, diagnose it, and restart only when consistent with the user's request.
 - Preserve exact job names, IDs, namespaces, users, clusters, and launch arguments. Recheck before remediation to avoid duplicate actions.
 
 ## Completion output
 
-Report the terminal condition, corrective actions taken, final verified state, and whether any managed process or wakeup remains pending. If blocked, report the concrete failure and relevant log path.
+Report the terminal condition, corrective actions taken, final verified state, and whether any managed process remains pending. If blocked, report the concrete failure and relevant log path.

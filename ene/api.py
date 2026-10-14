@@ -58,8 +58,8 @@ def run_agent(
     ``FAILED`` with an error explaining why; any final partial text is retained
     in ``response``.
 
-    The run stays open while a background process or wakeup can still notify
-    the agent. After ``notify_timeout`` seconds without a notification
+    The run stays open while a background process can still notify the
+    agent. After ``notify_timeout`` seconds without a notification
     (default: ``notify_timeout`` in the configuration, else one hour), the
     remaining background work is stopped and the agent gives its final answer.
     """

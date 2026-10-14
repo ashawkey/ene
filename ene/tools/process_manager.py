@@ -133,6 +133,9 @@ def _clean_process_line(text: str) -> str:
 class ProcessManagerMixin:
     """Manage session-scoped background processes and their UI observers."""
 
+    # Delivers ``(text, source)`` to the agent's inbox; installed by the agent.
+    inbox_sink: Callable[[str, str], Any] | None = None
+
     def _init_process_registry(self) -> None:
         self._processes: dict[str, dict[str, Any]] = {}
         self._process_lock = threading.Lock()
@@ -178,8 +181,7 @@ class ProcessManagerMixin:
         with self._process_lock:
             records = list(self._processes.values())
         running = sum(self._process_info(record)["status"] == "running" for record in records)
-        # A pending wakeup is shown like a running watcher until it fires.
-        return running + self.pending_wakeups(), len(records) - running
+        return running, len(records) - running
 
     def process_activity(self) -> list[dict[str, Any]]:
         """Return status-bar and ``/ps`` metadata for every managed process."""
@@ -194,7 +196,7 @@ class ProcessManagerMixin:
                 )
                 for record in records
             ]
-        rows = [
+        return [
             {
                 **info,
                 "elapsed_seconds": time.time() - started_at,
@@ -203,18 +205,6 @@ class ProcessManagerMixin:
             }
             for info, started_at, last_line, watching in snapshots
         ]
-        for wakeup in self.wakeup_activity():
-            rows.append({
-                "process_id": wakeup["wakeup_id"],
-                "status": "running",
-                "command": f"wakeup: {wakeup['note']}",
-                "label": f"wakeup: {wakeup['note']}",
-                "elapsed_seconds": wakeup["elapsed_seconds"],
-                "last_line": f"fires in {_format_process_elapsed(wakeup['due_in_seconds'])}"
-                f" (due {wakeup['due_at']})",
-                "watching": True,
-            })
-        return rows
 
     def _notify_background_changed(self) -> None:
         callback = self.background_callback
@@ -511,11 +501,8 @@ class ProcessManagerMixin:
 
         def notify_exit() -> None:
             info = self._process_info(record)
-            message = (
-                f"Process {process_id}"
-                + (f" [{label}]" if label else "")
-                + f" exited with code {info['exit_code']}. Log: {info['log_path']}"
-            )
+            # The event source already names the process and its label.
+            message = f"Exited with code {info['exit_code']}. Log: {info['log_path']}"
             last_line = _clean_process_line(record.get("last_line") or "")
             if last_line:
                 message += f"\nLast output line: {last_line}"
@@ -703,9 +690,6 @@ class ProcessManagerMixin:
             "truncated": truncated,
             "success": True,
         }
-        if process_id is None:
-            # Scheduled wakeups are not processes and never appear in ps.
-            result["wakeups"] = self.wakeup_activity()
         if truncated:
             result["truncation_reason"] = "log tail limit"
             result["guidance"] = "Request a different log tail, or read the log file in focused slices."
@@ -743,16 +727,14 @@ class ProcessManagerMixin:
         )
 
     def has_pending_notifications(self) -> bool:
-        """Whether a running process or scheduled wakeup may still notify."""
+        """Whether a running process may still notify."""
         with self._process_lock:
-            if any(self._is_watcher(record) for record in self._processes.values()):
-                return True
-        return self.pending_wakeups() > 0
+            return any(self._is_watcher(record) for record in self._processes.values())
 
     def background_counts(self) -> tuple[int, int]:
         """Return ``(watchers, background)``.
 
-        Watchers are processes and wakeups that may still notify the agent;
+        Watchers are processes that may still notify the agent;
         background processes are running ones that never will.
         """
         with self._process_lock:
@@ -763,7 +745,7 @@ class ProcessManagerMixin:
                 watchers += 1
             elif self._process_info(record)["status"] == "running":
                 background += 1
-        return watchers + self.pending_wakeups(), background
+        return watchers, background
 
     @staticmethod
     def _stop_process_record(record: dict[str, Any]) -> None:
@@ -819,11 +801,10 @@ class ProcessManagerMixin:
         return {**self._process_info(record), "success": True}
 
     def shutdown_processes(self, clear: bool = False) -> None:
-        """Stop all managed processes and pending wakeups.
+        """Stop all managed processes.
 
         Records are optionally forgotten. Nothing stopped here notifies.
         """
-        self.cancel_wakeups()
         with self._process_notify_lock:
             timer, self._activity_flush_timer = self._activity_flush_timer, None
         if timer is not None:

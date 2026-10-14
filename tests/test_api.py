@@ -200,7 +200,7 @@ def test_run_agent_stays_open_until_process_notification(monkeypatch, model_conf
     assert result.response == "The job printed 42."
     inbox = requests[-1].messages[-1].text
     assert '<event source="process:1 answer"' in inbox
-    assert "exited with code 0" in inbox and "Last output line: 42" in inbox
+    assert "Exited with code 0" in inbox and "Last output line: 42" in inbox
 
 
 def test_run_agent_returns_when_nothing_can_notify(monkeypatch, model_config, tmp_path):

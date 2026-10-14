@@ -155,7 +155,7 @@ else:
 - Truncated tool calls, content-filtered responses, and exhausted automatic continuations return `TurnOutcome.FAILED`, `success=False`, and an explanatory `error`.
 - Content filtering stops tool execution and automatic continuation.
 - Any final partial text remains in `response`.
-- The run stays open while a background process or wakeup can still [notify](tools.md#one-shot-runs) the agent, up to an idle `notify_timeout`.
+- The run stays open while a background process can still [notify](tools.md#one-shot-runs) the agent, up to an idle `notify_timeout`.
 
 ## Persistent live sessions
 

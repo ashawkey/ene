@@ -110,7 +110,7 @@ For read-only investigations, disjoint files, or separate worktrees:
 
 Managed background processes use the monitor skill's lifecycle rather than an
 `exec_command` timeout. Do not poll with `inspect_processes`, do not start
-children with `notify=none`, and do not set routine timer wakeups. Prefer one
+children with `notify=none`, and do not start routine timer processes. Prefer one
 foreground child unless parallel execution is materially useful.
 
 ## Validate and integrate

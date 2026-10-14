@@ -153,7 +153,7 @@ class Worker:
         self._state_busy = False
         self._state_pending = False
         self._state_inbox = False
-        # Processes and wakeups that can still notify, and silent processes.
+        # Processes that can still notify, and silent processes.
         self._state_watchers = 0
         self._state_background = 0
         self._active_indicator: dict[str, Any] | None = None

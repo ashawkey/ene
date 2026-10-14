@@ -14,7 +14,6 @@ from ene.utils.io import CancellationToken
 from ene.ui import AgentConsole
 
 from .commands import CommandToolsMixin
-from .control import ControlToolsMixin
 from .files import FileToolsMixin
 from .formatting import log_tool_call
 from .process_manager import ProcessManagerMixin
@@ -27,7 +26,6 @@ from .web import WebToolsMixin
 class ToolExecutor(
     FileToolsMixin,
     CommandToolsMixin,
-    ControlToolsMixin,
     ProcessManagerMixin,
     SearchToolsMixin,
     WebToolsMixin,
@@ -76,7 +74,6 @@ class ToolExecutor(
         self.registry = ToolRegistry()
         self._tool_resource_cleanups: dict[str, Any] = {}
         self._init_process_registry()
-        self._init_wakeups()
 
     def execute(self, function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch and execute a tool call. Returns dict with success key."""

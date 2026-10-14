@@ -1895,7 +1895,7 @@ def test_idle_agent_runs_a_round_for_inbox_notifications(monkeypatch, tmp_path):
         assert delivered.role == "user"
         assert '<event source="process:1 build"' in delivered.text
         assert '<event source="slack"' in delivered.text
-        assert delivered.display == '[process:1 build] job finished\n[slack] {"text": "hi"}'
+        assert delivered.display == '↻ 1 [build] job finished\n[slack] {"text": "hi"}'
         assert agent.context.messages[-1].text == "Noted."
         assert not agent.input_broker.has_work
         assert agent._process_next_submission() is False
@@ -1974,11 +1974,14 @@ def test_one_shot_marks_only_the_delivery_that_empties_the_inbox_final(monkeypat
         agent.close()
 
 
+_SLEEPER = 'python -c "import time; time.sleep(30)"'
+
+
 def test_one_shot_delivers_unbatched_event_at_idle_deadline(monkeypatch, tmp_path):
     monkeypatch.setattr("ene.utils.io.INBOX_BATCH_SECONDS", 60)
     agent, _requests = _inbox_agent(monkeypatch, tmp_path, [])
     try:
-        agent.tool_executor.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
+        agent.tool_executor.execute("start_process", {"command": _SLEEPER})
         agent.input_broker.post_event("arrived before timeout", "process:1")
         assert not agent.input_broker.inbox_ready
         assert agent._await_inbox(0.01) == "deliver"
@@ -2042,7 +2045,7 @@ def test_one_shot_marks_a_mid_round_last_notification_final(monkeypatch, tmp_pat
         # The exit arrived while the model was working and was steered into
         # the round; with nothing left to notify, that delivery is the last.
         delivered = requests[-1].messages[-1]
-        assert delivered.is_inbox and "exited with code 0" in delivered.text
+        assert delivered.is_inbox and "Exited with code 0" in delivered.text
         assert FINAL_DELIVERY_NOTE in delivered.text
         assert len(requests) == 3
         assert agent._one_shot is False
@@ -2145,7 +2148,7 @@ def test_inbox_round_is_not_user_input(monkeypatch, tmp_path):
         rounds = [c for c in store.candidates() if not c["current"]]
         assert [(c["prompt"], c["inbox"]) for c in rounds] == [
             ("build it", False),
-            ("[process:1] job finished", True),
+            ("↻ 1 job finished", True),
         ]
 
         # Rewinding past a notification round leaves the editor alone.
@@ -2173,14 +2176,30 @@ def test_inbox_event_text_cannot_forge_inbox_structure():
 def test_agent_publishes_background_counts_when_they_change(monkeypatch, tmp_path):
     agent, _requests = _inbox_agent(monkeypatch, tmp_path, [])
     try:
-        agent.tool_executor.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
-        agent.tool_executor.execute("schedule_wakeup", {"seconds": 60, "note": "again"})
+        agent.tool_executor.execute("start_process", {"command": _SLEEPER})
+        agent.tool_executor.execute("start_process", {"command": _SLEEPER})
         agent.tool_executor.shutdown_processes()
         published = [
             (event.data["watchers"], event.data["background"])
             for event in agent.events.after(0)
             if event.type == "background_status"
         ]
-        assert published == [(1, 0), (2, 0), (0, 0)]
+        # Processes stop one at a time.
+        assert published == [(1, 0), (2, 0), (1, 0), (0, 0)]
     finally:
         agent.close()
+
+
+def test_inbox_display_shortens_process_sources():
+    from ene.backend.inbox import format_inbox_message
+    from ene.utils.io import InboxEvent
+
+    label = "Validate fixed Harbor export on original refrigerator code"
+    _text, display = format_inbox_message(
+        [InboxEvent(text="Exited with code 0.", source=f"process:5 {label}", id="e1", created_at=0)],
+        {"process:6": 2},
+    )
+    assert display == (
+        "↻ 5 [Validate fixed Harbor export on origina…] Exited with code 0.\n"
+        "↻ 6 2 older event(s) dropped"
+    )

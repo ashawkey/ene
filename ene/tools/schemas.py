@@ -68,8 +68,7 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
             "name": "inspect_processes",
             "description": (
                 "Inspect managed background process status. Optionally include a bounded "
-                "tail from one process's log. Omit process_id to list all processes and "
-                "pending scheduled wakeups (wakeups are not processes)."
+                "tail from one process's log. Omit process_id to list all processes."
             ),
             "parameters": {
                 "type": "object",
@@ -243,34 +242,6 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                         },
                     },
                     "required": ["command"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "schedule_wakeup",
-                "description": (
-                    "Schedule an inbox notification after a delay and return immediately. "
-                    "Use it for periodic checks or deadlines with no process to watch: "
-                    "schedule, end your turn, and act when the wakeup arrives. At most 100 "
-                    "may be pending; they are discarded when the session ends."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "seconds": {
-                            "type": "number",
-                            "exclusiveMinimum": 0,
-                            "maximum": 604800,
-                            "description": "Delay in seconds",
-                        },
-                        "note": {
-                            "type": "string",
-                            "description": "What to do when it fires; returned in the notification",
-                        },
-                    },
-                    "required": ["seconds", "note"],
                 },
             },
         },

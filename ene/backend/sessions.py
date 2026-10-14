@@ -438,7 +438,7 @@ class SessionMixin:
         return ordered_candidates[labels.index(picked)]
 
     def _discard_background_work(self) -> None:
-        """Stop processes and wakeups and drop their queued notifications.
+        """Stop processes and drop their queued notifications.
 
         Used when the conversation changes to another session: the old work
         and anything it reported no longer belong to the active conversation.

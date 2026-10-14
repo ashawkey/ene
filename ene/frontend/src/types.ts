@@ -84,7 +84,7 @@ export type SessionSummary = {
   /** 'web' when this hub owns the session, 'terminal' when a terminal does, '' when free. */
   attached_by: string
   state: string
-  /** Processes and wakeups that can still wake the session. */
+  /** Processes that can still wake the session. */
   watchers?: number
   /** Running processes that never notify. */
   background?: number

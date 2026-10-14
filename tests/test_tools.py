@@ -973,34 +973,6 @@ def test_search_honors_gitignore_outside_a_git_repository(tmp_path):
     assert "hidden.txt" in te._glob_files("*.txt", include_ignored=True)["matches"]
 
 
-def test_schedule_wakeup_posts_notification_without_blocking(tmp_path):
-    te, broker = _executor_with_inbox(tmp_path)
-
-    started = time.monotonic()
-    result = te.execute("schedule_wakeup", {"seconds": 0.05, "note": "check the job"})
-    assert result["success"] and result["wakeup_id"] == "w1"
-    assert time.monotonic() - started < 0.05
-    assert te.has_pending_notifications()
-
-    _wait_until(lambda: broker.inbox_size == 1)
-    events, _ = broker.drain_events()
-    assert events[0].source == "wakeup:w1"
-    assert "check the job" in events[0].text
-    assert not te.has_pending_notifications()
-
-
-def test_schedule_wakeup_limits_pending_wakeups(tmp_path, monkeypatch):
-    monkeypatch.setattr("ene.tools.control.MAX_PENDING_WAKEUPS", 2)
-    te, _broker = _executor_with_inbox(tmp_path)
-    try:
-        for _ in range(2):
-            assert te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})["success"]
-        result = te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
-        assert not result["success"] and "At most 2" in result["error"]
-    finally:
-        te.shutdown_processes()
-
-
 def test_background_counts_separate_watchers_from_silent_processes(tmp_path):
     te, _broker = _executor_with_inbox(tmp_path)
     changes = []
@@ -1009,47 +981,15 @@ def test_background_counts_separate_watchers_from_silent_processes(tmp_path):
     try:
         te.execute("start_process", {"command": sleeper})
         te.execute("start_process", {"command": sleeper, "notify": "none"})
-        te.execute("schedule_wakeup", {"seconds": 60, "note": "later"})
-        assert te.background_counts() == (2, 1)
-        assert changes[-1] == (2, 1)
-        assert [item["watching"] for item in te.process_activity()] == [True, False, True]
-        wakeup = te.process_activity()[-1]
-        assert wakeup["process_id"] == "w1"
-        assert wakeup["last_line"].startswith("fires in ")
-        listed = te.execute("inspect_processes", {})
-        assert [item["wakeup_id"] for item in listed["wakeups"]] == ["w1"]
-        assert te.process_counts()[0] == 3
+        assert te.background_counts() == (1, 1)
+        assert changes[-1] == (1, 1)
+        assert [item["watching"] for item in te.process_activity()] == [True, False]
+        assert te.process_counts()[0] == 2
         te.shutdown_processes()
         _wait_until(lambda: te.background_counts() == (0, 0))
         _wait_until(lambda: changes[-1] == (0, 0))
     finally:
         te.shutdown_processes()
-
-
-def test_shutdown_cancels_pending_wakeups(tmp_path):
-    te, broker = _executor_with_inbox(tmp_path)
-    te.execute("schedule_wakeup", {"seconds": 0.05, "note": "later"})
-    te.shutdown_processes()
-    time.sleep(0.1)
-    assert broker.inbox_size == 0
-    assert not te.has_pending_notifications()
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        {"seconds": 0, "note": "x"},
-        {"seconds": -1, "note": "x"},
-        {"seconds": float("inf"), "note": "x"},
-        {"seconds": "1", "note": "x"},
-        {"seconds": True, "note": "x"},
-        {"seconds": 1, "note": " "},
-    ],
-)
-def test_schedule_wakeup_rejects_invalid_arguments(tmp_path, arguments):
-    te, _broker = _executor_with_inbox(tmp_path)
-    assert not te.execute("schedule_wakeup", arguments)["success"]
-    assert not te.has_pending_notifications()
 
 
 def test_retired_wait_tools_are_not_registered(tmp_path):
@@ -1099,7 +1039,7 @@ def test_process_exit_posts_inbox_notification(tmp_path):
         _wait_until(lambda: broker.inbox_size == 1)
         events, _ = broker.drain_events()
         assert events[0].source == f"process:{started['process_id']} job"
-        assert "exited with code 3" in events[0].text
+        assert "Exited with code 3" in events[0].text
         assert "Last output line: done" in events[0].text
         assert not te.has_pending_notifications()
     finally:
@@ -1161,7 +1101,7 @@ def test_failed_notification_still_posts_exit(tmp_path):
     try:
         _wait_until(lambda: not te.has_pending_notifications())
         events, _ = broker.drain_events()
-        assert len(events) == 1 and "exited with code 0" in events[0].text
+        assert len(events) == 1 and "Exited with code 0" in events[0].text
     finally:
         te.shutdown_processes()
 
@@ -1178,7 +1118,7 @@ def test_output_notifications_follow_pattern(tmp_path):
         _wait_until(lambda: not te.has_pending_notifications())
         events, _ = broker.drain_events()
         assert [event.text for event in events][0] == "ERROR: disk full"
-        assert len(events) == 2 and "exited with code 0" in events[1].text
+        assert len(events) == 2 and "Exited with code 0" in events[1].text
     finally:
         te.shutdown_processes()
 
@@ -1226,7 +1166,7 @@ def test_jsonl_notifications_only_accept_json_objects(tmp_path):
         events, _ = broker.drain_events()
         texts = [event.text for event in events]
         assert texts[:2] == ['{"text": "hello"}', '{"text": "tail"}']
-        assert len(texts) == 3 and "exited" in texts[2]
+        assert len(texts) == 3 and "Exited" in texts[2]
     finally:
         te.shutdown_processes()
 
@@ -1243,7 +1183,7 @@ def test_jsonl_survives_deeply_nested_output(tmp_path):
         _wait_until(lambda: not te.has_pending_notifications())
         events, _ = broker.drain_events()
         assert [event.text for event in events][0] == '{"text": "after"}'
-        assert "exited with code 0" in events[1].text
+        assert "Exited with code 0" in events[1].text
     finally:
         te.shutdown_processes()
 
@@ -1319,21 +1259,6 @@ def test_jsonl_artifact_storage_is_bounded_per_process(tmp_path, monkeypatch):
         assert len(list((tmp_path / ".ene/processes").glob("*-event-*.json"))) == 1
     finally:
         te.shutdown_processes()
-
-
-def test_wakeup_stays_pending_until_its_notification_is_queued(tmp_path):
-    te, broker = _executor_with_inbox(tmp_path)
-    seen = []
-
-    def sink(text, source):
-        seen.append(te.has_pending_notifications())
-        broker.post_event(text, source)
-
-    te.inbox_sink = sink
-    te.execute("schedule_wakeup", {"seconds": 0.01, "note": "check"})
-    _wait_until(lambda: broker.inbox_size == 1)
-    assert seen == [True]
-    assert not te.has_pending_notifications()
 
 
 def test_notify_none_and_bare_executor_never_notify(tmp_path):
@@ -1535,7 +1460,6 @@ def test_executor_rejects_nonobject_arguments_before_logging(tmp_path, arguments
         ("grep_files", {"pattern": "needle"}),
         ("grep_files", {"pattern": "needle", "path": "sub", "file_glob": "*.py", "case_insensitive": True}),
         ("load_skill", {"name": "monitor"}),
-        ("schedule_wakeup", {"seconds": 60, "note": "check"}),
     ],
 )
 def test_replayed_tool_calls_render_like_live_ones(tmp_path, name, args):

@@ -86,7 +86,7 @@ See [Library](library.md) for `ene lib` workflows.
   | `○ waiting` | Continues on its own: a queued message, notification, or watcher remains |
   | `✓ done` | Finished; review it |
 
-- Markers after a state count background work: `↻2` watchers that can wake the session (processes that notify, and wakeups), `⚙1` processes running with `notify="none"`. The terminal status bar and Web UI use the same markers.
+- Markers after a state count background work: `↻2` watchers that can wake the session (processes that notify), `⚙1` processes running with `notify="none"`. The terminal status bar and Web UI use the same markers.
 - One owner per session: a terminal attachment waits briefly for another terminal to release it; Web UI ownership is refused immediately. Detach in the browser first.
 
 ### Clean project state

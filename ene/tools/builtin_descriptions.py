@@ -133,9 +133,6 @@ BUILTIN_CALL_DESCRIBERS: dict[str, Callable[[dict[str, Any]], ToolCallDescriptio
     "inspect_processes": _describe_inspect_processes,
     "stop_process": lambda a: _description("stop_process", str(a["process_id"])),
     "exec_command": _describe_exec,
-    "schedule_wakeup": lambda a: _description(
-        "schedule_wakeup", f"{a['seconds']:g}s", quote_tool_call_value(a.get("note", ""))
-    ),
     "read_file": _describe_read_file,
     "read_image": lambda a: _description("read_image", str(a["file"])),
     "write_file": lambda a: _description("write_file", str(a["file"])),
@@ -170,5 +167,4 @@ BUILTIN_OUTPUT_DESCRIBERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "glob_files": lambda r: _describe_search_output(r, "files matched"),
     "grep_files": lambda r: _describe_search_output(r, "matches"),
     "load_skill": lambda r: f"Skill {r['name']} loaded.",
-    "schedule_wakeup": lambda r: f"Wakeup {r['wakeup_id']} due {r['due_at']}",
 }

@@ -11,7 +11,6 @@ Built-in tools (availability depends on the model and persona):
 | `multi_edit` | Apply an ordered batch of edits to one file atomically (all-or-nothing) |
 | `ls` | List a directory's immediate contents (gitignore-aware) |
 | `exec_command` | Run foreground shell commands with real-time streaming output |
-| `schedule_wakeup` | Deliver an inbox notification after a delay, without blocking |
 | `glob_files` | Find files matching a glob pattern (gitignore-aware) |
 | `grep_files` | Search file contents using ripgrep regex (gitignore-aware) |
 | `web_search` | Search the web via DuckDuckGo |
@@ -66,10 +65,9 @@ The agent never blocks waiting for background work. Notifications queue in an in
 | `start_process(notify="exit")` (default) | The process exits on its own; `stop_process` never notifies |
 | `start_process(notify="output", pattern=REGEX)` | An output line matches, then on exit |
 | `start_process(notify="jsonl")` | An output line is a JSON object, then on exit |
-| `schedule_wakeup(seconds, note)` | The delay elapses (at most 100 pending) |
 | `ene notify NAME_OR_ID [TEXT]` | Another program sends a message ([command](commands.md#top-level-commands)) |
 
-- Pending wakeups appear in the process status with a countdown (`w1`), and in the `wakeups` list of `inspect_processes`.
+- For a delayed check, start a timer process such as `sleep 600` with a `label` saying what to check.
 - Use `notify="none"` for processes whose exit does not matter.
 - The inbox keeps at most 50 events per source and 200 overall. Overflow counts are bounded and may be grouped under `[other sources]` to fit a delivery.
 - JSONL objects larger than 8 KiB arrive as `process_output_file` notifications. Read their `path` for the complete JSON, saved under `.ene/processes/`. Lines over 1 MiB produce an explicit size-limit notice; the process log may contain more, subject to its own limit.
@@ -77,13 +75,13 @@ The agent never blocks waiting for background work. Notifications queue in an in
 - Delivered notifications are inbox messages, not user prompts: `/context inbox` lists them, and `/rewind` to a notification round leaves the editor empty.
 - Keep `pattern` simple; it runs on every output line.
 - A line rewritten with carriage returns, such as a progress bar, notifies with its final redraw.
-- Starting, resuming, or forking a session stops managed processes and wakeups and discards queued notifications.
+- Starting, resuming, or forking a session stops managed processes and discards queued notifications.
 
 ### One-shot runs
 
-- `run_agent()` stays open while a process or wakeup can still notify, and delivers each notification as another round.
+- `run_agent()` stays open while a process can still notify, and delivers each notification as another round.
 - The last delivery asks the model to restate its complete answer, which becomes the result; a round with no reply keeps the earlier answer.
-- After `notify_timeout` seconds without a notification, remaining processes and wakeups stop and the model gives its final answer. Already queued notifications are delivered even if their batching window has not elapsed.
+- After `notify_timeout` seconds without a notification, remaining processes stop and the model gives its final answer. Already queued notifications are delivered even if their batching window has not elapsed.
 - ESC or Ctrl+C stops the wait and returns `TurnOutcome.USER_INTERRUPTED` with the latest answer.
 
 Set the default timeout in `~/.ene.yaml`, or pass `run_agent(..., notify_timeout=SECONDS)`:

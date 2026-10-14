@@ -73,7 +73,6 @@ _BUILTIN_TABLE: dict[str, tuple[str, str | None]] = {
     "multi_edit": ("_multi_edit", None),
     "ls": ("_ls", None),
     "exec_command": ("_exec_command", None),
-    "schedule_wakeup": ("_schedule_wakeup", None),
     "glob_files": ("_glob_files", None),
     "grep_files": ("_grep_files", None),
     "web_search": ("_web_search", None),
