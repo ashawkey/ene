@@ -200,6 +200,7 @@ class LiveTerminal:
                 int(context_status.get("input_tokens", 0)),
                 int(context_status.get("output_tokens", 0)),
                 int(context_status.get("cached_tokens", 0)),
+                model=str(context_status.get("model", "")),
             ))
         self.terminal.set_process_status(str(session.get("process_status", "")))
         self.terminal.set_busy(self.operation_id is not None)
@@ -494,6 +495,15 @@ class LiveTerminal:
             self._interrupt_editor(RemotePrompt)
         elif kind == "prompt_resolved":
             self.prompt = None
+        elif kind == "context_status" and self.terminal is not None:
+            self.terminal.set_context_status(ContextStatus(
+                int(data.get("context_tokens", 0)),
+                int(data.get("context_limit", 0)),
+                int(data.get("input_tokens", 0)),
+                int(data.get("output_tokens", 0)),
+                int(data.get("cached_tokens", 0)),
+                model=str(data.get("model", "")),
+            ))
         elif kind == "thinking_start":
             context = None
             if "context_tokens" in data:
@@ -503,6 +513,7 @@ class LiveTerminal:
                     int(data.get("input_tokens", 0)),
                     int(data.get("output_tokens", 0)),
                     int(data.get("cached_tokens", 0)),
+                    model=str(data.get("model", "")),
                 )
             if self.indicator is not None:
                 self.indicator.__exit__(None, None, None)

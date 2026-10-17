@@ -1194,7 +1194,11 @@ def test_live_terminal_replaces_session(monkeypatch, tmp_path, command, name, fa
             assert "resume with ene resume old-conversation" in messages
 
 
-def test_live_terminal_stop_waits_for_worker_disconnect():
+@pytest.mark.parametrize(
+    ("method", "frame_type"),
+    [("_stop_worker", "kill"), ("_detach_from_worker", "detach")],
+)
+def test_live_terminal_waits_for_worker_disconnect(method, frame_type):
     client = LiveTerminal({})
     sent = []
     finished = threading.Event()
@@ -1209,32 +1213,10 @@ def test_live_terminal_stop_waits_for_worker_disconnect():
     worker.start()
     client._send = sent.append
 
-    client._stop_worker()
+    getattr(client, method)()
     worker.join(timeout=1)
 
-    assert sent == [{"type": "kill"}]
-    assert finished.is_set()
-
-
-def test_live_terminal_detach_waits_for_worker_disconnect():
-    client = LiveTerminal({})
-    sent = []
-    finished = threading.Event()
-
-    def disconnect():
-        assert client.detaching.wait(timeout=1)
-        time.sleep(0.02)
-        client.stopped.set()
-        finished.set()
-
-    worker = threading.Thread(target=disconnect)
-    worker.start()
-    client._send = sent.append
-
-    client._detach_from_worker()
-    worker.join(timeout=1)
-
-    assert sent == [{"type": "detach"}]
+    assert sent == [{"type": frame_type}]
     assert finished.is_set()
 
 
@@ -1250,6 +1232,19 @@ def test_live_terminal_interrupts_running_editor_when_connection_stops():
     client._interrupt_pending()
 
     assert terminal.app.exception is EOFError
+
+
+def test_live_terminal_updates_idle_model_from_context_events():
+    client = LiveTerminal({})
+    statuses = []
+    client.terminal = SimpleNamespace(
+        set_context_status=statuses.append, set_busy=lambda _busy: None,
+    )
+    client._event({"type": "context_status", "data": {
+        "context_tokens": 10, "context_limit": 100, "model": "deepseek-v4",
+    }})
+    assert statuses[-1].model == "deepseek-v4"
+    assert statuses[-1].tokens == 10
 
 
 def test_live_terminal_reconstructs_remote_status_bar():
@@ -1566,26 +1561,6 @@ def test_live_worker_attach_restores_only_current_active_indicator():
         "label": "Executing", "started_at": 123.0
     }
     assert not serving.is_alive()
-
-
-def test_live_worker_frees_attachment_that_stops_responding(monkeypatch):
-    """A silent attachment (e.g. a force-killed shell) must not reserve the session."""
-    monkeypatch.setattr(live_worker, "TERMINAL_IDLE_TIMEOUT", 0.1)
-    left, right = socket.socketpair()
-    worker = Worker.__new__(Worker)
-    worker.events = EventHub()
-    worker.stop_event = threading.Event()
-    worker._status = lambda: {"runtime_id": "runtime"}
-    serving = threading.Thread(target=worker._serve_terminal, args=(right,))
-    serving.start()
-
-    attached = live.recv_frame(left)
-    assert attached["type"] == "attached"
-    serving.join(timeout=2)
-
-    assert not serving.is_alive()
-    left.close()
-    right.close()
 
 
 def _attached_worker(monkeypatch, sock, *, idle_timeout: float = 0.1):

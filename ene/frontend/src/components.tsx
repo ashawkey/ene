@@ -338,7 +338,17 @@ function formatRoundDuration(value: number) {
   return `${seconds}s`
 }
 
-export type ContextStatusProps = {
+type ModelStatusProps = {
+  model?: string
+  modelIcon?: string
+}
+
+function ModelIcon({ model, modelIcon }: ModelStatusProps) {
+  if (!modelIcon) return null
+  return <span className="model-icon" role="img" aria-label={`Model: ${model ?? 'unknown'}`} title={model}>{modelIcon}</span>
+}
+
+export type ContextStatusProps = ModelStatusProps & {
   contextTokens: number
   contextLimit: number
   inputTokens: number
@@ -346,7 +356,7 @@ export type ContextStatusProps = {
   cachedTokens: number
 }
 
-export type ThinkingProps = {
+export type ThinkingProps = ModelStatusProps & {
   suffix?: string
   contextTokens?: number
   contextLimit?: number
@@ -390,6 +400,8 @@ function ContextUsage({
 }
 
 export function Thinking({
+  model,
+  modelIcon,
   suffix = '',
   contextTokens = 0,
   contextLimit = 0,
@@ -414,6 +426,7 @@ export function Thinking({
   return (
     <div className="activity-operation" aria-label="working">
       <div className="activity-operation-line">
+        <ModelIcon model={model} modelIcon={modelIcon} />
         <span className="activity-pulse" aria-hidden="true"><i /><i /><i /></span>
         <strong>{label}</strong>
         {suffix ? <small className="activity-suffix">{suffix}</small> : null}
@@ -451,7 +464,12 @@ export function ActivityStatus({
   return (
     <aside className="activity-dock" aria-label="Session activity">
       {active ? <Thinking {...(status ?? {})} {...(contextStatus ?? {})} /> : (
-        contextStatus ? <ContextUsage {...contextStatus} /> : null
+        contextStatus ? (
+          <div className="activity-idle">
+            <ModelIcon {...contextStatus} />
+            <ContextUsage {...contextStatus} />
+          </div>
+        ) : null
       )}
       {hasProcesses ? (
         <section className="process-panel" aria-label="background processes">

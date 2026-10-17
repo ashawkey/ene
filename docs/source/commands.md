@@ -97,6 +97,21 @@ See [Library](library.md) for `ene lib` workflows.
 - `--history` also removes saved sessions.
 - **Explicit entry names are deleted regardless of these defaults.**
 
+## Model status markers
+
+The terminal and Web UI status bars keep the active model's marker first, even when idle. `/model` updates it immediately; markers follow the API model ID, not the alias or API transport.
+
+| Model family | Marker |
+|---|---|
+| Claude | yellow ✳︎ |
+| OpenAI (GPT, Codex, o-series) | 🔷 |
+| Gemini | ✨ |
+| DeepSeek | 🐋 |
+| GLM | 🧠 |
+| Kimi / Moonshot | 🌙 |
+| Qwen | 🌀 |
+| Unknown / custom | 🤖 |
+
 ## Interactive slash commands
 
 | Command | Description |

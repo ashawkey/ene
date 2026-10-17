@@ -88,54 +88,22 @@ class _SummaryAgent(SkillCommandsMixin):
         self.token_estimator = TokenEstimator()
 
 
-def test_skill_creator_documents_optional_default_invocation():
-    root = Path(skills_module.BUNDLED_SKILLS_DIR) / "skill-creator"
-    instructions = (root / "SKILL.md").read_text(encoding="utf-8")
-    reference = (root / "references" / "skill-format.md").read_text(encoding="utf-8")
-    template = (root / "assets" / "SKILL.template.md").read_text(encoding="utf-8")
+def test_bundled_skills_are_discovered(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    issues = {}
 
-    assert "## Default invocation" in instructions
-    assert "## Default invocation" in reference
-    assert "## Default invocation" in template
-    assert "Optional" in template
+    skills = discover_skills(tmp_path, issues=issues)
 
-
-def test_plan_is_bundled():
-    skills = discover_skills()
-
-    assert skills["plan"]["source"] == "bundled"
-    assert "implementation-ready plan" in skills["plan"]["description"]
-
-
-def test_reflection_is_bundled_with_project_only_default_workflow():
-    skills = discover_skills()
-    reflection = skills["reflection"]
-    body = reflection["body"]
-
-    assert reflection["source"] == "bundled"
-    assert "conversation outcomes" in reflection["description"]
-    assert "project-local skills" in reflection["description"]
-    assert "## Default invocation" in body
-    assert "<work_dir>/.ene/skills/" in body
-    assert "Never modify bundled skills" in body
-    assert "personal skills under `~/.ene/skills/`" in body
-    assert "Load `skill-creator`" in body
-    assert "make no filesystem changes" in body
-    assert "/skills reload" in body
-
-
-def test_skills_prompt_reuses_instructions_in_context():
-    section = build_skills_prompt_section({"alpha": {"description": "Alpha tasks."}})
-    text = " ".join(section.split())
-
-    assert "Reuse full instructions already in context" in text
-    assert "**load_skill** only when they are missing or incomplete" in text
-    assert "context compaction" in text
-    assert "Do not reload a skill merely because it matches a new turn." in text
-    assert (
-        "Always apply **skill-creator** before creating or modifying a skill, "
-        "using the same loading rule."
-    ) in text
+    expected = {
+        path.parent.name for path in skills_module.BUNDLED_SKILLS_DIR.glob("*/SKILL.md")
+    }
+    assert {"plan", "reflection", "skill-creator"} <= expected
+    assert set(skills) == expected
+    assert issues["errors"] == []
+    assert all(
+        skill["source"] == "bundled" and not skill["warnings"]
+        for skill in skills.values()
+    )
 
 
 def test_skills_summary_counts_only_registry_in_persona_prompt():

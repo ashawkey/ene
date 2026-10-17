@@ -27,6 +27,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from ene.models import model_icon
+
 if TYPE_CHECKING:
     from ene.utils.io import EventHub, PromptBroker
 
@@ -110,6 +112,7 @@ class ContextStatus:
     input_tokens: int
     output_tokens: int
     cached_tokens: int = 0
+    model: str = ""
 
     @property
     def fraction(self) -> float:
@@ -132,8 +135,9 @@ class ContextStatus:
             return f"~{_compact_tokens(self.tokens)} · {details}"
         return f"{self.fraction:.0%} · {details}"
 
-    def event_data(self) -> dict[str, int]:
+    def event_data(self) -> dict[str, int | str]:
         return {
+            **({"model": self.model, "model_icon": model_icon(self.model)} if self.model else {}),
             "context_tokens": self.tokens,
             "context_limit": self.limit,
             "input_tokens": self.input_tokens,
@@ -330,11 +334,7 @@ class ThinkingIndicator:
             self._events.publish(
                 "thinking_start",
                 suffix=self._status_suffix.plain(),
-                context_tokens=self._status_suffix.tokens,
-                context_limit=self._status_suffix.limit,
-                input_tokens=self._status_suffix.input_tokens,
-                output_tokens=self._status_suffix.output_tokens,
-                cached_tokens=self._status_suffix.cached_tokens,
+                **self._status_suffix.event_data(),
                 started_at=self._started_at,
                 label=self._label_text,
                 progress=self._progress,

@@ -527,6 +527,7 @@ class LLMAgent(
             input_tokens=self.token_totals["prompt"],
             output_tokens=self.token_totals["completion"],
             cached_tokens=self.token_totals["cached_prompt"],
+            model=self.model,
         )
 
     def _publish_context_status(self) -> None:

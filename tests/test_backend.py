@@ -839,55 +839,6 @@ def test_process_status_text_includes_running_process_activity(tmp_path):
         agent.tool_executor.shutdown_processes()
 
 
-def test_ps_lists_processes_and_shows_detail_tail():
-    output = []
-    calls = []
-
-    class Console:
-        def print(self, message):
-            output.append(str(message))
-
-        def system(self, message):
-            output.append(str(message))
-
-        def warn(self, message):
-            output.append(str(message))
-
-    process = {
-        "process_id": "1",
-        "pid": 42,
-        "status": "running",
-        "exit_code": None,
-        "command": "python worker.py --long-option value",
-        "label": "inspect parser failures",
-        "cwd": "/tmp/work",
-        "log_path": ".ene/processes/1.log",
-        "log_tail": "ready\n",
-    }
-    agent = type("Agent", (AgentCommandsMixin,), {})()
-    agent.console = Console()
-    activity = [{**process, "elapsed_seconds": 75, "last_line": "ready"}]
-    agent.tool_executor = NS(
-        process_activity=lambda: activity,
-        inspect_processes=lambda **kwargs: (
-            calls.append(kwargs) or {"success": True, "processes": [process]}
-        ),
-    )
-
-    agent._cmd_ps("/ps")
-    agent._cmd_ps("/ps 1")
-
-    assert calls == [
-        {"process_id": "1", "log_tail_chars": 8000},
-    ]
-    assert "1" in output[0]
-    assert "pid=" not in output[0]
-    assert "inspect parser failures" in output[0]
-    assert any("label: inspect parser failures" in item for item in output)
-    assert any("command: python worker.py --long-option value" in item for item in output)
-    assert any("Recent output" in item and "ready" in item for item in output)
-
-
 def test_ps_resolves_labels_ids_and_tail_lengths():
     output = []
 
@@ -962,6 +913,7 @@ def test_ps_resolves_labels_ids_and_tail_lengths():
     ]
     listing = output[0]
     assert "Background processes:" in listing
+    assert "pid=" not in listing
     assert "1" in listing
     assert "review parser" in listing
     assert "running" in listing
@@ -971,6 +923,7 @@ def test_ps_resolves_labels_ids_and_tail_lengths():
     assert "exited (0)" in listing
     assert "1h 00m" in listing
     assert any("label: review parser" in item for item in output)
+    assert any("command: python run_subagent.py --task review" in item for item in output)
     assert any("Recent output" in item and "ready" in item for item in output)
     assert any("No process matches: nosuch" in item for item in output)
     assert any("Usage: /ps [label|process-id] [tail-chars]" in item for item in output)
@@ -1520,71 +1473,12 @@ def test_cancelled_skill_invocation_restores_skill_state(tmp_path):
     assert agent.tool_executor._skill_loads == {}
 
 
-def test_cancelled_initial_request_restores_context_and_message_draft():
-    context = ContextManager("system")
-    context.add(Message.user("u1"))
-    context.add(Message.assistant("a1"))
-    messages_before = list(context.messages)
-    state_before = CompactionState(original_request="u1")
-    context.compaction_state = state_before
-
-    events = EventHub()
-    resets = []
-    saved = []
-    console = NS(
-        rule=lambda: None,
-        user_input=lambda *args, **kwargs: None,
-        response=lambda *args, **kwargs: None,
-        system=lambda *args, **kwargs: None,
-        error=lambda *args, **kwargs: None,
-        warn=lambda *args, **kwargs: None,
-        reset_timeline=lambda: resets.append(True),
-    )
-
-    agent = object.__new__(LLMAgent)
-    agent.context = context
-    agent.events = events
-    agent.console = console
-    agent.round_id = 1
-    agent._session_id = "test"
-    agent._session_revision_id = "before-round"
-    agent._compaction_floor_tokens = 123
-    agent._last_interrupted = False
-    agent.verbose = False
-    agent.tool_executor = NS()
-    agent.presence = NS(refresh=lambda: [])
-    agent._peers_announced = False
-    agent._operation = lambda _label: nullcontext()
-    agent.save_session = lambda *args, **kwargs: saved.append(
-        (list(context.messages), agent.round_id, agent._session_revision_id, kwargs)
-    )
-
-    def cancel_after_context_management():
-        context.replace_messages([Message.user("compacted u2")])
-        context.compaction_state = CompactionState(original_request="u2")
-        agent._session_revision_id = "cancelled-round-snapshot"
-        agent._compaction_floor_tokens = 999
-        raise RequestInterrupted()
-
-    agent.call_api = cancel_after_context_management
-
-    agent._process_query(
-        UserSubmission("u2 @config.py", "terminal", "submission-2")
-    )
-
-    assert context.messages == messages_before
-    assert context.compaction_state == state_before
-    assert agent.round_id == 1
-    assert agent._session_revision_id == "before-round"
-    assert agent._compaction_floor_tokens == 123
-    assert agent._rewind_draft == "u2 @config.py"
-    assert resets == [True]
-    assert saved == [(messages_before, 1, "before-round", {"reason": "round"})]
-    draft_events = [event for event in events.after(0) if event.type == "draft_set"]
-    assert [event.data["text"] for event in draft_events] == ["u2 @config.py"]
-
-
-def test_failed_initial_request_restores_context_and_message_draft():
+@pytest.mark.parametrize(
+    ("error", "source"),
+    [(RequestInterrupted(), "terminal"), (RuntimeError("bad request"), "web")],
+    ids=["cancelled", "failed"],
+)
+def test_initial_request_failure_restores_context_and_message_draft(error, source):
     context = ContextManager("system")
     context.add(Message.user("u1"))
     context.add(Message.assistant("a1"))
@@ -1630,10 +1524,10 @@ def test_failed_initial_request_restores_context_and_message_draft():
         context.compaction_state = CompactionState(original_request="u2")
         agent._session_revision_id = "failed-round-snapshot"
         agent._compaction_floor_tokens = 999
-        raise RuntimeError("bad request")
+        raise error
 
     agent.call_api = fail_after_context_management
-    agent._process_query(UserSubmission("u2 @config.py", "web", "submission-2"))
+    agent._process_query(UserSubmission("u2 @config.py", source, "submission-2"))
 
     assert context.messages == messages_before
     assert context.compaction_state == state_before
@@ -1642,8 +1536,9 @@ def test_failed_initial_request_restores_context_and_message_draft():
     assert agent._compaction_floor_tokens == 123
     assert agent._rewind_draft == "u2 @config.py"
     assert resets == [True]
-    assert errors == ["API call failed: bad request", "API call failed: bad request"]
-    assert systems[-1] == "Turn failed. Message restored to the editor."
+    if isinstance(error, RuntimeError):
+        assert errors == ["API call failed: bad request", "API call failed: bad request"]
+        assert systems[-1] == "Turn failed. Message restored to the editor."
     assert saved == [(messages_before, 1, "before-round", {"reason": "round"})]
     draft_events = [event for event in events.after(0) if event.type == "draft_set"]
     assert [event.data["text"] for event in draft_events] == ["u2 @config.py"]

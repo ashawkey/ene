@@ -262,6 +262,7 @@ def test_model_switch_selects_configured_api_and_rejects_invalid_mode(monkeypatc
         model_alias='old', provider=OpenAICompatibleProvider(ProviderSettings()),
         tool_executor=NS(supports_image_input=True), reasoning_effort='high',
         presence=NS(update=lambda **kwargs: None), console=AgentConsole(render_terminal=False),
+        _publish_context_status=lambda: None,
     )
     AgentCommandsMixin._cmd_model(agent, '/model responses')
     assert isinstance(agent.provider, OpenAIResponsesProvider)

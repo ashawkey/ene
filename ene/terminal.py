@@ -26,6 +26,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.validation import Validator, ValidationError
 from pygments.lexers.markup import MarkdownLexer
 
+from ene.models import model_icon
 from ene.ui import ContextStatus
 from ene.utils.io import sanitize_unicode
 
@@ -488,6 +489,7 @@ class TerminalInput:
         self.style = Style.from_dict({
             "prompt": "bold ansiyellow",
             "prompt.busy": "bold ansicyan",
+            "status.model": "bold ansiyellow",
             "status.spinner": "bold ansigreen",
             "status.text": "ansiwhite",
             "status.detail": "ansibrightblack",
@@ -830,6 +832,8 @@ class TerminalInput:
                 status.append(("class:status.pending", f"\n{label}"))
             else:
                 status = [("class:status.pending", label)]
+        if context_status is not None and context_status.model:
+            status.insert(0, ("class:status.model", f"{model_icon(context_status.model)} "))
         width = max(1, self._session.app.output.get_size().columns - 1)
         separator = (
             "class:separator.busy" if self._busy else "class:separator",

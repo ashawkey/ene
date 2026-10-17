@@ -7,8 +7,9 @@ import pytest
 from ene import cli, config
 from ene.backend import LLMAgent
 from ene.backend.commands import AgentCommandsMixin
-from ene.models import resolve_model_alias
+from ene.models import model_icon, resolve_model_alias
 from ene.providers import OpenAIResponsesProvider
+from ene.utils.io import EventHub
 
 
 @pytest.mark.parametrize(('name', 'aliases', 'expected'), [
@@ -72,11 +73,13 @@ def test_switch_resolves_prefix_and_preserves_state_on_ambiguity(monkeypatch):
         console=NS(error=errors.append, system=notices.append),
         tool_executor=NS(supports_image_input=False), reasoning_effort='high',
         presence=NS(update=lambda **kwargs: None),
+        _publish_context_status=lambda: notices.append('status updated'),
     )
     AgentCommandsMixin._cmd_model(agent, '/model gpt-6')
     assert agent.model_alias == 'gpt-6-astra'
     assert isinstance(agent.provider, OpenAIResponsesProvider)
     assert closed == [True]
+    assert notices[0] == 'status updated'
     previous = agent.provider
     AgentCommandsMixin._cmd_model(agent, '/model gpt')
     assert agent.provider is previous
@@ -104,7 +107,7 @@ def test_model_budgets_use_api_id_at_startup_switch_and_listing(
     model = model_conf.get('model', alias)
     agent = LLMAgent(
         api_key='', base_url='', model=model, model_alias=alias, work_dir=str(tmp_path),
-        terminal_prompts=False,
+        terminal_prompts=False, events=EventHub(),
         context_length=model_conf.get('context_length'),
         max_output_tokens=model_conf.get('max_output_tokens'),
     )
@@ -115,6 +118,9 @@ def test_model_budgets_use_api_id_at_startup_switch_and_listing(
         # Switch through the same config path used by /model.
         agent.model_alias = 'previous'
         agent._cmd_model(f'/model {alias}')
+        status = next(event for event in agent.events.snapshot() if event.type == 'context_status')
+        assert status.data['model'] == model
+        assert status.data['model_icon'] == model_icon(model)
         assert agent.model == model
         assert agent.context_length == context_length
         assert agent.max_output_tokens == max_output

@@ -57,6 +57,31 @@ MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
 DEFAULT_PROFILE = ModelProfile()
 
 
+# Family markers describe the actual model, not its API transport or config alias.
+_MODEL_ICONS = (
+    ("claude", "✳︎"),
+    ("gpt", "🔷"),
+    ("codex", "🔷"),
+    ("gemini", "✨"),
+    ("deepseek", "🐋"),
+    ("glm", "🧠"),
+    ("kimi", "🌙"),
+    ("qwen", "🌀"),
+)
+
+
+def model_icon(model_id: str) -> str:
+    """Status marker for a model family, including namespaced gateway IDs."""
+    lower = model_id.lower()
+    for family, icon in _MODEL_ICONS:
+        if family in lower:
+            return icon
+    # Older OpenAI reasoning models do not have GPT in their names.
+    if lower.rsplit("/", 1)[-1].split("-", 1)[0] in ("o1", "o3", "o4"):
+        return "🔷"
+    return "🤖"
+
+
 def resolve_model_alias(name: str, aliases: Iterable[str]) -> str:
     """Resolve an exact configured alias or an unambiguous, case-sensitive prefix."""
     available = list(aliases)

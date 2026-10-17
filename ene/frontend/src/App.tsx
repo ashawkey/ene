@@ -21,6 +21,8 @@ function parseContextStatus(data: Record<string, unknown>): ContextStatusProps |
     inputTokens: typeof data.input_tokens === 'number' ? data.input_tokens : 0,
     outputTokens: typeof data.output_tokens === 'number' ? data.output_tokens : 0,
     cachedTokens: typeof data.cached_tokens === 'number' ? data.cached_tokens : 0,
+    model: typeof data.model === 'string' ? data.model : undefined,
+    modelIcon: typeof data.model_icon === 'string' ? data.model_icon : undefined,
   }
 }
 

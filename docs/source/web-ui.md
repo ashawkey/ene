@@ -54,7 +54,7 @@ The sidebar lists every live session on the machine:
 
 ## Browser behavior
 
-- **Activity:** conversation, tools, selections, queued input, and process status are visible per session.
+- **Activity:** conversation, tools, selections, queued input, and process status are visible per session. The [model marker](commands.md#model-status-markers) stays first in the status bar.
 - **Process dock:** stays above the composer; scrollable rows show ID, label, runtime, and latest output.
 - **Queue:** follow-up messages append to the pending one; commands cannot join it. Refusals are reported, not silently dropped.
 

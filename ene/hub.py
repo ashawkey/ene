@@ -124,6 +124,25 @@ def discover_hub(port: int = DEFAULT_HUB_PORT) -> dict | None:
     return info
 
 
+def _context_snapshot(data: dict | None) -> dict | None:
+    if not isinstance(data, dict):
+        return None
+    return {
+        **{
+            key: int(data.get(key, 0))
+            for key in (
+                "context_tokens", "context_limit", "input_tokens",
+                "output_tokens", "cached_tokens",
+            )
+        },
+        **{
+            key: data[key]
+            for key in ("model", "model_icon")
+            if isinstance(data.get(key), str)
+        },
+    }
+
+
 def _record_state(record: dict) -> str:
     """Describe a live record the same way the terminal session picker does."""
     if record.get("status", "ready") != "ready":
@@ -281,18 +300,7 @@ class RemoteSession:
         self.processes = _process_snapshot(status.get("processes"))
         self.watchers = _count(status.get("watchers"))
         self.background = _count(status.get("background"))
-        context_status = status.get("context_status")
-        self.context_status = (
-            {
-                key: int(context_status.get(key, 0))
-                for key in (
-                    "context_tokens", "context_limit", "input_tokens",
-                    "output_tokens", "cached_tokens",
-                )
-            }
-            if isinstance(context_status, dict)
-            else None
-        )
+        self.context_status = _context_snapshot(status.get("context_status"))
         indicator = status.get("active_indicator")
         self.active_indicator = dict(indicator) if isinstance(indicator, dict) else None
         commands = status.get("commands")
@@ -396,13 +404,7 @@ class RemoteSession:
         if etype in {"context_status", "thinking_start"} and isinstance(
             data.get("context_tokens"), (int, float)
         ):
-            self.context_status = {
-                key: int(data.get(key, 0))
-                for key in (
-                    "context_tokens", "context_limit", "input_tokens",
-                    "output_tokens", "cached_tokens",
-                )
-            }
+            self.context_status = _context_snapshot(data)
         elif etype == "session_meta":
             name = data.get("name")
             title = data.get("title")

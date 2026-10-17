@@ -245,6 +245,7 @@ def test_model_switch_omits_images_only_from_text_model_requests(monkeypatch, tm
     agent.model_alias = 'vision'
     agent.provider = OpenAICompatibleProvider(ProviderSettings())
     agent.presence = NS(update=lambda **kwargs: None)
+    agent._publish_context_status = lambda: None
     agent._context_tokens = lambda: LLMAgent._context_tokens(agent)
     agent._estimate_usage = lambda message: LLMAgent._estimate_usage(agent, message)
     _read_batch(agent)

@@ -956,7 +956,8 @@ html { scrollbar-gutter: stable; }
 .context-usage { display: flex; align-items: center; gap: 0.45rem; min-width: 0; font-size: 0.78rem; }
 .activity-operation-line > .context-usage { margin-left: auto; }
 .activity-operation-line > .context-usage + time { margin-left: 0; }
-.activity-dock > .context-usage { padding: 0.7rem 0.85rem; }
+.activity-idle { display: flex; align-items: center; gap: 0.55rem; padding: 0.7rem 0.85rem; }
+.model-icon { flex: none; color: var(--warning); font-size: 1rem; font-weight: 700; }
 .context-usage small { color: var(--dim); }
 .context-usage strong { font-size: inherit; font-weight: 650; }
 .context-progress { position: relative; width: 6rem; height: 0.42rem; overflow: hidden; border-radius: 999px; background: var(--line-strong); }

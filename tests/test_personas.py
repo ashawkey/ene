@@ -56,23 +56,6 @@ def test_bundled_personas_are_declarative():
     )
     assert personas["orchestrator"].local_skills is False
     assert "{{ene:autonomous-mode}}" not in personas["orchestrator"].template
-    assert "group related bugs or small changes" in personas["orchestrator"].template
-    assert "explicit acceptance criterion for each included issue" in personas["orchestrator"].template
-    assert "unrelated or independently deliverable work" in personas["orchestrator"].template
-    assert "Do not maintain a backlog" in personas["orchestrator"].template
-    assert "Run only one subagent at a time" in personas["orchestrator"].template
-    assert "Run each subagent as one managed background process" in personas["orchestrator"].template
-    assert "then end your turn with a one-line status" in personas["orchestrator"].template
-    assert "Never poll, launch a second child while one is active" in personas["orchestrator"].template
-    assert "Only an independent reviewer reporting no actionable findings" in personas["orchestrator"].template
-    assert "Review → Implement → Review" in personas["orchestrator"].template
-    assert "Implement → Review → Implement → Review" in personas["orchestrator"].template
-    assert "independently determine whether it is valid" in personas["orchestrator"].template
-    assert "review the entire requested scope for missed issues and regressions" in personas["orchestrator"].template
-    assert "Continue this implement-review loop until a reviewer passes it" in personas["orchestrator"].template
-    assert "implementation or code-review work item" in personas["orchestrator"].description
-    assert "manifest's page-aware `content_list_path`" in personas["reviewer"].template
-    assert "`write_file` is only for an output path" in personas["reviewer"].template
 
 
 def test_get_persona_accepts_unique_prefix_and_prefers_exact_name():

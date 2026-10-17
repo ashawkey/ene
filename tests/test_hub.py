@@ -381,6 +381,22 @@ def test_remote_session_tracks_context_status_for_authoritative_state():
     }
 
 
+def test_remote_session_preserves_model_marker_on_hydration_and_events():
+    session = RemoteSession("s1", {})
+    context = {"context_tokens": 0, "model": "gpt-6-sol", "model_icon": "🔷"}
+    session.hydrate({"context_status": context})
+    assert session.context_status["model_icon"] == "🔷"
+    assert session.context_status["model"] == "gpt-6-sol"
+
+    context.update(model="deepseek-v4", model_icon="🐋")
+    session.ingest({"type": "context_status", "data": context})
+    assert session.context_status["model_icon"] == "🐋"
+    session.ingest({"type": "thinking_start", "data": context})
+    session.ingest({"type": "thinking_stop", "data": {}})
+    assert session.context_status["model"] == "deepseek-v4"
+    assert session.context_status["model_icon"] == "🐋"
+
+
 def test_remote_session_tracks_latest_indicator_for_authoritative_state():
     session = RemoteSession("s1", {})
     session.ingest({

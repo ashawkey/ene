@@ -412,6 +412,28 @@ describe('interaction components', () => {
     expect(screen.getByLabelText('working').querySelector('.activity-operation-line > .context-usage')).toBeInTheDocument()
   })
 
+  it('keeps the model marker first through activity, idle, and model switches', () => {
+    const context = {
+      contextTokens: 0, contextLimit: 100, inputTokens: 0, outputTokens: 0, cachedTokens: 0,
+      model: 'claude-opus-5-5', modelIcon: '✳︎',
+    }
+    const { container, rerender } = render(
+      <ActivityStatus busy status={{ label: 'Executing', progress: true }} contextStatus={context} />,
+    )
+    const icon = screen.getByRole('img', { name: 'Model: claude-opus-5-5' })
+    expect(container.querySelector('.activity-operation-line')?.firstElementChild).toBe(icon)
+    expect(icon).toHaveTextContent('✳︎')
+    expect(icon).toHaveAttribute('title', context.model)
+
+    rerender(<ActivityStatus busy={false} status={null} contextStatus={context} />)
+    expect(container.querySelector('.activity-idle')?.firstElementChild).toBe(
+      screen.getByRole('img', { name: 'Model: claude-opus-5-5' }),
+    )
+    rerender(<ActivityStatus busy={false} status={null} contextStatus={{ ...context, model: 'deepseek-v4', modelIcon: '🐋' }} />)
+    expect(screen.getByRole('img', { name: 'Model: deepseek-v4' })).toHaveTextContent('🐋')
+    expect(screen.queryByText('✳︎')).not.toBeInTheDocument()
+  })
+
   it('hides the status before context usage is available', () => {
     const { container } = render(<ActivityStatus busy={false} status={null} />)
     expect(container).toBeEmptyDOMElement()

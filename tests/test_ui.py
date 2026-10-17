@@ -130,6 +130,29 @@ def test_terminal_keeps_context_status_when_activity_stops(monkeypatch, session_
     assert lines[2] and set(lines[2]) == {"─"}
 
 
+@pytest.mark.parametrize("activity", [None, "Executing...", "Waiting...", "Compacting..."])
+def test_terminal_model_marker_is_first_and_updates_while_idle(activity):
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.application.current import create_app_session
+
+    with create_app_session(output=DummyOutput()):
+        terminal = TerminalInput(session_label="session")
+    terminal.set_context_status(ContextStatus(0, 100, 0, 0, model="claude-opus-5-5"))
+    terminal.set_status([("class:status.text", activity)] if activity else None)
+    terminal.set_process_status("1 process running")
+    lines = "".join(text for _, text in terminal._message()).splitlines()
+    assert lines[1].startswith("✳︎ ")
+    assert lines[1].count("✳︎") == 1
+    assert ("class:status.model", "✳︎ ") in terminal._message()
+
+    terminal.set_status(None)
+    terminal.set_context_status(ContextStatus(0, 100, 0, 0, model="deepseek-v4"))
+    lines = "".join(text for _, text in terminal._message()).splitlines()
+    assert lines[1].startswith("🐋 ")
+    assert "✳︎" not in lines[1]
+    terminal.close_title()
+
+
 def test_terminal_updates_session_label_before_multiline_process_status():
     from prompt_toolkit.output import DummyOutput
     from prompt_toolkit.application.current import create_app_session

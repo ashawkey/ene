@@ -277,43 +277,6 @@ def test_old_session_captures_are_pruned(tmp_path):
 
 
 @pytest.mark.parametrize("arguments", ["{not json", "null", "[]", '"text"', "42", "true"])
-def test_unparseable_arguments_still_answer_their_tool_call(tmp_path, arguments):
-    """A malformed argument payload must not leave an unpaired tool call.
-
-    Providers reject an assistant message whose tool calls have no matching
-    results, so a call ene cannot parse is answered with an error result and
-    the batch continues instead of aborting the turn.
-    """
-    console = _Console()
-    executed = []
-    calls = [
-        ToolCall("bad", "write_file", arguments),
-        ToolCall("good", "write_file", json.dumps({"file": "ok.txt", "content": "ok"})),
-    ]
-    console.error = lambda *args, **kwargs: None
-    agent = NS(
-        verbose=False,
-        console=console,
-        tool_executor=NS(execute=lambda name, args: executed.append((name, args)) or {"success": True, "message": "written"}),
-        context=NS(messages=[], add=lambda message: agent.context.messages.append(message)),
-        cancellation=None,
-        context_length=16_000,
-        token_estimator=NS(chars_per_token=3.3),
-        work_dir=str(tmp_path),
-        _session_id="test",
-        round_id=1,
-        tool_compaction_totals={"calls": 0, "original_chars": 0, "retained_chars": 0},
-    )
-
-    outcome = LLMAgent.execute_tool_calls(agent, calls)
-
-    assert outcome == TurnOutcome.COMPLETED
-    assert executed == [("write_file", {"file": "ok.txt", "content": "ok"})]
-    assert [message.tool_call_id for message in agent.context.messages] == ["bad", "good"]
-    assert "Invalid tool arguments" in agent.context.messages[0].text
-
-
-@pytest.mark.parametrize("arguments", ["{not json", "null", "[]", '"text"', "42", "true"])
 def test_unparseable_tool_call_arguments_are_repaired_in_history(arguments):
     """A malformed tool call is rewritten to valid JSON so it never poisons the wire.
 
@@ -377,7 +340,9 @@ def test_execute_tool_calls_repairs_malformed_call_in_context(tmp_path, argument
     assert json.loads(assistant.tool_calls[0].arguments) == {}
     assert assistant.tool_calls[0].id == "bad"
     # The repaired call still pairs with its error result, so nothing is unpaired.
-    assert [message.tool_call_id for message in context.messages if message.is_tool] == ["bad", "good"]
+    results = [message for message in context.messages if message.is_tool]
+    assert [message.tool_call_id for message in results] == ["bad", "good"]
+    assert "Invalid tool arguments" in results[0].text
 
 
 def test_call_api_sanitizes_history_before_sending():
@@ -681,19 +646,7 @@ def test_get_response_warns_and_automatically_continues(unfinished_reason):
         (Message.assistant("answer"), "stop"),
     ])
 
-    agent = NS(
-        console=NS(
-            warn=lambda text: warnings.append(text),
-            response=lambda text: None,
-            debug=lambda text: None,
-            error=lambda text: None,
-        ),
-        context=context,
-        verbose=False,
-        stream=False,
-        _last_interrupted=False,
-        MAX_AUTO_CONTINUES=3,
-    )
+    agent = _unfinished_agent(context, warnings)
 
     def call_api():
         message, finish_reason = next(responses)
@@ -723,19 +676,7 @@ def test_get_response_continues_after_empty_stopped_response():
         (Message.assistant("answer"), "stop"),
     ])
 
-    agent = NS(
-        console=NS(
-            warn=lambda text: warnings.append(text),
-            response=lambda text: None,
-            debug=lambda text: None,
-            error=lambda text: None,
-        ),
-        context=context,
-        verbose=False,
-        stream=False,
-        _last_interrupted=False,
-        MAX_AUTO_CONTINUES=3,
-    )
+    agent = _unfinished_agent(context, warnings)
 
     def call_api():
         message, finish_reason = next(responses)
@@ -756,19 +697,8 @@ def test_get_response_stops_after_repeated_empty_responses():
     context.add(Message.user("keep going"))
     warnings = []
 
-    agent = NS(
-        console=NS(
-            warn=lambda text: warnings.append(text),
-            response=lambda text: None,
-            debug=lambda text: None,
-            error=lambda text: None,
-        ),
-        context=context,
-        verbose=False,
-        stream=False,
-        _last_interrupted=False,
-        MAX_AUTO_CONTINUES=2,
-    )
+    agent = _unfinished_agent(context, warnings)
+    agent.MAX_AUTO_CONTINUES = 2
 
     def call_api():
         agent._last_finish_reason = "stop"

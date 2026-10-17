@@ -977,6 +977,7 @@ class AgentCommandsMixin:
         self.reasoning_effort = model_conf.get("reasoning_effort", self.reasoning_effort)
         self.show_thinking = self.profile.reasoning is not None
         self.presence.update(model=self.model_alias or self.model)
+        self._publish_context_status()
 
         self.console.system(
             f"Switched to model: {self.model} via {self.provider_name} "
