@@ -32,6 +32,7 @@ class BatchCompletionMixin:
         if self.cancellation is not None and self.cancellation.cancelled:
             raise RequestInterrupted()
 
+        self._discover_model_limits()
         content: str | list[TextPart | ImagePart]
         if image_url is None:
             content = item

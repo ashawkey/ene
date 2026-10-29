@@ -313,6 +313,7 @@ def test_direct_completion_uses_fresh_context_provider_and_parses_json(monkeypat
         reasoning_effort="high",
         provider_name="openai",
         _provider_settings=settings,
+        _discover_model_limits=lambda: None,
         _batch_provider_lock=threading.Lock(),
         _batch_providers=set(),
         _session_id="session",

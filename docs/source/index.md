@@ -34,8 +34,18 @@ openai:
 - **Select an alias:** `--model fast`, `/model fast`, or `run_agent(model_alias="fast")`.
 - **Unique prefixes work:** `gpt-6` selects `gpt-6-astra` if unambiguous. Matching is case-sensitive; exact aliases win, and ambiguous prefixes list their matches.
 - **Defaults follow the model ID**, not the alias. Model-family matching is case-insensitive and accepts provider prefixes.
-- Omitting `model` sends the alias as the ID; unknown IDs default to **1,000,000 context tokens** and **32,000 output tokens**. Set `context_length` explicitly for smaller windows.
+- Omitting `model` sends the alias as the ID; unknown IDs fall back to **1,000,000 context tokens** and **32,000 output tokens** when serving limits are unavailable.
 - **Override budgets** per model with `context_length` and `max_output_tokens`.
+
+#### Automatic token budgets
+
+- Before the first chat or batch request, Ene queries `/models` using the endpoint's credentials. Chat Completions and API-key Responses both support discovery.
+- A positive integer `max_model_len` on the exact model ID supplies the serving context limit, including vLLM's `--max-model-len` setting. Discovery is checked once per session model; `/model` resets it.
+- With a discovered or explicitly configured context, the default output budget is `min(profile output limit, context / 4)`. A 32,768-token server gets an 8,192-token output budget.
+- Explicit context limits skip discovery; explicit output limits are preserved. Missing metadata, unsupported endpoints, or failed discovery leave profile defaults in place. Discovery requests use a five-second timeout without retries.
+- A context-overflow error stating a smaller maximum context length updates an inferred limit and allows one corrected retry. Explicit context overrides are not replaced.
+- `/models` fields are not standardized. Set limits explicitly when your gateway omits them and its errors do not report the limit. A separate output-token hard cap cannot be inferred from the context window.
+- `ene models` lists configured/profile defaults without contacting endpoints; active-session status shows detected limits.
 
 #### Recent model budgets
 

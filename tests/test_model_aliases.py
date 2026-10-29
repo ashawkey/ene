@@ -75,6 +75,7 @@ def test_switch_resolves_prefix_and_preserves_state_on_ambiguity(monkeypatch):
         presence=NS(update=lambda **kwargs: None),
         _publish_context_status=lambda: notices.append('status updated'),
     )
+    agent._configure_model_limits = lambda *args: LLMAgent._configure_model_limits(agent, *args)
     AgentCommandsMixin._cmd_model(agent, '/model gpt-6')
     assert agent.model_alias == 'gpt-6-astra'
     assert isinstance(agent.provider, OpenAIResponsesProvider)

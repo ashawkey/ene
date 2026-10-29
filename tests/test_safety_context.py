@@ -365,6 +365,8 @@ def test_call_api_sanitizes_history_before_sending():
         console=_Console(),
         _interruptible_sleep=lambda seconds: None,
         context_length=0,
+        _discover_model_limits=lambda: None,
+        _context_length_override=0,
         model="test-model",
         max_output_tokens=1_000,
         INITIAL_BACKOFF=0.01,
@@ -609,6 +611,8 @@ def test_call_api_preserves_output_limited_response_for_continuation():
 
     agent = NS(
         context_length=0,
+        _discover_model_limits=lambda: None,
+        _context_length_override=0,
         model="test-model",
         max_output_tokens=max_output_tokens,
         INITIAL_BACKOFF=1.0,
@@ -930,6 +934,7 @@ def test_compaction_is_skipped_while_the_floor_holds():
     agent = NS(
         console=console,
         context=context,
+        _discover_model_limits=lambda: None,
         context_length=1_000,  # far below usage: compaction would normally fire
         token_estimator=TokenEstimator(),
         _compaction_floor_tokens=10**9,
@@ -972,6 +977,8 @@ def _overflow_agent(completion, compactions):
         console=console,
         _interruptible_sleep=lambda seconds: None,
         context_length=0,
+        _discover_model_limits=lambda: None,
+        _context_length_override=0,
         model="test-model",
         max_output_tokens=1_000,
         INITIAL_BACKOFF=0.01,

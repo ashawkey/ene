@@ -305,8 +305,8 @@ class LLMAgent(
         self.stream = stream
         self.show_thinking = self.profile.reasoning is not None
         self.reasoning_effort = reasoning_effort
-        self.context_length = context_length if context_length is not None else self.profile.context_length
-        self.max_output_tokens = max_output_tokens if max_output_tokens is not None else self.profile.max_output_tokens
+        self._model_limits_lock = threading.Lock()
+        self._configure_model_limits(context_length, max_output_tokens)
         self.token_estimator = TokenEstimator()
 
         self.events = events
@@ -476,6 +476,41 @@ class LLMAgent(
             self.token_totals["cached_prompt"] += usage.cached_prompt_tokens
             self.token_totals["reasoning"] += usage.reasoning_tokens
 
+    def _configure_model_limits(
+        self, context_length: int | None, max_output_tokens: int | None,
+    ) -> None:
+        self._context_length_override = context_length
+        self._max_output_tokens_override = max_output_tokens
+        self._model_limits_checked = context_length is not None
+        self.context_length = context_length if context_length is not None else self.profile.context_length
+        self.max_output_tokens = max_output_tokens if max_output_tokens is not None else self.profile.max_output_tokens
+        if context_length is not None and context_length > 0 and max_output_tokens is None:
+            self.max_output_tokens = min(self.max_output_tokens, max(1, context_length // 4))
+
+    def _apply_context_limit(self, limit: int) -> None:
+        self.context_length = limit
+        if self._max_output_tokens_override is None:
+            self.max_output_tokens = min(self.profile.max_output_tokens, max(1, limit // 4))
+        self._compaction_floor_tokens = None
+        self.console.system(
+            f"API context limit: {limit:,} tokens "
+            f"(output budget: {self.max_output_tokens:,})"
+        )
+        self._publish_context_status()
+
+    def _discover_model_limits(self) -> None:
+        with self._model_limits_lock:
+            if self._model_limits_checked:
+                return
+            limit = run_interruptible(
+                lambda: self.provider.context_length(self.model),
+                self.cancellation,
+                on_cancel=self.provider.cancel,
+            )
+            self._model_limits_checked = True
+            if limit is not None:
+                self._apply_context_limit(limit)
+
     def _context_tokens(self) -> int:
         """Live prompt-token estimate for the next request.
 
@@ -594,6 +629,8 @@ class LLMAgent(
         reason are appended too; ``get_response`` then continues them.
         """
 
+        self._discover_model_limits()
+
         # context management: evict old tool results, then compact if needed
         if self.context_length > 0:
             t_prune = time.monotonic()
@@ -675,6 +712,17 @@ class LLMAgent(
                         payload_overflow or _is_context_overflow_error(e)
                     ):
                         overflow_recovered = True
+                        learned_limit = False
+                        if not payload_overflow and self._context_length_override is None:
+                            match = re.search(
+                                r"maximum context length (?:is|of) ([0-9]+(?:,[0-9]{3})*) tokens",
+                                str(e), re.IGNORECASE,
+                            )
+                            if match:
+                                limit = int(match[1].replace(",", ""))
+                                if 0 < limit < self.context_length:
+                                    self._apply_context_limit(limit)
+                                    learned_limit = True
                         shrank_images = (
                             payload_overflow
                             and any(message.image_count for message in messages)
@@ -689,7 +737,10 @@ class LLMAgent(
                             "Request byte limit reported by the API"
                             if payload_overflow else "Context overflow reported by the API"
                         )
-                        if shrank_images or self._run_compaction(reason):
+                        fits = learned_limit and (
+                            self._context_tokens() + self.max_output_tokens < self.context_length
+                        )
+                        if fits or shrank_images or self._run_compaction(reason) or learned_limit:
                             messages, request = build_request()
                             continue
                     # Permanent client error — retrying cannot help. Surface it

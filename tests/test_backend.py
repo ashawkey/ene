@@ -1759,7 +1759,8 @@ def _inbox_agent(monkeypatch, tmp_path, replies):
         requests.append(request)
         return CompletionResult(replies.pop(0), None, "stop")
 
-    provider = NS(complete=complete, close=lambda: None, cancel=lambda: None)
+    provider = NS(complete=complete, close=lambda: None, cancel=lambda: None,
+                  context_length=lambda model: None)
     monkeypatch.setattr(backend, "create_provider", lambda *_args, **_kwargs: provider)
     agent = LLMAgent(
         model="test-model",

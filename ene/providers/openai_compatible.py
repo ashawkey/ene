@@ -107,6 +107,28 @@ class OpenAICompatibleProvider(LLMProvider):
         if was_active:
             client.close()
 
+    def context_length(self, model: str) -> int | None:
+        from openai import APIError
+
+        client = self._new_client()
+        self._activate(client)
+        try:
+            # /models is optional on compatible gateways. A failed discovery
+            # must not prevent an otherwise supported completion request.
+            try:
+                models = getattr(client.models.list(timeout=5), "data", None)
+            except APIError:
+                return None
+            if not isinstance(models, list):
+                return None
+            for entry in models:
+                if getattr(entry, "id", None) == model:
+                    limit = getattr(entry, "max_model_len", None)
+                    return limit if type(limit) is int and limit > 0 else None
+            return None
+        finally:
+            self._release(client)
+
     def _kwargs(self, request: CompletionRequest) -> dict[str, Any]:
         # Serialize at the wire boundary: Messages become OpenAI wire dicts,
         # minus the keys this API does not accept.

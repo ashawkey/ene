@@ -249,6 +249,7 @@ def test_responses_nonreasoning_models_omit_reasoning_controls():
 
 def test_model_switch_selects_configured_api_and_rejects_invalid_mode(monkeypatch):
     from types import SimpleNamespace as NS
+    from ene.backend import LLMAgent
     from ene.backend.commands import AgentCommandsMixin
     from ene.config import conf
     from ene.ui import AgentConsole
@@ -264,6 +265,7 @@ def test_model_switch_selects_configured_api_and_rejects_invalid_mode(monkeypatc
         presence=NS(update=lambda **kwargs: None), console=AgentConsole(render_terminal=False),
         _publish_context_status=lambda: None,
     )
+    agent._configure_model_limits = lambda *args: LLMAgent._configure_model_limits(agent, *args)
     AgentCommandsMixin._cmd_model(agent, '/model responses')
     assert isinstance(agent.provider, OpenAIResponsesProvider)
     assert agent._provider_settings.api == 'responses'

@@ -118,6 +118,10 @@ class LLMProvider(ABC):
     def logout(self) -> None:
         raise ProviderError(f"Provider '{self.id}' does not store login credentials")
 
+    def context_length(self, model: str) -> int | None:
+        """Return the serving context limit, when the API advertises one."""
+        return None
+
     def auth_status(self) -> str:
         return "configured"
 

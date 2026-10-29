@@ -32,7 +32,7 @@ URL = 'data:image/png;base64,' + base64.b64encode(PNG).decode('ascii')
 def _agent(tmp_path):
     (tmp_path / 'image.png').write_bytes(PNG)
     console = AgentConsole(render_terminal=False)
-    return NS(
+    agent = NS(
         context=ContextManager('system'),
         console=console,
         tool_executor=ToolExecutor(console=console, work_dir=str(tmp_path)),
@@ -53,7 +53,11 @@ def _agent(tmp_path):
         MAX_BACKOFF=0,
         _interruptible_sleep=lambda _: None,
         _accumulate_usage=lambda _: None,
+        _discover_model_limits=lambda: None,
+        _context_length_override=0,
     )
+    agent._configure_model_limits = lambda *args: LLMAgent._configure_model_limits(agent, *args)
+    return agent
 
 
 def _images(messages):

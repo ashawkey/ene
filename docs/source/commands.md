@@ -27,11 +27,10 @@ The default model is the first entry in `~/.ene.yaml`.
 
 ```bash
 ene --base-url http://localhost:8000/v1 \
-    --model qwen-sft --model-profile qwen3.8-27b \
-    --context-length 32768 --max-output-tokens 4096
+    --model qwen-sft --model-profile qwen3.8-27b
 ```
 
-The server receives `qwen-sft`; the profile supplies reasoning behavior, image support, and default token limits. Set limits to match your deployment; the server must support the selected API and tool calling.
+The server receives `qwen-sft`; the profile supplies reasoning behavior, image support, and fallback token limits. Ene discovers advertised serving limits automatically; see [automatic token budgets](index.md#automatic-token-budgets). The server must support the selected API and tool calling.
 
 **Connection and credentials**
 
@@ -46,7 +45,7 @@ Prefer `--api-key-env`: `--api-key` can expose secrets in shell history and proc
 **Profiles and lifetime**
 
 - Profile and token-limit overrides also work with configured aliases.
-- Token-limit precedence: CLI override → configured limit → profile default.
+- Context-limit precedence: CLI override → configured limit → server metadata → profile default. Explicit output limits are preserved.
 - Without `--model-profile`, capabilities are inferred from the actual model ID.
 - Qwen3-VL IDs (including Instruct, Thinking, and quantized variants) enable image input with a 262,144-token context and 32,000-token output default.
 - For custom Qwen3-VL server IDs, use `--model-profile qwen3-vl` or `--model-profile qwen3-vl-30b-a3b`.
