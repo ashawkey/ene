@@ -154,6 +154,38 @@ def test_catalog_resolves_qwen38():
     assert resolve_model_profile("qwen3.8-2.4t-a95b").supports_image_input is False
 
 
+@pytest.mark.parametrize("size", ["2B", "4B", "8B", "30B-A3B", "32B", "235B-A22B"])
+@pytest.mark.parametrize("edition", ["Instruct", "Thinking"])
+def test_catalog_resolves_qwen3_vl(size, edition):
+    profile = resolve_model_profile(f"Qwen/Qwen3-VL-{size}-{edition}-FP8")
+    assert profile.context_length == 262_144
+    assert profile.max_output_tokens == 32_000
+    assert profile.supports_image_input is True
+    assert profile.reasoning is None
+
+
+@pytest.mark.parametrize("profile_name", ["qwen3-vl", "qwen3-vl-30b-a3b"])
+def test_qwen3_vl_explicit_profile(profile_name):
+    profile = resolve_model_profile("custom-vl", profile_name)
+    assert profile == resolve_model_profile("qwen3-vl-30b-a3b")
+    assert profile.supports_image_input is True
+
+
+@pytest.mark.parametrize("effort", ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_qwen3_vl_request_does_not_send_reasoning_controls(effort):
+    profile = resolve_model_profile("Qwen/Qwen3-VL-30B-A3B-Thinking")
+    provider = OpenAICompatibleProvider(ProviderSettings(reasoning_style=profile.reasoning))
+    wire = provider._kwargs(CompletionRequest(
+        model="Qwen/Qwen3-VL-30B-A3B-Thinking",
+        messages=[Message.user("hello")],
+        reasoning_effort=effort,
+        max_output_tokens=profile.max_output_tokens,
+    ))
+    assert wire["max_tokens"] == 32_000
+    assert "reasoning_effort" not in wire
+    assert "extra_body" not in wire
+
+
 def test_openai_provider_uses_only_native_effort_for_anthropic(monkeypatch):
     response = NS(
         choices=[NS(message=_message(), finish_reason="stop")],

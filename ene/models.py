@@ -52,6 +52,9 @@ MODEL_CATALOG: list[tuple[str, ModelProfile]] = [
     # 262K native context; the 2.4T MoE flagship is text-only.
     ("qwen3.8-27b", ModelProfile(context_length=262_144, reasoning="qwen3.8", supports_image_input=True, max_output_tokens=64_000)),
     ("qwen3.8", ModelProfile(context_length=262_144, reasoning="qwen3.8", max_output_tokens=64_000)),
+    # Qwen3-VL has separate Instruct/Thinking checkpoints, not an effort toggle.
+    ("qwen3-vl-30b-a3b", ModelProfile(context_length=262_144, supports_image_input=True, max_output_tokens=32_000)),
+    ("qwen3-vl", ModelProfile(context_length=262_144, supports_image_input=True, max_output_tokens=32_000)),
 ]
 
 DEFAULT_PROFILE = ModelProfile()

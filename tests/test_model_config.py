@@ -84,22 +84,28 @@ def test_profile_and_budget_overrides_work_with_configured_aliases():
 
 
 @pytest.mark.parametrize("budgets", [{}, {"context_length": 32768, "max_output_tokens": 4096}])
-def test_agent_profile_override_preserves_wire_model_and_resets_on_switch(monkeypatch, tmp_path, budgets):
+@pytest.mark.parametrize("profile, reasoning, output_tokens, extra_body", [
+    ("qwen3.8-27b", "qwen3.8", 64000, {"chat_template_kwargs": {"enable_thinking": False}}),
+    ("qwen3-vl-30b-a3b", None, 32000, None),
+])
+def test_agent_profile_override_preserves_wire_model_and_resets_on_switch(
+    monkeypatch, tmp_path, budgets, profile, reasoning, output_tokens, extra_body,
+):
     monkeypatch.setattr(config, "conf", {"openai": {"text": {"model": "custom-text"}}})
-    options = resolve_session_model({**TEMPORARY, "model_profile": "qwen3.8-27b", **budgets}, {})
+    options = resolve_session_model({**TEMPORARY, "model_profile": profile, **budgets}, {})
     agent = LLMAgent(**options, work_dir=str(tmp_path), terminal_prompts=False)
     try:
         assert agent.model == "qwen-sft"
-        assert agent.profile == resolve_model_profile("qwen3.8-27b")
-        assert agent.profile.reasoning == "qwen3.8"
+        assert agent.profile == resolve_model_profile(profile)
+        assert agent.profile.reasoning == reasoning
         assert agent.tool_executor.supports_image_input is True
         assert agent.context_length == budgets.get("context_length", 262144)
-        assert agent.max_output_tokens == budgets.get("max_output_tokens", 64000)
+        assert agent.max_output_tokens == budgets.get("max_output_tokens", output_tokens)
         request = CompletionRequest(model=agent.model, messages=[], reasoning_effort="none",
                                     max_output_tokens=agent.max_output_tokens)
         wire = agent.provider._kwargs(request)
         assert wire["model"] == "qwen-sft"
-        assert wire["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+        assert wire.get("extra_body") == extra_body
         assert wire["max_tokens"] == agent.max_output_tokens
         saved = agent._session_data()
         assert not {"api_key", "base_url", "model_profile"} & saved.keys()

@@ -10,16 +10,17 @@ from ene import cli, live, live_worker
 
 
 @pytest.mark.parametrize("invocation", [[], ["new", "temporary"], ["resume", "saved"]])
-def test_temporary_flags_reach_chat(monkeypatch, invocation):
+@pytest.mark.parametrize("profile", ["qwen3.8-27b", "qwen3-vl", "qwen3-vl-30b-a3b"])
+def test_temporary_flags_reach_chat(monkeypatch, invocation, profile):
     calls = []
     monkeypatch.setattr(cli, "cmd_chat", calls.append)
     cli.main([*invocation, "--base-url", "http://localhost:8000/v1", "--model", "qwen-sft",
-              "--model-profile", "qwen3.8-27b", "--context-length", "32768",
+              "--model-profile", profile, "--context-length", "32768",
               "--max-output-tokens", "4096", "--api-key-env", "VLLM_KEY", "--api", "responses"])
     args = calls[0]
     assert args.model == "qwen-sft"
     assert args.base_url == "http://localhost:8000/v1"
-    assert args.model_profile == "qwen3.8-27b"
+    assert args.model_profile == profile
     assert args.context_length == 32768
     assert args.max_output_tokens == 4096
     assert args.api_key_env == "VLLM_KEY"

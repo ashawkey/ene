@@ -48,6 +48,9 @@ Prefer `--api-key-env`: `--api-key` can expose secrets in shell history and proc
 - Profile and token-limit overrides also work with configured aliases.
 - Token-limit precedence: CLI override → configured limit → profile default.
 - Without `--model-profile`, capabilities are inferred from the actual model ID.
+- Qwen3-VL IDs (including Instruct, Thinking, and quantized variants) enable image input with a 262,144-token context and 32,000-token output default.
+- For custom Qwen3-VL server IDs, use `--model-profile qwen3-vl` or `--model-profile qwen3-vl-30b-a3b`.
+- Qwen3-VL thinking depends on the served checkpoint; `--reasoning-effort` does not switch or tune it.
 - Detach/attach retains temporary settings. Stopped conversations require the flags again with `ene resume ID`.
 - Resuming an already-live session attaches to its existing backend.
 - `/model ALIAS` replaces the temporary settings with that alias's configuration and inferred profile.
