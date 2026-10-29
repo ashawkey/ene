@@ -303,7 +303,9 @@ class LLMAgent(
         self._usage_lock = threading.Lock()
         self.verbose = verbose
         self.stream = stream
-        self.show_thinking = self.profile.reasoning is not None
+        # Display returned thinking independently of effort-control support.
+        self.show_thinking = True
+        self._reasoning_observed = False
         self.reasoning_effort = reasoning_effort
         self._model_limits_lock = threading.Lock()
         self._configure_model_limits(context_length, max_output_tokens)
@@ -492,10 +494,6 @@ class LLMAgent(
         if self._max_output_tokens_override is None:
             self.max_output_tokens = min(self.profile.max_output_tokens, max(1, limit // 4))
         self._compaction_floor_tokens = None
-        self.console.system(
-            f"API context limit: {limit:,} tokens "
-            f"(output budget: {self.max_output_tokens:,})"
-        )
         self._publish_context_status()
 
     def _discover_model_limits(self) -> None:
@@ -722,6 +720,10 @@ class LLMAgent(
                                 limit = int(match[1].replace(",", ""))
                                 if 0 < limit < self.context_length:
                                     self._apply_context_limit(limit)
+                                    self.console.system(
+                                        f"API context limit: {limit:,} tokens "
+                                        f"(output budget: {self.max_output_tokens:,})"
+                                    )
                                     learned_limit = True
                         shrank_images = (
                             payload_overflow
@@ -770,6 +772,8 @@ class LLMAgent(
 
         message = result.message
         usage = result.usage or self._estimate_usage(message)
+        if message.reasoning_content or usage.reasoning_tokens:
+            self._reasoning_observed = True
         finish_reason = result.finish_reason
         self._accumulate_usage(usage)
         # Anchor on real usage, including images, but keep their costs out of
@@ -1934,7 +1938,8 @@ class LLMAgent(
         return False
 
     def _initialize_chat_session(self, resumed_session_id: str | None = None) -> None:
-        """Initialize persistence, change tracking, and artifact retention."""
+        """Discover serving limits and initialize session persistence."""
+        self._discover_model_limits()
         self._session_id = resumed_session_id or self._reserve_session_id()
         if self._session_store is None or self._session_store.session_id != self._session_id:
             self._session_store = self._session_store_for(self._session_id)
@@ -1999,15 +2004,18 @@ class LLMAgent(
             executor.shutdown(wait=True)
 
     def _startup_details(self) -> dict[str, str]:
-        reasoning = self.profile.reasoning or "none"
-        if reasoning != "none":
+        reasoning = self.profile.reasoning
+        if reasoning is not None:
             reasoning += f" · {self.reasoning_effort} effort"
+        else:
+            status = "detected" if self._reasoning_observed else "auto"
+            reasoning = f"{status} (server default)"
         # Read-only: the live worker rebuilds these details on every status
         # probe, which is far more often than a round runs.
         peers = self.presence.peers()
         details = {
             "model": f"{self.provider_name}/{self.model}",
-            "context": f"{self.context_length:,} tokens",
+            "context": f"{self.context_length:,} context / {self.max_output_tokens:,} max output tokens",
             "reasoning": reasoning,
             "persona": self.persona.name,
             "skills": self._skills_summary(),
@@ -2021,9 +2029,8 @@ class LLMAgent(
 
     def chat_loop(self, resumed_session_id: str | None = None):
 
-        self.console.startup_panel(**self._startup_details())
-
         self._initialize_chat_session(resumed_session_id)
+        self.console.startup_panel(**self._startup_details())
 
         _wd = self.tool_executor._work_dir or os.getcwd()
         self._refresh_slash_commands()

@@ -4,11 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 import pytest
 from openai import OpenAI
+from openai.types.chat import ChatCompletionChunk
 
 import ene.config as config
 from ene.backend import LLMAgent
 from ene.messages import Message
-from ene.providers import CompletionResult, OpenAICompatibleProvider, ProviderSettings
+from ene.providers import CompletionResult, OpenAICompatibleProvider, ProviderSettings, ProviderUsage
+from ene.providers.openai_compatible import _OpenAICompletionStream
+from ene.utils.io import EventHub
 from ene.ui import AgentConsole
 
 
@@ -113,6 +116,47 @@ def agent_factory(monkeypatch, tmp_path):
         agent.close()
 
 
+@pytest.mark.parametrize("limit, context, output", [(32768, 32768, 8192), (None, 262144, 32000)])
+def test_session_start_discovers_limits_and_shows_budgets_in_model_row(
+    agent_factory, monkeypatch, limit, context, output,
+):
+    agent, queries, requests = agent_factory(limit=limit)
+    agent.context.replace_messages([])
+    notices, panels = [], []
+    monkeypatch.setattr(agent.console, "system", notices.append)
+    monkeypatch.setattr(agent.console, "_agent_panel", panels.append)
+
+    agent._initialize_chat_session()
+    assert queries == ["b0-step11280"]
+    assert agent.context.messages == []
+    details = agent._startup_details()
+    agent.console.startup_panel(**details)
+    assert panels[0][0] == (
+        "Model",
+        f"openai/b0-step11280 ({context:,} context / {output:,} max output tokens) · auto (server default)",
+    )
+    agent._startup_details()  # Status probes must remain read-only.
+    agent.context.add(Message.user("hello"))
+    agent.call_api()
+    assert queries == ["b0-step11280"]
+    assert requests[0].max_output_tokens == output
+    assert notices == []
+
+
+def test_interactive_chat_initializes_limits_before_rendering_header(agent_factory, monkeypatch):
+    agent, queries, requests = agent_factory()
+    headers = []
+    monkeypatch.setattr(agent.console, "startup_panel", lambda **details: headers.append(details))
+    monkeypatch.setattr("ene.backend.TerminalInput", lambda **kwargs: object())
+    monkeypatch.setattr(agent, "_run_terminal_loop", lambda terminal: None)
+
+    agent.chat_loop()
+
+    assert queries == ["b0-step11280"]
+    assert headers[0]["context"] == "32,768 context / 8,192 max output tokens"
+    assert requests == []
+
+
 def test_detects_serving_limit_once_and_adjusts_output_budget(agent_factory):
     agent, queries, requests = agent_factory()
     assert queries == []  # No network work during construction.
@@ -168,13 +212,77 @@ def test_discovery_is_shared_between_parallel_batch_items(agent_factory, monkeyp
     assert all(request.max_output_tokens == 8192 for request in requests)
 
 
+@pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
+def test_qwen_stream_displays_and_detects_returned_reasoning(agent_factory, monkeypatch, field):
+    agent, queries, requests = agent_factory()
+    agent.stream = True
+    events = EventHub()
+    agent.console.events = events
+    chunks = [ChatCompletionChunk.model_validate({
+        "id": "test", "created": 0, "model": agent.model, "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }) for delta, finish in [({field: "Thinking through the task.\n"}, None),
+                             ({"content": "done"}, "stop")]]
+    closed = []
+
+    class RawStream:
+        def __iter__(self):
+            return iter(chunks)
+
+        def close(self):
+            closed.append(True)
+
+    def open_stream(request):
+        requests.append(request)
+        wire = agent.provider._kwargs(request)
+        assert "reasoning_effort" not in wire
+        assert "extra_body" not in wire  # Never guess a server thinking toggle.
+        return _OpenAICompletionStream(RawStream(), lambda: None)
+
+    monkeypatch.setattr(agent.provider, "open_stream", open_stream)
+    assert agent.profile.reasoning is None
+    assert agent._startup_details()["reasoning"] == "auto (server default)"
+    message = agent.call_api()
+    assert message.reasoning_content == "Thinking through the task.\n"
+    assert any(event.type == "thinking_delta" for event in events.snapshot())
+    assert any(event.type == "thinking" for event in events.snapshot())
+    assert agent._startup_details()["reasoning"] == "detected (server default)"
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("reasoning_tokens, expected", [(0, "auto"), (3, "detected")])
+def test_reported_reasoning_tokens_detect_reasoning_without_text(agent_factory, reasoning_tokens, expected):
+    agent, queries, requests = agent_factory()
+    agent._blocking_completion = lambda request: CompletionResult(
+        Message.assistant("done"), ProviderUsage(10, 5, 15, reasoning_tokens=reasoning_tokens), "stop",
+    )
+    agent.call_api()
+    assert agent._startup_details()["reasoning"] == f"{expected} (server default)"
+
+
+def test_qwen_effort_query_distinguishes_control_from_server_reasoning(agent_factory, monkeypatch):
+    agent, queries, requests = agent_factory()
+    notices = []
+    monkeypatch.setattr(agent.console, "system", notices.append)
+    agent._cmd_effort("/effort")
+    assert "auto (server default); effort control is not configured" in notices[0]
+    assert "unsupported" not in notices[0]
+    agent._reasoning_observed = True
+    agent._cmd_effort("/effort")
+    assert "detected (server default)" in notices[1]
+
+
 def test_model_switch_resets_discovery(agent_factory, monkeypatch):
     agent, queries, requests = agent_factory()
     agent.call_api()
     monkeypatch.setattr(config, "conf", {"openai": {"next": {
         "model": "other-checkpoint", "api_key": "test-key", "base_url": "http://server/v1",
     }}})
+    agent._reasoning_observed = True
     agent._cmd_model("/model next")
+    assert agent._reasoning_observed is False
+    assert agent.show_thinking is True
+    assert agent._startup_details()["reasoning"] == "auto (server default)"
     agent.call_api()
     assert queries == ["b0-step11280", "other-checkpoint"]
     assert agent.context_length == 32768

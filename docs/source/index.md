@@ -39,13 +39,22 @@ openai:
 
 #### Automatic token budgets
 
-- Before the first chat or batch request, Ene queries `/models` using the endpoint's credentials. Chat Completions and API-key Responses both support discovery.
-- A positive integer `max_model_len` on the exact model ID supplies the serving context limit, including vLLM's `--max-model-len` setting. Discovery is checked once per session model; `/model` resets it.
+- At session start, Ene queries `/models` using the endpoint's credentials for Chat Completions and API-key Responses. The startup header's **Model** row shows the context limit and maximum output budget.
+- A positive integer `max_model_len` on the exact model ID supplies the serving context limit, including vLLM's `--max-model-len` setting.
+- Discovery runs once per session model; `/model` resets it for the next request. Direct chat and batch calls without session initialization discover limits before their first request.
 - With a discovered or explicitly configured context, the default output budget is `min(profile output limit, context / 4)`. A 32,768-token server gets an 8,192-token output budget.
 - Explicit context limits skip discovery; explicit output limits are preserved. Missing metadata, unsupported endpoints, or failed discovery leave profile defaults in place. Discovery requests use a five-second timeout without retries.
 - A context-overflow error stating a smaller maximum context length updates an inferred limit and allows one corrected retry. Explicit context overrides are not replaced.
 - `/models` fields are not standardized. Set limits explicitly when your gateway omits them and its errors do not report the limit. A separate output-token hard cap cannot be inferred from the context window.
 - `ene models` lists configured/profile defaults without contacting endpoints; active-session status shows detected limits.
+
+#### Reasoning detection
+
+- Ene displays thinking returned in `reasoning_content` or `reasoning`, independently of whether the model profile supports effort control.
+- Without configured effort control, the startup header shows **auto (server default)**. `/effort` reports **detected (server default)** after a response includes reasoning text or reports nonzero reasoning-token usage.
+- `/models` does not standardize reasoning capabilities. Ene does not send guessed thinking toggles or generate test responses; absence of reasoning in one response does not prove it is unsupported.
+- Thinking must be enabled on the served checkpoint or server. For [Qwen3-VL](commands.md#temporary-endpoints-and-model-profiles), `--reasoning-effort` does not switch thinking on or off.
+- Raw `<think>` text inside `content` remains ordinary answer text. Configure the server's reasoning parser to expose thinking separately.
 
 #### Recent model budgets
 

@@ -901,10 +901,12 @@ class AgentCommandsMixin:
         parts = raw.split(maxsplit=1)
         choices = ", ".join(REASONING_EFFORTS)
         if len(parts) == 1:
-            self.console.system(
-                f"Reasoning: {self.profile.reasoning or 'unsupported'}, effort: {self.reasoning_effort}. "
-                f"Available: {choices}"
-            )
+            if self.profile.reasoning is not None:
+                description = f"Reasoning: {self.profile.reasoning}, effort: {self.reasoning_effort}."
+            else:
+                status = "detected" if self._reasoning_observed else "auto"
+                description = f"Reasoning: {status} (server default); effort control is not configured."
+            self.console.system(f"{description} Available: {choices}")
             return
         effort = parts[1].strip().lower()
         if effort not in REASONING_EFFORTS:
@@ -976,14 +978,18 @@ class AgentCommandsMixin:
             model_conf.get("context_length"), model_conf.get("max_output_tokens"),
         )
         self.reasoning_effort = model_conf.get("reasoning_effort", self.reasoning_effort)
-        self.show_thinking = self.profile.reasoning is not None
+        self.show_thinking = True
+        self._reasoning_observed = False
         self.presence.update(model=self.model_alias or self.model)
         self._publish_context_status()
 
+        reasoning = (
+            f"{self.profile.reasoning}/{self.reasoning_effort}"
+            if self.profile.reasoning is not None else "auto (server default)"
+        )
         self.console.system(
             f"Switched to model: {self.model} via {self.provider_name} "
-            f"(context: {self.context_length:,} tokens, reasoning: "
-            f"{self.profile.reasoning or 'none'}/{self.reasoning_effort}, "
+            f"(context: {self.context_length:,} tokens, reasoning: {reasoning}, "
             f"auth: {self.provider.auth_status()})"
         )
 

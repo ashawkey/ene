@@ -60,6 +60,7 @@ def test_initialize_chat_session_prunes_old_tool_result_artifacts(tmp_path):
 
     agent = LLMAgent.__new__(LLMAgent)
     agent._session_id = None
+    agent._discover_model_limits = lambda: None
     agent._session_store = NS(session_id="live", head_id="revision", exists=True)
     agent._session_revision_id = "revision"
     agent.changes = NS(session_id="live")
