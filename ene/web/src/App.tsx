@@ -240,6 +240,7 @@ export default function App() {
         onClose={() => setSidebarOpen(false)}
         onSelect={select}
         onAttach={attach}
+        onDetach={detach}
         onEnd={end}
         onNew={() => {
           setCreating(true)

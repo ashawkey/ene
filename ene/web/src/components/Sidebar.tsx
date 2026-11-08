@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react'
-import { Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, X } from 'lucide-react'
+import { Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, Unlink, X } from 'lucide-react'
 import type { RefObject } from 'react'
 
 import { basename } from '../lib/format'
@@ -25,6 +25,7 @@ function SessionRow({
   busy,
   onSelect,
   onAttach,
+  onDetach,
   onEnd,
 }: {
   session: SessionSummary
@@ -33,6 +34,7 @@ function SessionRow({
   busy: boolean
   onSelect: () => void
   onAttach: () => void
+  onDetach: () => void
   onEnd: () => void
 }) {
   const [armed, setArmed] = useState(false)
@@ -62,6 +64,16 @@ function SessionRow({
           {tasks ? <span className="pill-mini" data-tip="Background processes">{tasks}</span> : null}
         </span>
       </button>
+      {owned ? (
+        <IconButton
+          icon={Unlink}
+          size="sm"
+          className="row-action"
+          label="Detach (keeps running)"
+          disabled={busy}
+          onClick={onDetach}
+        />
+      ) : null}
       {!terminal ? (
         <IconButton
           icon={Power}
@@ -101,6 +113,7 @@ export function Sidebar({
   onClose,
   onSelect,
   onAttach,
+  onDetach,
   onEnd,
   onNew,
   onTheme,
@@ -122,6 +135,7 @@ export function Sidebar({
   onClose: () => void
   onSelect: (id: string) => void
   onAttach: (id: string) => void
+  onDetach: (id: string) => void
   onEnd: (id: string) => void
   onNew: () => void
   onTheme: () => void
@@ -241,6 +255,7 @@ export function Sidebar({
                   busy={busyId === session.id}
                   onSelect={() => onSelect(session.id)}
                   onAttach={() => onAttach(session.id)}
+                  onDetach={() => onDetach(session.id)}
                   onEnd={() => onEnd(session.id)}
                 />
               ))}

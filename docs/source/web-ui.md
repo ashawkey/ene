@@ -54,7 +54,7 @@ The sidebar groups every live session on the machine:
 | **In a terminal** | Owned by a terminal | Run `/detach` or Ctrl+D there first |
 
 - **Rename:** click the session name in the header; Enter saves (same as `/name <name>`), Escape cancels.
-- **Detach:** the unlink icon in the session header. The worker keeps running.
+- **Detach:** the unlink icon in the session header or on an "Open here" sidebar row; one click. The worker keeps running.
 - **Git branch:** in a Git workspace, a header chip shows the current branch (or short commit when detached); it refreshes after each round.
 - **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
 - **State icon:** spinner = working (model call or command); hourglass = idle in the foreground while background processes run or queued input remains; check = waiting for your input. A blue dot marks sessions that finished while you were elsewhere.
