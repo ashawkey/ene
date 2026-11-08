@@ -74,6 +74,7 @@ The sidebar groups every live session on the machine:
 - Enter sends; Shift+Enter adds a line. On touch devices, use the send button.
 - `/` at the start: commands and skills. `@`: workspace files. Up/Down select, Tab/Enter complete.
 - Up/Down without suggestions: recall earlier input.
+- Shell mode (terminal button): input runs as a `!` shell command in the workspace; Up/Down recall earlier shell commands. Backspace in an empty composer or the button switches back. The mode is remembered per session.
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
 - Escape or the stop button stops the round.
 

@@ -35,6 +35,7 @@ class _Console:
     def __init__(self):
         self.results = []
         self.thinking_calls = []
+        self.calls = []
 
     def print(self, *args, **kwargs):
         pass
@@ -46,7 +47,7 @@ class _Console:
         return nullcontext()
 
     def tool(self, *args, **kwargs):
-        pass
+        self.calls.append(args)
 
     def tool_result(self, message, success):
         self.results.append((message, success))
@@ -78,6 +79,8 @@ def test_direct_bash_routes_to_the_exec_tool(tmp_path):
     LLMAgent._run_bash_command(agent, "echo hello")
 
     assert executed == [("exec_command", {"command": "echo hello"})]
+    # The executor announces the call; the shortcut must not add a second one.
+    assert console.calls == []
     assert console.results and console.results[-1][1] is True
 
 

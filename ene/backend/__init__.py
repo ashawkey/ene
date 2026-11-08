@@ -1460,7 +1460,8 @@ class LLMAgent(
 
         Output is streamed in real-time and the command can be interrupted via Ctrl+C.
         """
-        self.console.tool(f"! {command}")
+        # The executor logs the call itself (as exec_command); announcing it
+        # here too would leave a second, unanswered call in the Web UI.
         arguments = {"command": command}
         # A shell command is not an agent round: no model, no statistics.
         with AgentCommandsMixin._round_timer(self, record=False):
