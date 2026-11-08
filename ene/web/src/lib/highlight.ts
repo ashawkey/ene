@@ -59,3 +59,32 @@ export function highlight(code: string, language: string | null | undefined): st
     return null
   }
 }
+
+/**
+ * Split highlighted HTML into per-line HTML, closing spans at each newline and
+ * reopening them on the next line, so wrapped lines keep their line numbers
+ * and multi-line tokens (strings, comments) keep their colors.
+ */
+export function splitHighlightedLines(html: string): string[] {
+  const lines: string[] = []
+  const open: string[] = []
+  let current = ''
+  const tag = /<span[^>]*>|<\/span>|\n/g
+  let last = 0
+  for (const match of html.matchAll(tag)) {
+    current += html.slice(last, match.index)
+    last = (match.index ?? 0) + match[0].length
+    if (match[0] === '\n') {
+      lines.push(current + '</span>'.repeat(open.length))
+      current = open.join('')
+    } else if (match[0] === '</span>') {
+      open.pop()
+      current += match[0]
+    } else {
+      open.push(match[0])
+      current += match[0]
+    }
+  }
+  lines.push(current + html.slice(last))
+  return lines
+}

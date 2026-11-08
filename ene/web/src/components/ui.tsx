@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { CircleAlert, CircleCheck, Info, LoaderCircle, X } from 'lucide-react'
+import { CircleAlert, CircleCheck, Hourglass, Info, LoaderCircle, X } from 'lucide-react'
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -43,6 +43,40 @@ export function IconButton({
       {badge ? <span className="badge">{badge}</span> : null}
     </button>
   )
+}
+
+export const STATE_LABEL: Record<string, string> = {
+  working: 'Working',
+  waiting: 'Background tasks running',
+  done: 'Waiting for you',
+  starting: 'Starting',
+}
+
+/** Session state: spinner = working, hourglass = background work, check = your turn. */
+export function StateIcon({ state, size = 14 }: { state: string; size?: number }) {
+  const label = STATE_LABEL[state] ?? state
+  const common = { size, strokeWidth: 2, 'aria-label': label, role: 'img' as const }
+  if (state === 'working' || state === 'starting') {
+    return <span className={`state-icon ${state}`} data-tip={label}><LoaderCircle {...common} className="spin" /></span>
+  }
+  if (state === 'waiting') {
+    return <span className="state-icon waiting" data-tip={label}><Hourglass {...common} /></span>
+  }
+  return <span className="state-icon done" data-tip={label}><CircleCheck {...common} /></span>
+}
+
+/** Whether a media query matches, kept live. */
+export function useMedia(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches ?? false)
+  useEffect(() => {
+    const media = window.matchMedia?.(query)
+    if (!media) return
+    const update = () => setMatches(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [query])
+  return matches
 }
 
 export function Spinner({ size = 16 }: { size?: number }) {

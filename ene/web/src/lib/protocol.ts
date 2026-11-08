@@ -176,6 +176,15 @@ export type GitChanges = {
   changes: GitChange[]
 }
 
+export type GitDiff = {
+  path: string
+  status: 'added' | 'deleted' | 'modified' | 'unchanged'
+  old: string
+  new: string
+  binary: boolean
+  too_large: boolean
+}
+
 export type FsListing = {
   path: string
   parent: string

@@ -67,6 +67,8 @@ _AGENT_LOGO = (
 )
 
 # Diff rendering: if old + new lines exceed this, show a summary instead
+# Rendering width for the wide (client-wrapped) form of printed output.
+WIDE_RENDER_WIDTH = 400
 DIFF_MAX_LINES = 200
 DIFF_PREVIEW_LINES = 10  # how many lines to show from each side in summary mode
 
@@ -946,17 +948,17 @@ class AgentConsole:
         if self.events is not None and not self.quiet:
             self.events.publish(event_type, **data)
 
-    def _render_plain(self, *objects, markup: bool = True) -> str:
+    def _render_plain(self, *objects, markup: bool = True, width: int = 120) -> str:
         """Render rich objects/markup to plain text for web clients."""
-        capture_console = Console(width=120, theme=AGENT_THEME, no_color=True)
+        capture_console = Console(width=width, theme=AGENT_THEME, no_color=True)
         with capture_console.capture() as capture:
             capture_console.print(*objects, markup=markup)
         return capture.get().rstrip("\n")
 
-    def _render_ansi(self, *objects, markup: bool = True) -> str:
+    def _render_ansi(self, *objects, markup: bool = True, width: int = 120) -> str:
         """Render rich objects/markup with ANSI styles for attached terminals."""
         capture_console = Console(
-            width=120, theme=AGENT_THEME, force_terminal=True,
+            width=width, theme=AGENT_THEME, force_terminal=True,
             color_system="standard",
         )
         with capture_console.capture() as capture:
@@ -1050,16 +1052,28 @@ class AgentConsole:
 
     # -- raw pass-through (for rich markup, tables, etc.) -------------------
 
-    def print(self, *args, **kwargs):
+    # print() accepts ``wide=`` (see below).
+    supports_wide_output = True
+
+    def print(self, *args, wide: str | None = None, **kwargs):
+        """Print rich content.
+
+        *wide* is an alternative rendering of the same content for clients
+        that wrap text themselves (the Web UI): rows clipped to fit a
+        terminal can carry more there. Attached terminals keep the narrow form.
+        """
         if self.render_terminal:
             self._console.print(*args, **kwargs)
         if args and self.events is not None:
             markup = kwargs.get("markup", True)
-            self._emit(
-                "output",
-                text=self._render_plain(*args, markup=markup),
-                ansi=self._render_ansi(*args, markup=markup),
-            )
+            data = {
+                "text": self._render_plain(*args, markup=markup),
+                "ansi": self._render_ansi(*args, markup=markup),
+            }
+            if wide is not None:
+                data["wide_text"] = self._render_plain(wide, markup=markup, width=WIDE_RENDER_WIDTH)
+                data["wide_ansi"] = self._render_ansi(wide, markup=markup, width=WIDE_RENDER_WIDTH)
+            self._emit("output", **data)
 
     def local(self, *args, **kwargs):
         """Print terminal-only information such as authentication secrets.

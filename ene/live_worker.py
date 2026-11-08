@@ -312,17 +312,26 @@ class Worker:
                 self._update_state_locked(time.time())
 
     @staticmethod
-    def _derive_state(busy: bool, pending: bool, inbox: bool, watchers: int) -> str:
-        """``waiting`` means the session will continue without the user."""
+    def _derive_state(
+        busy: bool, pending: bool, inbox: bool, watchers: int, background: int = 0
+    ) -> str:
+        """Three-way session state shown by pickers and the web UI.
+
+        ``working``: a round (model call or command) is running.
+        ``waiting``: nothing runs in the foreground, but background processes
+        are still running, or queued input will start a round on its own.
+        ``done``: idle, waiting for the user.
+        """
         if busy:
             return "working"
-        if pending or inbox or watchers:
+        if pending or inbox or watchers or background:
             return "waiting"
         return "done"
 
     def _update_state_locked(self, timestamp: float) -> None:
         state = self._derive_state(
-            self._state_busy, self._state_pending, self._state_inbox, self._state_watchers
+            self._state_busy, self._state_pending, self._state_inbox,
+            self._state_watchers, self._state_background,
         )
         if state != self._state:
             self._state = state
@@ -360,6 +369,7 @@ class Worker:
             submission is not None,
             bool(getattr(self.inputs, "inbox_size", 0)),
             watchers,
+            background,
         )
         status = {
             "runtime_id": self.runtime_id,

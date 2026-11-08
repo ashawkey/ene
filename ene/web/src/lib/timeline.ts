@@ -1,7 +1,10 @@
 import type { TimelineItem } from './session'
 
+type RoundItem = Extract<TimelineItem, { kind: 'round' }>
+
 export type RenderNode =
-  | { kind: 'item'; item: TimelineItem }
+  /** *round*: the round summary shown in this reply's footer row. */
+  | { kind: 'item'; item: TimelineItem; round?: RoundItem }
   | { kind: 'group'; key: string; items: TimelineItem[]; live: boolean }
 
 const groupable = (item: TimelineItem) =>
@@ -35,7 +38,20 @@ export function groupItems(items: TimelineItem[], live: boolean): RenderNode[] {
     }
   }
   if (run.length) flush(true)
-  return nodes
+  // A reply that ends a round carries that round's summary in its footer.
+  const merged: RenderNode[] = []
+  for (const node of nodes) {
+    const previous = merged.at(-1)
+    if (
+      node.kind === 'item' && node.item.kind === 'round' &&
+      previous?.kind === 'item' && previous.item.kind === 'assistant' && !previous.round
+    ) {
+      previous.round = node.item
+      continue
+    }
+    merged.push(node)
+  }
+  return merged
 }
 
 export type GroupSummary = { tools: number; failed: number; names: Array<[string, number]>; latest: string }

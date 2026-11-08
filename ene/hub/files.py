@@ -220,3 +220,70 @@ def git_changes(root: str | Path) -> dict:
             "staged": code[0] not in " ?",
         })
     return {"git": True, "branch": branch, "changes": changes}
+
+
+def _git_text(data: bytes | None) -> tuple[str, bool, bool]:
+    """``(text, binary, too_large)`` for one side of a diff."""
+    if data is None:
+        return "", False, False
+    if len(data) > MAX_TEXT_BYTES:
+        return "", False, True
+    if _is_binary(data[:BINARY_SNIFF_BYTES]):
+        return "", True, False
+    return data.decode("utf-8", errors="replace"), False, False
+
+
+def git_diff(root: str | Path, relative: str) -> dict:
+    """Both sides of one file's working-tree change against ``HEAD``.
+
+    The path may no longer exist (a deletion), so it is resolved without
+    requiring existence and then confined to the workspace like any other.
+    """
+    base, _ = resolve_in_workspace(root, "")
+    relative = (relative or "").strip()
+    if not relative or "\x00" in relative or len(relative) > 4096:
+        raise WorkspaceError("Invalid path.")
+    try:
+        target = (base / relative).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise WorkspaceError("Path is not reachable.") from exc
+    if base not in target.parents:
+        raise WorkspaceError("Path is outside the workspace.", 403)
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+        if top.returncode != 0:
+            raise WorkspaceError("Not a Git repository.", 404)
+        repo = Path(top.stdout.strip()).resolve()
+        repo_path = target.relative_to(repo).as_posix()
+        head = subprocess.run(
+            ["git", "show", f"HEAD:{repo_path}"],
+            cwd=repo, capture_output=True, timeout=GIT_TIMEOUT,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise WorkspaceError("Could not read the Git history.") from exc
+    old_bytes = head.stdout if head.returncode == 0 else None
+    try:
+        new_bytes = target.read_bytes() if target.is_file() else None
+    except OSError as exc:
+        raise WorkspaceError("File is not readable.", 403) from exc
+    if old_bytes is None and new_bytes is None:
+        raise WorkspaceError("Path not found.", 404)
+    old, old_binary, old_large = _git_text(old_bytes)
+    new, new_binary, new_large = _git_text(new_bytes)
+    status = (
+        "added" if old_bytes is None
+        else "deleted" if new_bytes is None
+        else "modified" if old_bytes != new_bytes
+        else "unchanged"
+    )
+    return {
+        "path": target.relative_to(base).as_posix(),
+        "status": status,
+        "old": old,
+        "new": new,
+        "binary": old_binary or new_binary,
+        "too_large": old_large or new_large,
+    }

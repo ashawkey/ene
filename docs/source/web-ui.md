@@ -55,12 +55,13 @@ The sidebar groups every live session on the machine:
 
 - **Detach:** the unlink icon in the session header. The worker keeps running.
 - **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
-- **State dot:** blue = working, orange = will continue on its own, green = idle. A blue badge marks rounds that finished while you were elsewhere.
+- **State icon:** spinner = working (model call or command); hourglass = idle in the foreground while background processes run or queued input remains; check = waiting for your input. A blue dot marks sessions that finished while you were elsewhere.
+- **Collapse:** the panel icon in the sidebar header (or Ctrl/Cmd+B) shrinks the sidebar to an icon rail; click a session there to switch or attach. The choice is remembered.
 
 ## Conversation
 
 - **Timeline:** messages, reasoning, tool calls, diffs, and command output. Three or more consecutive tool calls fold into one row.
-- **Round summary:** a chip after each round shows its time, tokens, cache hit rate, and tool calls; click it for statistics.
+- **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time, tokens, cache hit rate, and tool calls; click it for statistics.
 - **Diffs:** click the file name to open the file.
 - **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.
 - **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
@@ -75,14 +76,14 @@ The sidebar groups every live session on the machine:
 
 ## Inspector
 
-Toggle panels from the session header (icons) or the context gauge:
+Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics) or the folder chip (Files):
 
 | Panel | Contents |
 | --- | --- |
-| **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. Open a file to preview it (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
+| **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. A changed file opens as a side-by-side diff against `HEAD` (unified on narrow screens); toggle to the file preview (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
 | **Statistics** | Rounds, agent time, tokens (input / cached / output), tool calls, context usage, and per-round charts. Click a round to jump to it. |
 | **Tasks** | Background processes with runtime and latest output; show a log (`/ps <id>`) or stop one (click twice). |
-| **Info** | Model, context, reasoning, persona, skills, IDs, and the command list. |
+| **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
 - File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
@@ -92,7 +93,7 @@ Toggle panels from the session header (icons) or the context gauge:
 | Keys | Action |
 | --- | --- |
 | Ctrl/Cmd+K | Search sessions (Enter opens or attaches the first match) |
-| Ctrl/Cmd+B | Toggle the sidebar |
+| Ctrl/Cmd+B | Collapse or expand the sidebar (open or close it on phones) |
 | Ctrl/Cmd+F | Find in conversation |
 | Escape | Close dialogs and suggestions, dismiss a question, or stop the round |
 

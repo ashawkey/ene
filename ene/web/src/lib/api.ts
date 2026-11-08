@@ -4,6 +4,7 @@ import type {
   FilePreview,
   FsListing,
   GitChanges,
+  GitDiff,
   NewSessionRequest,
   SessionOptions,
   SessionSummary,
@@ -96,6 +97,7 @@ export const listFiles = (id: string, path: string) => get<DirListing>(`${sid(id
 export const readFile = (id: string, path: string) => get<FilePreview>(`${sid(id)}/file`, { path })
 export const rawFileUrl = (id: string, path: string) =>
   `${sid(id)}/raw?${new URLSearchParams({ path }).toString()}`
+export const fileDiff = (id: string, path: string) => get<GitDiff>(`${sid(id)}/diff`, { path })
 export const listChanges = (id: string) => get<GitChanges>(`${sid(id)}/changes`)
 export const pathCompletions = (id: string, query: string) =>
   get<{ completions: string[] }>(`${sid(id)}/path-completions`, { query }).then((data) => data.completions)

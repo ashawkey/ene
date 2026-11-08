@@ -44,3 +44,14 @@ describe('grouping', () => {
     expect(nodes[3]).toMatchObject({ kind: 'group', live: true })
   })
 })
+
+describe('highlighted line splitting', () => {
+  it('carries open spans across newlines', async () => {
+    const { splitHighlightedLines } = await import('./highlight')
+    expect(splitHighlightedLines('a<span class="s">"x\ny"</span>b\nc')).toEqual([
+      'a<span class="s">"x</span>',
+      '<span class="s">y"</span>b',
+      'c',
+    ])
+  })
+})

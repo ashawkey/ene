@@ -82,12 +82,23 @@ export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<'u
   )
 })
 
-export const AssistantMessage = memo(function AssistantMessage({ item }: { item: ItemOf<'assistant'> }) {
+export const AssistantMessage = memo(function AssistantMessage({
+  item,
+  round,
+  onOpenStats,
+}: {
+  item: ItemOf<'assistant'>
+  round?: RoundStats
+  onOpenStats?: () => void
+}) {
   return (
     <div className={`assistant ${item.streaming ? 'streaming' : ''}`}>
       <Markdown text={item.text} />
-      {!item.streaming && item.text ? (
-        <div className="assistant-tools"><CopyButton text={item.text} label="Copy reply" /></div>
+      {!item.streaming && (item.text || round) ? (
+        <div className="reply-foot">
+          {item.text ? <CopyButton text={item.text} label="Copy reply" /> : null}
+          {round ? <RoundChip round={round} onOpen={onOpenStats} /> : null}
+        </div>
       ) : null}
     </div>
   )
@@ -255,15 +266,13 @@ export function roundTokens(round: RoundStats) {
 export const RoundChip = memo(function RoundChip({ round, onOpen }: { round: RoundStats; onOpen?: () => void }) {
   const hit = round.input_tokens > 0 ? round.cached_tokens / round.input_tokens : 0
   return (
-    <div className="round-chip-row">
-      <button type="button" className={`round-chip ${round.cancelled ? 'cancelled' : ''}`} onClick={onOpen} data-tip="Round statistics">
+    <button type="button" className={`round-chip ${round.cancelled ? 'cancelled' : ''}`} onClick={onOpen} data-tip="Round statistics">
         <span><Timer size={12} />{duration(round.duration)}</span>
         <span><Coins size={12} />↑{compactNumber(round.input_tokens)} ↓{compactNumber(round.output_tokens)}</span>
         {round.input_tokens > 0 ? <span className="muted">{Math.round(hit * 100)}% cached</span> : null}
         {round.tool_calls ? <span><Wrench size={12} />{round.tool_calls}{round.tool_failures ? <em className="fail"> ·{round.tool_failures}✕</em> : null}</span> : null}
         {round.cancelled ? <span className="fail">stopped</span> : null}
-      </button>
-    </div>
+    </button>
   )
 })
 

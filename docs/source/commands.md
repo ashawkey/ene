@@ -84,9 +84,9 @@ See [Library](library.md) for `ene lib` workflows.
 
   | State | Meaning |
   |---|---|
-  | `● working` | A round is running |
-  | `○ waiting` | Continues on its own: a queued message, notification, or watcher remains |
-  | `✓ done` | Finished; review it |
+  | `● working` | A round is running (model call or command) |
+  | `○ waiting` | Idle in the foreground, but background processes run or queued input remains |
+  | `✓ done` | Waiting for your input |
 
 - Markers after a state count background work: `↻2` watchers that can wake the session (processes that notify), `⚙1` processes running with `notify="none"`. The Web UI shows the combined count on the session row.
 - One owner per session: a terminal attachment waits briefly for another terminal to release it; Web UI ownership is refused immediately. Detach in the browser first.

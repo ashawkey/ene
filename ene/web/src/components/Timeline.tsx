@@ -153,16 +153,16 @@ export function Timeline({
     }
   }, [currentKey])
 
-  const renderItem = useCallback((item: TimelineItem, isLive: boolean) => {
+  const renderItem = useCallback((item: TimelineItem, isLive: boolean, round?: RoundStats) => {
     switch (item.kind) {
       case 'user': return <UserMessage item={item} />
-      case 'assistant': return <AssistantMessage item={item} />
+      case 'assistant': return <AssistantMessage item={item} round={round} onOpenStats={onOpenStats} />
       case 'thinking': return <Thinking item={item} />
       case 'tool': return <ToolCall item={item} live={isLive} />
       case 'diff': return <DiffView item={item} onOpenFile={onOpenFile} />
       case 'output': return <Output item={item} />
       case 'notice': return <Notice item={item} />
-      case 'round': return <RoundChip round={item.round} onOpen={onOpenStats} />
+      case 'round': return <div className="reply-foot"><RoundChip round={item.round} onOpen={onOpenStats} /></div>
     }
   }, [onOpenFile, onOpenStats])
 
@@ -180,7 +180,7 @@ export function Timeline({
         ) : null}
         {nodes.map((node) => node.kind === 'item' ? (
           <div className={`t-item k-${node.item.kind} ${mark(node.item.key)}`} key={node.item.key} data-key={node.item.key} data-seq={node.item.seq || undefined}>
-            {renderItem(node.item, live)}
+            {renderItem(node.item, live, node.round?.round)}
           </div>
         ) : (
           <div

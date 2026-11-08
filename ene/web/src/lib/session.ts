@@ -376,12 +376,16 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
         success: data.success !== false,
       }]
       break
-    case 'output':
+    case 'output': {
+      // Prefer the wide form (rows not clipped to a terminal width); this
+      // view wraps lines itself.
+      const ansi = typeof data.wide_ansi === 'string' ? data.wide_ansi : data.ansi
       next.items = append(items, {
-        kind: 'output', key, seq, ts, text: str(data.text),
-        ansi: typeof data.ansi === 'string' ? data.ansi : null,
+        kind: 'output', key, seq, ts, text: str(data.wide_text, str(data.text)),
+        ansi: typeof ansi === 'string' ? ansi : null,
       })
       break
+    }
     case 'system':
     case 'debug':
     case 'warning':

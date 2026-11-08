@@ -1,19 +1,16 @@
-import { Link2, LogOut, Moon, Monitor, Plus, Power, Search, Sun, SunMoon, Terminal, X } from 'lucide-react'
+import { Fragment, useState } from 'react'
+import { Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, X } from 'lucide-react'
 import type { RefObject } from 'react'
-import { useState } from 'react'
 
 import { basename } from '../lib/format'
 import type { SessionSummary } from '../lib/protocol'
 import type { LinkStatus } from '../lib/socket'
 import type { ThemeChoice } from '../lib/theme'
-import { IconButton, LinkDot, Spinner } from './ui'
+import { IconButton, LinkDot, Spinner, STATE_LABEL, StateIcon } from './ui'
 
-const STATE_LABEL: Record<string, string> = {
-  working: 'Working',
-  waiting: 'Will continue on its own',
-  done: 'Idle',
-  starting: 'Starting',
-}
+
+// The rail does not scroll (it would clip tooltips); the rest is a click away.
+const RAIL_LIMIT = 10
 
 function matches(session: SessionSummary, needle: string) {
   if (!needle) return true
@@ -52,7 +49,7 @@ function SessionRow({
         onClick={owned ? onSelect : onAttach}
         data-tip={terminal ? 'Attached in a terminal — detach there first' : owned ? undefined : 'Attach'}
       >
-        <span className={`state-dot ${session.state}`} aria-label={STATE_LABEL[session.state] ?? session.state} />
+        <StateIcon state={session.state} />
         <span className="session-text">
           <span className="session-title">
             <span className="clamp">{title}</span>
@@ -98,6 +95,8 @@ export function Sidebar({
   status,
   theme,
   searchRef,
+  rail,
+  onToggleRail,
   onClose,
   onSelect,
   onAttach,
@@ -114,6 +113,9 @@ export function Sidebar({
   status: LinkStatus
   theme: ThemeChoice
   searchRef: RefObject<HTMLInputElement | null>
+  /** Collapsed to a narrow icon rail (wide screens only). */
+  rail: boolean
+  onToggleRail: () => void
   onClose: () => void
   onSelect: (id: string) => void
   onAttach: (id: string) => void
@@ -131,6 +133,60 @@ export function Sidebar({
     ['In a terminal', visible.filter((session) => session.attached_by && session.attached_by !== 'web')],
   ]
   const ThemeIcon = theme === 'light' ? Sun : theme === 'dark' ? Moon : SunMoon
+  if (rail) {
+    const listed = [
+      ...sessions.filter((session) => session.attached_by === 'web'),
+      ...sessions.filter((session) => !session.attached_by),
+    ]
+    return (
+      <nav className="sidebar rail glass" aria-label="Sessions">
+        <IconButton icon={PanelLeftOpen} label="Expand sidebar (Ctrl+B)" onClick={onToggleRail} />
+        <IconButton icon={Plus} label="New session" tone="accent" onClick={onNew} />
+        <IconButton
+          icon={Search}
+          label="Search sessions (Ctrl+K)"
+          onClick={() => {
+            onToggleRail()
+            window.setTimeout(() => searchRef.current?.focus(), 30)
+          }}
+        />
+        <div className="rail-list">
+          {listed.slice(0, RAIL_LIMIT).map((session, index) => {
+            const owned = session.attached_by === 'web'
+            const title = session.name || basename(session.cwd) || session.title
+            // Divide sessions open here from detached ones.
+            const divider = !owned && index > 0 && listed[index - 1].attached_by === 'web'
+            return (
+              <Fragment key={session.id}>
+              {divider ? <span className="rail-divider" role="separator" aria-label="Detached sessions" /> : null}
+              <button
+                type="button"
+                className={`rail-item ${session.id === activeId ? 'active' : ''} ${owned ? 'owned' : ''}`}
+                disabled={busyId !== null}
+                onClick={() => (owned ? onSelect(session.id) : onAttach(session.id))}
+                data-tip={`${title} · ${STATE_LABEL[session.state] ?? session.state}${owned ? '' : ' · click to attach'}`}
+                aria-label={title}
+              >
+                <span className="rail-initial">{title.slice(0, 2)}</span>
+                <span className="rail-state"><StateIcon state={session.state} size={11} /></span>
+                {unread.has(session.id) ? <span className="unread rail-unread" /> : null}
+              </button>
+              </Fragment>
+            )
+          })}
+          {listed.length > RAIL_LIMIT ? (
+            <button type="button" className="rail-more" onClick={onToggleRail} data-tip="Show all sessions">
+              +{listed.length - RAIL_LIMIT}
+            </button>
+          ) : null}
+        </div>
+        <span className="grow" />
+        <LinkDot status={status} />
+        <IconButton icon={ThemeIcon} size="sm" label={`Theme: ${theme}`} onClick={onTheme} />
+        <IconButton icon={LogOut} size="sm" label="Sign out" onClick={onLogout} />
+      </nav>
+    )
+  }
   return (
     <>
       <div className={`sidebar-scrim ${open ? 'open' : ''}`} onClick={onClose} />
@@ -140,6 +196,7 @@ export function Sidebar({
           <span className="brand">ene</span>
           <span className="grow" />
           <IconButton icon={Plus} label="New session" tone="accent" onClick={onNew} />
+          <IconButton icon={PanelLeftClose} label="Collapse sidebar (Ctrl+B)" className="hide-narrow" onClick={onToggleRail} />
           <IconButton icon={X} label="Close" className="show-narrow" onClick={onClose} />
         </div>
         <label className="filter">

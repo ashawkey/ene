@@ -72,6 +72,11 @@ MAX_CREATE_BODY_BYTES = 8192
 MAX_REMEMBERED_ACTIONS = 512
 MAX_ACTION_ID_LENGTH = 128
 MAX_ROUNDS = 500                # round statistics kept per attached session
+# Events that can change an attached session's list entry (state, title, preview).
+_SUMMARY_EVENTS = frozenset({
+    "operation_start", "operation_end", "pending_set", "pending_cleared",
+    "background_status", "session_meta", "user_message",
+})
 
 # Discovery file: written by the hub so a second ``ene hub`` can detect that
 # one is already running on this machine.
@@ -245,6 +250,10 @@ class RemoteSession:
         # relays them (see ``round_stats`` / ``round_history`` events).
         self.rounds: list[dict] = []
         self.active_round: dict | None = None
+        # Called when the summary shown in session lists may have changed, so
+        # browsers see working/waiting/done flips at once rather than on the
+        # next registry poll.
+        self.on_summary_change = None
         # action key -> future resolving to the forwarded verdict (see
         # Hub._deduplicated_forward). Lives on the event loop only.
         self.actions: OrderedDict[str, asyncio.Future] = OrderedDict()
@@ -464,6 +473,11 @@ class RemoteSession:
                 self.rounds = [item for item in rounds if isinstance(item, dict)][-MAX_ROUNDS:]
         self.events.publish_at(etype, dict(data), float(timestamp))
         self.touch()
+        if etype in _SUMMARY_EVENTS and self.on_summary_change is not None:
+            try:
+                self.on_summary_change()
+            except Exception:
+                pass
         return etype == "session_meta"
 
     def summary(self) -> dict:
@@ -477,12 +491,13 @@ class RemoteSession:
             "conversation_id": self.meta.get("conversation_id", ""),
             "preview": self.meta.get("preview", ""),
             "attached_by": "web",
-            # Mirrors the worker's own three-way state (see Worker._status):
-            # a round is running, the session will continue on its own (a
-            # queued message or a watcher), or the turn finished for review.
+            # Mirrors Worker._derive_state: a round is running; nothing runs in
+            # the foreground but background work or queued input remains; or
+            # the session waits for the user.
             "state": (
                 "working" if self.operation_id is not None
-                else "waiting" if self.pending is not None or self.watchers
+                else "waiting"
+                if self.pending is not None or self.watchers or self.background
                 else "done"
             ),
             "watchers": self.watchers,
@@ -684,6 +699,7 @@ class Hub:
             "preview": str(record.get("last_user_message", ""))[:PREVIEW_LIMIT],
         })
         session._loop = self._loop
+        session.on_summary_change = self._notify_control
         session.link = WorkerLink(
             record,
             on_event=session.ingest,
@@ -1304,6 +1320,13 @@ class Hub:
             # Defense in depth: even a mislabeled file must not run as a page.
             response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
             return response
+
+        @app.get("/api/sessions/{session_id}/diff")
+        async def workspace_diff(request: Request, session_id: str, path: str = ""):
+            require_login(request)
+            return await browse_call(
+                hubfiles.git_diff, session_workspace(session_id), path
+            )
 
         @app.get("/api/sessions/{session_id}/changes")
         async def workspace_changes(request: Request, session_id: str):

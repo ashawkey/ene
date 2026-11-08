@@ -5,6 +5,7 @@ import {
   EyeOff,
   File,
   FileCode,
+  FileDiff,
   FileImage,
   FileText,
   Folder,
@@ -17,12 +18,14 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { errorMessage, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
+import { errorMessage, fileDiff, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
 import { bytes, relativeTime } from '../lib/format'
-import { highlight, languageForPath } from '../lib/highlight'
-import type { DirListing, FilePreview, GitChanges } from '../lib/protocol'
+import { highlight, languageForPath, splitHighlightedLines } from '../lib/highlight'
+import type { DirListing, FilePreview, GitChanges, GitDiff } from '../lib/protocol'
+import { splitLines } from '../lib/splitDiff'
 import { store } from '../lib/storage'
 import { CopyButton, Markdown } from './Markdown'
+import { SplitDiff } from './SplitDiff'
 import { Empty, IconButton, Modal, Spinner } from './ui'
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i
@@ -46,7 +49,7 @@ export function FileBrowser({
   refreshKey,
 }: {
   sessionId: string
-  onOpen: (path: string) => void
+  onOpen: (path: string, changed?: boolean) => void
   refreshKey: number
 }) {
   const [path, setPath] = useState(() => store.get(`ene.files.${sessionId}`) ?? '')
@@ -171,8 +174,7 @@ export function FileBrowser({
                 type="button"
                 className="file-row"
                 key={change.path}
-                disabled={change.status === 'deleted'}
-                onClick={() => onOpen(change.path)}
+                onClick={() => onOpen(change.path, true)}
               >
                 <Icon size={15} className="file-icon" />
                 <span className="file-name">
@@ -202,7 +204,7 @@ export function FileBrowser({
                 type="button"
                 className={`file-row ${entry.hidden ? 'hidden-entry' : ''}`}
                 key={entry.name}
-                onClick={() => (entry.type === 'dir' ? (setFilter(''), setPath(full)) : onOpen(full))}
+                onClick={() => (entry.type === 'dir' ? (setFilter(''), setPath(full)) : onOpen(full, status ? true : undefined))}
                 title={relativeTime(entry.mtime)}
               >
                 <Icon size={15} className={`file-icon ${entry.type}`} />
@@ -225,16 +227,22 @@ export function FileBrowser({
 export function FileViewer({
   sessionId,
   path,
+  changed,
   onClose,
   onMention,
 }: {
   sessionId: string
   path: string
+  /** True: open on the diff; undefined: probe Git and offer the diff if changed. */
+  changed?: boolean
   onClose: () => void
   onMention: (path: string) => void
 }) {
   const [file, setFile] = useState<FilePreview | null>(null)
   const [error, setError] = useState('')
+  const [diff, setDiff] = useState<GitDiff | null>(null)
+  const [diffError, setDiffError] = useState('')
+  const [mode, setMode] = useState<'diff' | 'file'>(changed ? 'diff' : 'file')
   const [rendered, setRendered] = useState(/\.md$/i.test(path))
   const [tick, setTick] = useState(0)
 
@@ -244,6 +252,20 @@ export function FileViewer({
     readFile(sessionId, path)
       .then((data) => !cancelled && setFile(data))
       .catch((exc) => !cancelled && setError(errorMessage(exc, 'Could not open the file.')))
+    fileDiff(sessionId, path)
+      .then((data) => {
+        if (cancelled) return
+        setDiff(data)
+        setDiffError('')
+        // A deleted file has nothing else to show.
+        if (data.status === 'deleted') setMode('diff')
+      })
+      .catch((exc) => {
+        if (cancelled) return
+        setDiff(null)
+        setDiffError(errorMessage(exc, 'No Git diff available.'))
+        setMode('file')
+      })
     return () => {
       cancelled = true
     }
@@ -251,11 +273,27 @@ export function FileViewer({
 
   const language = languageForPath(path)
   const text = file?.kind === 'text' ? file.text ?? '' : ''
-  const html = useMemo(() => (text ? highlight(text, language) : null), [text, language])
-  const lineCount = text ? text.split('\n').length : 0
-  const gutter = useMemo(() => Array.from({ length: lineCount }, (_, i) => i + 1).join('\n'), [lineCount])
+  // One row per line so long lines wrap without losing their line number.
+  const lines = useMemo(() => {
+    if (!text) return [] as Array<{ html: string | null; text: string }>
+    const plain = text.split('\n')
+    const html = highlight(text, language)
+    const marked = html !== null ? splitHighlightedLines(html) : null
+    return plain.map((line, index) => ({ html: marked?.[index] ?? null, text: line }))
+  }, [text, language])
+  const lineCount = lines.length
   const isMarkdown = /\.(md|markdown)$/i.test(path)
   const Icon = fileIcon(path, 'file')
+  const hasDiff = diff !== null && diff.status !== 'unchanged'
+  const showDiff = mode === 'diff' && (hasDiff || changed)
+  const stat = useMemo(() => {
+    if (!diff) return null
+    const lines = splitLines(diff.old, diff.new)
+    return {
+      added: lines.filter((line) => line.right?.kind === 'add').length,
+      removed: lines.filter((line) => line.left?.kind === 'del').length,
+    }
+  }, [diff])
 
   return (
     <Modal onClose={onClose} className="viewer" label={`File ${path}`}>
@@ -263,10 +301,24 @@ export function FileViewer({
         <Icon size={16} />
         <div className="viewer-title">
           <span className="mono clamp">{path}</span>
-          {file ? <span className="muted small">{bytes(file.size)} · {relativeTime(file.mtime)}{file.kind === 'text' ? ` · ${lineCount} lines` : ''}</span> : null}
+          <span className="muted small">
+            {showDiff && diff
+              ? <>{diff.status} vs HEAD{stat ? <> · <b className="ok">+{stat.added}</b> <b className="fail">−{stat.removed}</b></> : null}</>
+              : file ? `${bytes(file.size)} · ${relativeTime(file.mtime)}${file.kind === 'text' ? ` · ${lineCount} lines` : ''}` : ''}
+          </span>
         </div>
         <span className="grow" />
-        {isMarkdown && file?.kind === 'text' ? (
+        {hasDiff ? (
+          <div className="segmented" role="tablist" aria-label="View">
+            <button type="button" role="tab" aria-selected={showDiff} className={showDiff ? 'on' : ''} onClick={() => setMode('diff')} data-tip="Changes vs HEAD">
+              <FileDiff size={14} />
+            </button>
+            <button type="button" role="tab" aria-selected={!showDiff} className={!showDiff ? 'on' : ''} disabled={diff?.status === 'deleted'} onClick={() => setMode('file')} data-tip="File">
+              <FileCode size={14} />
+            </button>
+          </div>
+        ) : null}
+        {!showDiff && isMarkdown && file?.kind === 'text' ? (
           <IconButton icon={rendered ? FileCode : FileText} size="sm" label={rendered ? 'Show source' : 'Render markdown'} onClick={() => setRendered(!rendered)} />
         ) : null}
         <IconButton icon={AtSign} size="sm" label="Mention in message" onClick={() => onMention(path)} />
@@ -276,24 +328,40 @@ export function FileViewer({
         <IconButton icon={X} size="sm" label="Close (Esc)" onClick={onClose} />
       </div>
       <div className="viewer-body">
-        {error ? <div className="panel-error">{error}</div> : null}
-        {!file && !error ? <div className="center-pad"><Spinner /></div> : null}
-        {file?.kind === 'image' ? (
-          <div className="viewer-image"><img src={rawFileUrl(sessionId, path)} alt={path} /></div>
-        ) : null}
-        {file?.kind === 'binary' ? <Empty icon={File}>Binary file ({file.mime}) — no preview.</Empty> : null}
-        {file?.kind === 'text' && rendered && isMarkdown ? (
-          <div className="viewer-markdown"><Markdown text={text} /></div>
-        ) : null}
-        {file?.kind === 'text' && !(rendered && isMarkdown) ? (
-          <div className="code-view">
-            <pre className="gutter" aria-hidden>{gutter}</pre>
-            {html !== null
-              ? <pre className="code"><code className="hljs" dangerouslySetInnerHTML={{ __html: html }} /></pre>
-              : <pre className="code"><code>{text}</code></pre>}
-          </div>
-        ) : null}
-        {file?.truncated ? <div className="list-caption">Preview truncated at 512 KB.</div> : null}
+        {showDiff ? (
+          diff === null
+            ? (diffError ? <div className="panel-error">{diffError}</div> : <div className="center-pad"><Spinner /></div>)
+            : diff.binary
+              ? <Empty icon={File}>Binary file changed.</Empty>
+              : diff.too_large
+                ? <Empty icon={File}>Too large to diff.</Empty>
+                : <SplitDiff path={path} oldText={diff.old} newText={diff.new} />
+        ) : (
+          <>
+            {error ? <div className="panel-error">{error}</div> : null}
+            {!file && !error ? <div className="center-pad"><Spinner /></div> : null}
+            {file?.kind === 'image' ? (
+              <div className="viewer-image"><img src={rawFileUrl(sessionId, path)} alt={path} /></div>
+            ) : null}
+            {file?.kind === 'binary' ? <Empty icon={File}>Binary file ({file.mime}) — no preview.</Empty> : null}
+            {file?.kind === 'text' && rendered && isMarkdown ? (
+              <div className="viewer-markdown"><Markdown text={text} /></div>
+            ) : null}
+            {file?.kind === 'text' && !(rendered && isMarkdown) ? (
+              <div className="code-view">
+                {lines.map((line, index) => (
+                  <div className="code-line" key={index}>
+                    <span className="ln" aria-hidden>{index + 1}</span>
+                    {line.html !== null
+                      ? <code className="hljs" dangerouslySetInnerHTML={{ __html: line.html || ' ' }} />
+                      : <code>{line.text || ' '}</code>}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {file?.truncated ? <div className="list-caption">Preview truncated at 512 KB.</div> : null}
+          </>
+        )}
       </div>
     </Modal>
   )

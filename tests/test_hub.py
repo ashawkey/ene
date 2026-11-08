@@ -975,9 +975,9 @@ def test_attached_session_reports_done_when_idle():
     session.ingest({"type": "pending_cleared", "data": {"id": "p1"}})
     assert session.summary()["state"] == "done"
 
-    # Only watchers can continue the session; silent processes leave it done.
+    # Any running background process means the session is not idle.
     session.ingest({"type": "background_status", "data": {"watchers": 0, "background": 1}})
-    assert session.summary()["state"] == "done"
+    assert session.summary()["state"] == "waiting"
     session.ingest({"type": "background_status", "data": {"watchers": 2, "background": 1}})
     summary = session.summary()
     assert (summary["state"], summary["watchers"], summary["background"]) == ("waiting", 2, 1)
@@ -1246,3 +1246,60 @@ def test_end_endpoint_stops_a_session_but_not_a_terminal_owned_one(monkeypatch):
     finally:
         hub.stop()
         worker.close()
+
+
+def test_diff_endpoint_returns_both_sides_against_head(tmp_path):
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path, check=True, capture_output=True,
+        )
+
+    git("init", "-q")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+    (tmp_path / "gone.txt").write_text("bye\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / "src" / "a.py").write_text("one\n2\n", encoding="utf-8")
+    (tmp_path / "gone.txt").unlink()
+    (tmp_path / "new.txt").write_text("hi\n", encoding="utf-8")
+
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(tmp_path / "src"))
+    add_session(hub, "s2", cwd=str(tmp_path))
+    with TestClient(hub.app) as client:
+        login(client)
+        modified = client.get("/api/sessions/s1/diff", params={"path": "a.py"}).json()
+        assert (modified["status"], modified["old"], modified["new"]) == ("modified", "one\ntwo\n", "one\n2\n")
+        deleted = client.get("/api/sessions/s2/diff", params={"path": "gone.txt"}).json()
+        assert (deleted["status"], deleted["old"], deleted["new"]) == ("deleted", "bye\n", "")
+        added = client.get("/api/sessions/s2/diff", params={"path": "new.txt"}).json()
+        assert (added["status"], added["old"]) == ("added", "")
+        assert client.get("/api/sessions/s1/diff", params={"path": "../gone.txt"}).status_code == 403
+        assert client.get("/api/sessions/s1/diff", params={"path": "missing"}).status_code == 404
+
+
+def test_session_state_counts_background_processes_and_notifies_lists():
+    from ene.live_worker import Worker
+
+    assert Worker._derive_state(True, False, False, 0, 3) == "working"
+    assert Worker._derive_state(False, False, False, 0, 1) == "waiting"
+    assert Worker._derive_state(False, False, False, 2, 0) == "waiting"
+    assert Worker._derive_state(False, False, False, 0, 0) == "done"
+
+    session = RemoteSession("s1", {"cwd": "/proj"})
+    changes = []
+    session.on_summary_change = lambda: changes.append(session.summary()["state"])
+    session.ingest({"type": "operation_start", "data": {"id": "op"}})
+    session.ingest({"type": "operation_end", "data": {"id": "op"}})
+    session.ingest({"type": "background_status", "data": {"watchers": 0, "background": 1}})
+    session.ingest({"type": "background_status", "data": {"watchers": 0, "background": 0}})
+    session.ingest({"type": "assistant_delta", "data": {"text": "x"}})
+    assert changes == ["working", "done", "waiting", "done"]

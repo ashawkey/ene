@@ -124,6 +124,11 @@ describe('session reducer', () => {
     expect(done.indicator).toBeNull()
   })
 
+  it('prefers the wide form of printed output', () => {
+    const { view } = run([state(), ev(1, 'output', { text: 'a...', ansi: 'a...', wide_text: 'abcdef', wide_ansi: 'abcdef' })])
+    expect(view.items[0]).toMatchObject({ kind: 'output', text: 'abcdef', ansi: 'abcdef' })
+  })
+
   it('merges consecutive output blocks', () => {
     const { view } = run([state(), ev(1, 'output', { text: 'a' }), ev(2, 'output', { text: 'b', ansi: '\u001b[32mb\u001b[0m' })])
     expect(view.items).toHaveLength(1)

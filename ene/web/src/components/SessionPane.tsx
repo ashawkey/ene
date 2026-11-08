@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Cpu, Folder, PanelLeft, Search, Unlink, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Cpu, Folder, PanelLeft, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { basename, compactNumber, percent } from '../lib/format'
@@ -8,11 +8,11 @@ import { useSession } from '../lib/useSession'
 import { Composer } from './Composer'
 import { FileViewer } from './Files'
 import type { InspectorTab } from './Inspector'
-import { INSPECTOR_TABS, Inspector } from './Inspector'
+import { Inspector, lastInspectorTab } from './Inspector'
 import { PromptSheet } from './PromptSheet'
 import type { TimelineHandle } from './Timeline'
 import { Timeline } from './Timeline'
-import { ContextRing, IconButton, LinkBanner, LinkDot } from './ui'
+import { ContextRing, IconButton, LinkBanner, LinkDot, StateIcon } from './ui'
 
 export function SessionPane({
   summary,
@@ -41,7 +41,8 @@ export function SessionPane({
   const { view } = session
   const connected = session.status === 'open'
   const timeline = useRef<TimelineHandle | null>(null)
-  const [viewing, setViewing] = useState<string | null>(null)
+  const [viewing, setViewing] = useState<{ path: string; changed?: boolean } | null>(null)
+  const openFile = useCallback((path: string, changed?: boolean) => setViewing({ path, changed }), [])
   const [query, setQuery] = useState('')
   const [matchIndex, setMatchIndex] = useState(0)
   const [matchCount, setMatchCount] = useState(0)
@@ -96,7 +97,7 @@ export function SessionPane({
           <IconButton icon={PanelLeft} label="Sessions" className="menu-btn" onClick={onMenu} />
           <div className="pane-title">
             <div className="pane-name">
-              <span className={`state-dot ${busy ? 'working' : summary.state}`} />
+              <StateIcon state={busy ? 'working' : summary.state} />
               <span className="clamp">{title}</span>
             </div>
             <div className="pane-chips">
@@ -113,18 +114,14 @@ export function SessionPane({
           </button>
           <div className="header-actions">
             <IconButton icon={Search} label="Find in conversation (Ctrl+F)" active={findOpen} onClick={() => onFindOpen(!findOpen)} />
-            {INSPECTOR_TABS.slice(0, 3).map((tab) => (
-              <IconButton
-                key={tab.id}
-                icon={tab.icon}
-                label={tab.label}
-                className="hide-narrow"
-                active={inspector === tab.id}
-                badge={tab.id === 'tasks' && view.processes.running ? view.processes.running : null}
-                onClick={() => onInspector(inspector === tab.id ? null : tab.id)}
-              />
-            ))}
-            <IconButton icon={INSPECTOR_TABS[3].icon} label="Session info" className="show-narrow" active={inspector !== null} onClick={() => onInspector(inspector ? null : 'files')} />
+            {/* One toggle for the side panel; its own tabs pick files, stats, tasks, or info. */}
+            <IconButton
+              icon={inspector ? PanelRightClose : PanelRightOpen}
+              label={inspector ? 'Close panel' : 'Files, statistics, tasks, info'}
+              active={inspector !== null}
+              badge={view.processes.running || null}
+              onClick={() => onInspector(inspector ? null : lastInspectorTab())}
+            />
             <IconButton icon={Unlink} label="Detach (keeps running)" busy={detaching} onClick={onDetach} />
             <LinkDot status={session.status} />
           </div>
@@ -162,7 +159,7 @@ export function SessionPane({
           query={findOpen ? query : ''}
           matchIndex={matchIndex}
           onMatches={setMatchCount}
-          onOpenFile={setViewing}
+          onOpenFile={openFile}
           onOpenStats={openStats}
         />
 
@@ -209,10 +206,9 @@ export function SessionPane({
             operationSince={view.operationSince}
             processes={view.processes}
             info={view.info}
-            commands={view.commands}
             connected={connected}
             filesRefresh={filesRefresh}
-            onOpenFile={setViewing}
+            onOpenFile={openFile}
             onJumpRound={jumpRound}
             onCommand={(text) => session.command(text)}
           />
@@ -220,7 +216,14 @@ export function SessionPane({
       ) : null}
 
       {active && viewing ? (
-        <FileViewer sessionId={summary.id} path={viewing} onClose={() => setViewing(null)} onMention={mention} />
+        <FileViewer
+          key={viewing.path}
+          sessionId={summary.id}
+          path={viewing.path}
+          changed={viewing.changed}
+          onClose={() => setViewing(null)}
+          onMention={mention}
+        />
       ) : null}
     </section>
   )

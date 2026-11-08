@@ -2114,3 +2114,22 @@ def test_inbox_display_shortens_process_sources():
         "↻ 5 [Validate fixed Harbor export on origina…] Exited with code 0.\n"
         "↻ 6 2 older event(s) dropped"
     )
+
+
+def test_context_list_sends_wider_rows_to_wrapping_clients():
+    hub = EventHub()
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = AgentConsole(events=hub, render_terminal=False)
+    agent.context = NS(messages=[Message.tool("call-1", "start " + "z" * 600 + " end")])
+    agent.token_estimator = NS(chars_to_tokens=lambda chars: chars // 4)
+    agent.context_length = 1000
+
+    agent._cmd_context()
+
+    event = next(event for event in hub.snapshot() if event.type == "output")
+    row = next(line for line in event.data["text"].split("\n") if "#0" in line)
+    wide_row = next(line for line in event.data["wide_text"].split("\n") if "#0" in line)
+    # Terminals keep one clipped 120-column row; the Web UI gets far more.
+    assert len(row) <= 120 and row.endswith("...")
+    assert 200 < len(wide_row) <= 320 and wide_row.endswith("...")
+    assert "\n" not in wide_row and "wide_ansi" in event.data

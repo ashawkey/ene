@@ -2,6 +2,7 @@ import { Activity, ChartColumn, Eye, FolderOpen, Info, ListTree, Square, X } fro
 import { useState } from 'react'
 
 import { duration } from '../lib/format'
+import { store } from '../lib/storage'
 import type { ContextSnapshot, RoundStats, SessionSummary } from '../lib/protocol'
 import type { LiveProcesses } from '../lib/session'
 import { CopyButton } from './Markdown'
@@ -10,6 +11,18 @@ import { StatsPanel } from './Stats'
 import { Empty, IconButton, useNow } from './ui'
 
 export type InspectorTab = 'files' | 'stats' | 'tasks' | 'info'
+
+const LAST_TAB = 'ene.inspector.last'
+
+/** The tab the panel toggle reopens: whichever was used last. */
+export function lastInspectorTab(): InspectorTab {
+  const value = store.get(LAST_TAB)
+  return value === 'stats' || value === 'tasks' || value === 'info' ? value : 'files'
+}
+
+export function rememberInspectorTab(tab: InspectorTab) {
+  store.set(LAST_TAB, tab)
+}
 
 export const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string; icon: typeof FolderOpen }> = [
   { id: 'files', label: 'Files', icon: FolderOpen },
@@ -74,7 +87,7 @@ function TasksPanel({
   )
 }
 
-function InfoPanel({ summary, info, commands }: { summary: SessionSummary; info: Record<string, string>; commands: Record<string, string> }) {
+function InfoPanel({ summary, info }: { summary: SessionSummary; info: Record<string, string> }) {
   const rows: Array<[string, string]> = [
     ['Name', summary.name || '—'],
     ['Workspace', summary.cwd],
@@ -92,15 +105,6 @@ function InfoPanel({ summary, info, commands }: { summary: SessionSummary; info:
           </div>
         ))}
       </dl>
-      <div className="list-caption">Commands</div>
-      <div className="command-list">
-        {Object.entries(commands).sort(([a], [b]) => a.localeCompare(b)).map(([name, description]) => (
-          <div className="command-row" key={name}>
-            <code>/{name}</code>
-            <span className="muted">{description}</span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
@@ -117,7 +121,6 @@ export function Inspector({
   operationSince,
   processes,
   info,
-  commands,
   connected,
   filesRefresh,
   onOpenFile,
@@ -135,10 +138,9 @@ export function Inspector({
   operationSince: number | null
   processes: LiveProcesses
   info: Record<string, string>
-  commands: Record<string, string>
   connected: boolean
   filesRefresh: number
-  onOpenFile: (path: string) => void
+  onOpenFile: (path: string, changed?: boolean) => void
   onJumpRound: (round: RoundStats) => void
   onCommand: (text: string) => void
 }) {
@@ -168,7 +170,7 @@ export function Inspector({
           <StatsPanel rounds={rounds} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
         ) : null}
         {tab === 'tasks' ? <TasksPanel processes={processes} connected={connected} onCommand={onCommand} /> : null}
-        {tab === 'info' ? <InfoPanel summary={summary} info={info} commands={commands} /> : null}
+        {tab === 'info' ? <InfoPanel summary={summary} info={info} /> : null}
       </div>
     </aside>
   )

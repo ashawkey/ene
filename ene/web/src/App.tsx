@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Login } from './components/Login'
 import { NewSessionDialog } from './components/NewSession'
 import type { InspectorTab } from './components/Inspector'
+import { rememberInspectorTab } from './components/Inspector'
 import { SessionPane } from './components/SessionPane'
 import { Sidebar } from './components/Sidebar'
-import { IconButton, LinkBanner, Spinner, Toasts } from './components/ui'
+import { IconButton, LinkBanner, Spinner, StateIcon, Toasts, useMedia } from './components/ui'
 import { attachSession, detachSession, endSession, errorMessage, logout, setCsrf } from './lib/api'
 import { basename } from './lib/format'
 import type { SessionSummary } from './lib/protocol'
@@ -32,6 +33,17 @@ export default function App() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [unread, setUnread] = useState<Set<string>>(new Set())
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => store.get('ene.sidebar') === 'rail')
+  const isNarrow = useMedia('(max-width: 820px)')
+  const rail = collapsed && !isNarrow
+  const narrowRef = useRef(isNarrow)
+  narrowRef.current = isNarrow
+  const toggleRail = useCallback(() => {
+    setCollapsed((value) => {
+      store.set('ene.sidebar', value ? null : 'rail')
+      return !value
+    })
+  }, [])
   const [inspector, setInspectorState] = useState<InspectorTab | null>(loadInspector)
   const [findOpen, setFindOpen] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -45,6 +57,7 @@ export default function App() {
 
   const setInspector = useCallback((tab: InspectorTab | null) => {
     setInspectorState(tab)
+    if (tab) rememberInspectorTab(tab)
     if (!narrow()) store.set('ene.inspector', tab)
   }, [])
 
@@ -155,6 +168,10 @@ export default function App() {
       if (mod && key === 'k' && !event.shiftKey) {
         event.preventDefault()
         setSidebarOpen(true)
+        if (!narrowRef.current) {
+          setCollapsed(false)
+          store.set('ene.sidebar', null)
+        }
         window.setTimeout(() => {
           searchRef.current?.focus()
           searchRef.current?.select()
@@ -164,12 +181,13 @@ export default function App() {
         setFindOpen(true)
       } else if (mod && key === 'b' && !event.shiftKey) {
         event.preventDefault()
-        setSidebarOpen((open) => !open)
+        if (narrowRef.current) setSidebarOpen((open) => !open)
+        else toggleRail()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [toggleRail])
 
   const reviewCount = unread.size
   const activeSession = attached.find((session) => session.id === activeId)
@@ -191,7 +209,7 @@ export default function App() {
   const available = sessions.filter((session) => !session.attached_by)
 
   return (
-    <div className={`app ${inspector ? 'with-inspector' : ''}`}>
+    <div className={`app ${inspector ? 'with-inspector' : ''} ${rail ? 'rail-mode' : ''}`}>
       <Sidebar
         sessions={sessions}
         activeId={activeId}
@@ -201,6 +219,8 @@ export default function App() {
         status={control.status}
         theme={theme}
         searchRef={searchRef}
+        rail={rail}
+        onToggleRail={toggleRail}
         onClose={() => setSidebarOpen(false)}
         onSelect={select}
         onAttach={attach}
@@ -240,7 +260,7 @@ export default function App() {
               <div className="welcome-list">
                 {available.slice(0, 6).map((session) => (
                   <button type="button" key={session.id} className="welcome-card glass" disabled={busyId !== null} onClick={() => attach(session.id)}>
-                    <span className={`state-dot ${session.state}`} />
+                    <StateIcon state={session.state} />
                     <span className="session-text">
                       <span className="session-title clamp">{session.name || basename(session.cwd)}</span>
                       <span className="session-sub clamp">{session.preview || session.cwd}</span>

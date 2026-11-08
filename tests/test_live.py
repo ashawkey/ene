@@ -561,8 +561,9 @@ def test_live_worker_waits_while_watchers_or_notifications_remain(monkeypatch):
 
     worker.events.publish("background_status", watchers=0, background=1)
     status = worker._status()
-    # A silent background process cannot continue the session on its own.
-    assert status["needs_attention"] is True
+    # Any running background process keeps the session out of "done".
+    assert status["needs_attention"] is False
+    assert worker._state == "waiting"
     assert (status["watchers"], status["background"]) == (0, 1)
 
     worker.events.publish("background_status", watchers=2, background=1)
@@ -572,7 +573,7 @@ def test_live_worker_waits_while_watchers_or_notifications_remain(monkeypatch):
 
     # A delivered-but-unread notification still keeps the session waiting.
     worker.inputs.post_event("job finished", "process:1")
-    worker.events.publish("background_status", watchers=0, background=1)
+    worker.events.publish("background_status", watchers=0, background=0)
     assert worker._state == "waiting"
     worker.inputs.drain_events()
     assert worker._state == "done"

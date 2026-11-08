@@ -32,6 +32,8 @@ _RECAP_TIMEOUT_SECONDS = 60
 # Web/terminal event rendering happens at a fixed 120 columns, so rows wider
 # than that wrap and stop being one line per context message.
 _CONTEXT_LIST_WIDTH = 120
+# Row width of the listing sent to clients that wrap lines themselves (Web UI).
+_CONTEXT_WIDE_WIDTH = 320
 _CONTEXT_PREVIEW_MIN = 24
 # Each published event field is clipped at EVENT_TEXT_LIMIT characters, which
 # would silently drop the *newest* messages of a long listing. Emitting the
@@ -775,6 +777,7 @@ class AgentCommandsMixin:
             f"{len(indexed_msgs)} {message_label}"
         )
         lines = [f"[bold blue]Context log ({count_label}):[/bold blue]"]
+        wide_lines = list(lines)
 
         tc_id_to_name = build_tool_name_index(msgs)
         id_width = max(len(str(idx)) for idx, _ in indexed_msgs)
@@ -832,33 +835,54 @@ class AgentCommandsMixin:
 
             budget = max(width - cell_len(head), _CONTEXT_PREVIEW_MIN)
             lines.append(head_markup + _fit_segments(segments, budget))
+            wide_lines.append(
+                head_markup + _fit_segments(segments, _CONTEXT_WIDE_WIDTH - cell_len(head))
+            )
 
         est_tokens = self.token_estimator.chars_to_tokens(total_chars)
         ctx_pct = est_tokens / self.context_length * 100 if self.context_length else 0
-        lines.append(f"\n  [bold]Total:[/bold] ~{est_tokens:,} tokens / {self.context_length:,} [{ctx_pct:.0f}%]")
-
-        lines.append(
+        footer = [
+            f"\n  [bold]Total:[/bold] ~{est_tokens:,} tokens / {self.context_length:,} [{ctx_pct:.0f}%]",
             "  [dim]Filter: /context user|inbox|assistant · "
-            "Full message: /context <id> (-1 is the newest)[/dim]"
-        )
-        self._print_chunked("\n".join(lines))
+            "Full message: /context <id> (-1 is the newest)[/dim]",
+        ]
+        lines.extend(footer)
+        wide_lines.extend(footer)
+        self._print_chunked("\n".join(lines), wide="\n".join(wide_lines))
 
-    def _print_chunked(self, text: str, **kwargs) -> None:
+    def _print_chunked(self, text: str, *, wide: str | None = None, **kwargs) -> None:
         """Print *text* in chunks that survive the event hub's per-field clip.
 
         A single oversized print is truncated at its tail, which would hide the
         newest context messages; chunking keeps the whole listing visible.
+        *wide*, line-aligned with *text*, is the form for wrapping clients.
         """
+        text_lines = text.split("\n")
+        # Only consoles that publish events take the wide form.
+        if not getattr(self.console, "supports_wide_output", False):
+            wide = None
+        wide_lines = wide.split("\n") if wide is not None else None
+        if wide_lines is not None and len(wide_lines) != len(text_lines):
+            wide_lines = None
         chunk: list[str] = []
+        wide_chunk: list[str] = []
         chunk_chars = 0
-        for line in text.split("\n"):
-            if chunk and chunk_chars + len(line) > _CONTEXT_CHUNK_CHARS:
-                self.console.print("\n".join(chunk), **kwargs)
-                chunk, chunk_chars = [], 0
+
+        def emit() -> None:
+            extra = {"wide": "\n".join(wide_chunk)} if wide_lines is not None else {}
+            self.console.print("\n".join(chunk), **extra, **kwargs)
+
+        for index, line in enumerate(text_lines):
+            size = len(wide_lines[index]) if wide_lines is not None else len(line)
+            if chunk and chunk_chars + size > _CONTEXT_CHUNK_CHARS:
+                emit()
+                chunk, wide_chunk, chunk_chars = [], [], 0
             chunk.append(line)
-            chunk_chars += len(line) + 1
+            if wide_lines is not None:
+                wide_chunk.append(wide_lines[index])
+            chunk_chars += size + 1
         if chunk:
-            self.console.print("\n".join(chunk), **kwargs)
+            emit()
 
     def _print_context_message(self, idx: int, message: Message) -> None:
         """Print one context message in full, rendering assistant text as Markdown."""
