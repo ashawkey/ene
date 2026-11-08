@@ -52,3 +52,24 @@ export function finalizeStream(
   }
   return [...events, { key, type: finalType, text, data: {} }]
 }
+
+// Consecutive output/system events fold into one card.
+export function appendEvent(events: DisplayEvent[], event: DisplayEvent) {
+  const previous = events.at(-1)
+  if (previous && previous.type === event.type && ['output', 'system'].includes(event.type)) {
+    const separator = previous.text && event.text ? '\n' : ''
+    const data = { ...previous.data, ...event.data }
+    // Terminal-styled output is rendered from `ansi`, so it must accumulate
+    // like `text` rather than keep only the newest chunk.
+    if (typeof previous.data.ansi === 'string' || typeof event.data.ansi === 'string') {
+      const previousAnsi = typeof previous.data.ansi === 'string' ? previous.data.ansi : previous.text
+      const nextAnsi = typeof event.data.ansi === 'string' ? event.data.ansi : event.text
+      data.ansi = `${previousAnsi}${previousAnsi && nextAnsi ? '\n' : ''}${nextAnsi}`
+    }
+    return [
+      ...events.slice(0, -1),
+      { ...previous, text: `${previous.text}${separator}${event.text}`, data },
+    ]
+  }
+  return [...events, event]
+}

@@ -32,8 +32,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
     def complete(self, request: CompletionRequest) -> CompletionResult:
         if request.stream:
             raise ValueError("complete() requires stream=False")
-        client = self._new_client()
-        self._activate(client)
+        client = self._acquire()
         try:
             response = client.responses.create(**self._kwargs(request))
             # Replay API field names without introducing SDK-only defaults.
@@ -47,8 +46,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
     def open_stream(self, request: CompletionRequest) -> CompletionStream:
         if not request.stream:
             raise ValueError("open_stream() requires stream=True")
-        client = self._new_client()
-        self._activate(client)
+        client = self._acquire()
         try:
             raw_stream = client.responses.create(**self._kwargs(request))
         except BaseException:

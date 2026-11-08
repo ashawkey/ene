@@ -40,8 +40,10 @@ def test_models_metadata_requires_exact_id_and_positive_integer(monkeypatch, api
     assert requests[0].url.path == "/v1/models"
     assert requests[0].headers["authorization"] == "Bearer test-key"
     assert requests[0].extensions["timeout"]["read"] == 5
-    assert client.is_closed
+    # The client stays open so the first completion reuses its connection.
+    assert not client.is_closed()
     assert provider._active_client is None
+    assert provider._acquire() is client
 
 
 @pytest.mark.parametrize("status", [401, 404, 500])
@@ -53,7 +55,8 @@ def test_unavailable_models_endpoint_does_not_block_completions(monkeypatch, sta
                     )))
     monkeypatch.setattr(provider, "_new_client", lambda: client)
     assert provider.context_length("model") is None
-    assert client.is_closed
+    assert not client.is_closed()
+    assert provider._active_client is None
 
 
 @pytest.mark.parametrize("data", [[], None, [{"id": "other", "max_model_len": 32768}]])
@@ -65,7 +68,8 @@ def test_missing_model_metadata_is_not_inferred_from_other_entries(monkeypatch, 
                     )))
     monkeypatch.setattr(provider, "_new_client", lambda: client)
     assert provider.context_length("b0-step11280") is None
-    assert client.is_closed
+    assert not client.is_closed()
+    assert provider._active_client is None
 
 
 @pytest.mark.parametrize("error_type", [httpx.ReadTimeout, httpx.ConnectError])
@@ -82,7 +86,8 @@ def test_discovery_transport_failure_falls_back_without_retry(monkeypatch, error
     monkeypatch.setattr(provider, "_new_client", lambda: client)
     assert provider.context_length("model") is None
     assert len(requests) == 1
-    assert client.is_closed
+    assert not client.is_closed()
+    assert provider._active_client is None
 
 
 @pytest.fixture
@@ -217,6 +222,8 @@ def test_qwen_stream_displays_and_detects_returned_reasoning(agent_factory, monk
     agent, queries, requests = agent_factory()
     agent.stream = True
     events = EventHub()
+    published = []
+    events.add_listener(lambda event: published.append(event.type))
     agent.console.events = events
     chunks = [ChatCompletionChunk.model_validate({
         "id": "test", "created": 0, "model": agent.model, "object": "chat.completion.chunk",
@@ -244,7 +251,9 @@ def test_qwen_stream_displays_and_detects_returned_reasoning(agent_factory, monk
     assert agent._startup_details()["reasoning"] == "auto (server default)"
     message = agent.call_api()
     assert message.reasoning_content == "Thinking through the task.\n"
-    assert any(event.type == "thinking_delta" for event in events.snapshot())
+    assert "thinking_delta" in published
+    # The consolidated event supersedes its fragments in reconnect history.
+    assert [event.type for event in events.snapshot()].count("thinking_delta") == 0
     assert any(event.type == "thinking" for event in events.snapshot())
     assert agent._startup_details()["reasoning"] == "detected (server default)"
     assert closed == [True]

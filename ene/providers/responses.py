@@ -272,6 +272,9 @@ class ResponsesCompletionStream(CompletionStream):
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         output_items: dict[int, dict[str, Any]] = {}
+        # Argument fragments per output index, joined once: concatenating onto
+        # the item per delta is quadratic for large (file-writing) tool calls.
+        argument_parts: dict[int, list[str]] = {}
         terminal: dict[str, Any] | None = None
 
         for event in self._events:
@@ -301,15 +304,22 @@ class ResponsesCompletionStream(CompletionStream):
             elif kind == "response.function_call_arguments.delta":
                 index = int(event.get("output_index", 0))
                 item = output_items.setdefault(index, {"type": "function_call", "arguments": ""})
-                item["arguments"] = (item.get("arguments") or "") + (event.get("delta") or "")
+                parts = argument_parts.get(index)
+                if parts is None:
+                    parts = argument_parts[index] = [item.get("arguments") or ""]
+                parts.append(event.get("delta") or "")
             elif kind == "response.function_call_arguments.done":
                 index = int(event.get("output_index", 0))
                 item = output_items.setdefault(index, {"type": "function_call"})
-                item["arguments"] = event.get("arguments") or item.get("arguments") or "{}"
+                parts = argument_parts.pop(index, None)
+                streamed = "".join(parts) if parts is not None else item.get("arguments")
+                item["arguments"] = event.get("arguments") or streamed or "{}"
             elif kind == "response.output_item.done":
                 item = event.get("item")
                 if isinstance(item, dict):
-                    output_items[int(event.get("output_index", len(output_items)))] = item
+                    index = int(event.get("output_index", len(output_items)))
+                    argument_parts.pop(index, None)
+                    output_items[index] = item
             elif kind in ("response.completed", "response.done", "response.incomplete"):
                 value = event.get("response")
                 if isinstance(value, dict):
@@ -331,6 +341,8 @@ class ResponsesCompletionStream(CompletionStream):
                     code=error.get("code"),
                 )
 
+        for index, parts in argument_parts.items():
+            output_items[index]["arguments"] = "".join(parts)
         if should_stop is not None and should_stop():
             from ene.utils.interrupt import RequestInterrupted
 

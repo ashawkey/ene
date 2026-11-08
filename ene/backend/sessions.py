@@ -165,9 +165,7 @@ class SessionMixin:
         old_id = self._session_id
         old_name = getattr(self, "session_name", "")
         try:
-            target_name = SessionStore.load_summary(
-                self._sessions_dir(), target
-            ).get("session_name", "")
+            target_name = target_store.summary().get("session_name", "")
         except (OSError, ValueError):
             target_name = ""
         callback = getattr(self, "_session_changed", None)
@@ -178,7 +176,9 @@ class SessionMixin:
             self.console.error(str(exc))
             return
         self.session_name = ""
-        if not self.load_session(target):
+        # Reuse the already parsed store; re-reading would parse the whole
+        # history a second time.
+        if not self.load_session(target, store=target_store):
             self._session_id = old_id
             self.session_name = old_name
             if callback is not None:
@@ -627,9 +627,10 @@ class SessionMixin:
             self.changes.mark_committed(code_revision_id)
         return self._session_store.history_path
 
-    def load_session(self, name: str) -> bool:
+    def load_session(self, name: str, *, store: SessionStore | None = None) -> bool:
         try:
-            store = self._session_store_for(name)
+            if store is None:
+                store = self._session_store_for(name)
             if not store.exists:
                 self.console.error(f"Session not found: {name}")
                 return False

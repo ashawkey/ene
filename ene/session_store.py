@@ -27,6 +27,36 @@ from ene.utils.persistence import (
 )
 
 
+def _walk_tree_sizes(path: Path):
+    """Yield the size of every regular file under *path* without following links."""
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        else:
+                            yield entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        yield 0
+        except OSError:
+            continue
+
+
+def _tree_exceeds_backup_budget(path: Path) -> tuple[bool, int]:
+    """Whether *path* exceeds a tree backup limit, plus the bytes seen walking it."""
+    files = total = 0
+    for size in _walk_tree_sizes(path):
+        files += 1
+        total += size
+        if files > MAX_BACKUP_TREE_FILES or total > MAX_BACKUP_TREE_BYTES:
+            return True, total
+    return False, total
+
+
 def _message_id(wire: dict[str, Any]) -> str:
     raw = json.dumps(wire, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
@@ -113,6 +143,11 @@ def _decode_revision(
 
 # Rewind backups are intended for source files, not datasets or checkpoints.
 MAX_BACKUP_FILE_SIZE = 10 * 1024 * 1024
+# A deleted directory beyond either limit (a dependency tree, build output or
+# virtualenv) is recorded as skipped rather than read, hashed and fsynced file
+# by file, which could otherwise stall a single tool call for minutes.
+MAX_BACKUP_TREE_FILES = 2000
+MAX_BACKUP_TREE_BYTES = 64 * 1024 * 1024
 
 # Above this many lines, line-by-line matching costs more than the stat is worth.
 DIFF_LINE_LIMIT = 20000
@@ -196,7 +231,12 @@ class SessionStore:
         for record in read_jsonl(self.history_path):
             kind = record.get("type")
             if kind == "message":
-                self.messages[record["id"]] = Message.from_wire(record["message"])
+                message = Message.from_wire(record["message"])
+                self.messages[record["id"]] = message
+                # The record id already is this message's content hash; seeding
+                # it spares the first save after a resume from rehashing (and
+                # re-serializing every image of) the whole transcript.
+                self._message_ids[id(message)] = (message, record["id"])
             elif kind == "code_revision":
                 self.code_revisions[record["id"]] = record
             elif kind == "revision":
@@ -234,6 +274,18 @@ class SessionStore:
 
     def store_path(self, path: Path) -> dict[str, Any]:
         """Store a file tree as immutable content-addressed objects."""
+        if not path.is_symlink() and path.is_dir():
+            exceeded, size = _tree_exceeds_backup_budget(path)
+            if exceeded:
+                return {
+                    "kind": "skipped",
+                    "size": size,
+                    "mode": stat.S_IMODE(path.lstat().st_mode),
+                    "tree": True,
+                }
+        return self._store_path(path)
+
+    def _store_path(self, path: Path) -> dict[str, Any]:
         info = path.lstat()
         mode = stat.S_IMODE(info.st_mode)
         if path.is_symlink():
@@ -246,7 +298,7 @@ class SessionStore:
             return self.store_bytes(data, mode=mode)
         if path.is_dir():
             entries = [
-                {"name": child.name, "object": self.store_path(child)}
+                {"name": child.name, "object": self._store_path(child)}
                 for child in sorted(path.iterdir(), key=lambda child: child.name)
             ]
             manifest = json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

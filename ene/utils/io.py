@@ -80,10 +80,13 @@ def is_local_query(text: str) -> bool:
     return text.lower() in ("exit", "quit") or text.startswith(("!", "/"))
 
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def sanitize_unicode(value: Any) -> Any:
     """Replace invalid surrogate code points in JSON-like external data."""
     if isinstance(value, str):
-        if not any("\ud800" <= char <= "\udfff" for char in value):
+        if _SURROGATE_RE.search(value) is None:
             return value
         return value.encode("utf-16", errors="surrogatepass").decode(
             "utf-16", errors="replace"
@@ -115,6 +118,14 @@ class AgentEvent:
         return asdict(self)
 
 
+# Consolidated stream events and the fragments they supersede.
+_STREAM_FRAGMENT_TYPES = {
+    "assistant_message": "assistant_delta",
+    "thinking": "thinking_delta",
+}
+_STREAM_FRAGMENT_FINALS = {fragment: final for final, fragment in _STREAM_FRAGMENT_TYPES.items()}
+
+
 class EventHub:
     """Publish ordered events and retain a bounded reconnect history."""
 
@@ -123,6 +134,9 @@ class EventHub:
         self._events: deque[AgentEvent] = deque(maxlen=max_events)
         self._cond = threading.Condition()
         self._seq = 0
+        # Highest sequence number dropped for capacity. Superseded stream
+        # fragments are removed too, but those leave no replay gap.
+        self._evicted_seq = 0
         self._listeners: set[Callable[[AgentEvent], None]] = set()
 
     def add_listener(self, listener: Callable[[AgentEvent], None]) -> None:
@@ -142,6 +156,10 @@ class EventHub:
         with self._cond:
             self._seq += 1
             event = AgentEvent(self._seq, event_type, data, time.time())
+            if event_type in _STREAM_FRAGMENT_TYPES:
+                self._discard_fragments_locked(_STREAM_FRAGMENT_TYPES[event_type])
+            if len(self._events) == self._events.maxlen:
+                self._evicted_seq = self._events[0].seq
             self._events.append(event)
             self._cond.notify_all()
             # Keep delivery serialized with sequence assignment. Attach
@@ -156,20 +174,49 @@ class EventHub:
                     continue
             return event
 
+    def _discard_fragments_locked(self, fragment_type: str) -> None:
+        """Drop the stream fragments a consolidated event supersedes.
+
+        Late joiners only need the final ``assistant_message``/``thinking``;
+        keeping every fragment would let one long reply evict the transcript
+        from bounded reconnect history.
+        """
+        drop: set[int] = set()
+        for event in reversed(self._events):
+            if event.type == fragment_type:
+                drop.add(event.seq)
+            elif event.type == _STREAM_FRAGMENT_FINALS[fragment_type]:
+                break
+        if drop:
+            retained = [event for event in self._events if event.seq not in drop]
+            self._events.clear()
+            self._events.extend(retained)
+
     def snapshot(self) -> list[AgentEvent]:
         """Return the currently retained bounded event history."""
         with self._cond:
             return list(self._events)
 
+    def _after_locked(self, seq: int) -> list[AgentEvent]:
+        # Readers almost always ask for the newest few events; scan from the
+        # tail so each wakeup costs O(new events), not O(retained history).
+        newer: list[AgentEvent] = []
+        for event in reversed(self._events):
+            if event.seq <= seq:
+                break
+            newer.append(event)
+        newer.reverse()
+        return newer
+
     def after(self, seq: int) -> list[AgentEvent]:
         with self._cond:
-            return [event for event in self._events if event.seq > seq]
+            return self._after_locked(seq)
 
     def wait_after(self, seq: int, timeout: float = 1.0) -> list[AgentEvent]:
         """Block until events newer than *seq* exist (or *timeout*), then return them."""
         with self._cond:
             self._cond.wait_for(lambda: self._seq > seq, timeout=timeout)
-            return [event for event in self._events if event.seq > seq]
+            return self._after_locked(seq)
 
     @property
     def latest_seq(self) -> int:
@@ -185,7 +232,7 @@ class EventHub:
     def has_replay_gap(self, after_seq: int) -> bool:
         """Whether events after *after_seq* were evicted from bounded history."""
         with self._cond:
-            return bool(self._events and after_seq < self._events[0].seq - 1)
+            return after_seq < self._evicted_seq
 
 
 @dataclass(frozen=True)

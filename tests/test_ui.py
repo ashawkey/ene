@@ -628,3 +628,46 @@ def test_console_stream_output_is_plain_when_not_ansi():
     console.stream_output("")
 
     assert output.getvalue() == "plain line\n"
+
+
+def test_response_stream_coalesces_web_deltas_and_flushes_tail():
+    from ene.utils.io import EventHub
+
+    events = EventHub()
+    published = []
+    events.add_listener(lambda event: published.append(event.type))
+    console = Console(file=io.StringIO(), width=80, no_color=True)
+    stream = ResponseStream(console, events, show_thinking=True)
+    for token in ["Hel", "lo ", "wor", "ld"]:
+        stream.on_content(token)
+    deltas = [e.data["text"] for e in events.snapshot() if e.type == "assistant_delta"]
+    # The first fragment is sent at once; the rest wait for the batch window.
+    assert deltas[0] == "Hel"
+    assert len(deltas) < 4
+    time.sleep(ResponseStream.DELTA_INTERVAL_SECONDS * 3)
+    deltas = [e.data["text"] for e in events.snapshot() if e.type == "assistant_delta"]
+    assert "".join(deltas) == "Hello world"
+    stream.on_thinking("hmm")
+    stream.close()
+    # Fragments are flushed in order before the consolidated events.
+    assert published.index("thinking_delta") < published.index("thinking")
+    assert published[-1] == "assistant_message"
+
+
+def test_quiet_response_stream_skips_terminal_markdown(monkeypatch):
+    console = Console(file=io.StringIO(), width=80, no_color=True)
+    stream = ResponseStream(console, None, render_terminal=False)
+    monkeypatch.setattr(
+        stream._terminal, "feed", lambda text: pytest.fail("quiet stream must not render")
+    )
+    stream.on_content("- item\n")
+    stream.close()
+
+
+def test_thinking_indicator_exits_without_waiting_for_tick():
+    console = AgentConsole()
+    start = time.monotonic()
+    for _ in range(5):
+        with console.thinking():
+            pass
+    assert time.monotonic() - start < 0.4

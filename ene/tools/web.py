@@ -1,5 +1,6 @@
 """Web search and safely bounded fetch tools."""
 
+import functools
 import ipaddress
 import socket
 import threading
@@ -20,6 +21,14 @@ from .formatting import truncate_text_output
 
 WEB_FETCH_TIMEOUT_SECONDS = 30.0
 
+
+
+@functools.lru_cache(maxsize=1)
+def _ssl_context():
+    """Shared verification context; loading the CA bundle per hop costs ~10ms."""
+    import httpx
+
+    return httpx.create_ssl_context(trust_env=False)
 
 def _proxy_for_url(scheme: str, host: str, port: int | None) -> str | None:
     """Return the shell-configured proxy for a URL, respecting NO_PROXY."""
@@ -313,7 +322,7 @@ class WebToolsMixin:
                         assert last_error is not None
                         raise last_error
 
-                ssl_context = httpx.create_ssl_context(trust_env=False)
+                ssl_context = _ssl_context()
                 if proxy:
                     transport = httpx.HTTPTransport(
                         verify=ssl_context,

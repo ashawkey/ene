@@ -11,7 +11,7 @@ import { applyTheme, hasStoredTheme, resolveInitialTheme, storeTheme } from './t
 import type { Theme } from './theme'
 import type { AgentEvent, ClientAction, DisplayEvent, NewSessionRequest, PendingMessage, ProcessStatus, Prompt, SessionSummary, StateMessage } from './types'
 import { displayTypes, isPrompt } from './types'
-import { appendDelta, finalizeStream } from './streaming'
+import { appendDelta, appendEvent, finalizeStream } from './streaming'
 
 function parseContextStatus(data: Record<string, unknown>): ContextStatusProps | null {
   if (typeof data.context_tokens !== 'number') return null
@@ -53,18 +53,6 @@ function parseProcessStatus(data: Record<string, unknown>): ProcessStatus {
     finished: typeof data.finished === 'number' ? data.finished : 0,
     processes,
   }
-}
-
-function appendEvent(events: DisplayEvent[], event: DisplayEvent) {
-  const previous = events.at(-1)
-  if (previous && previous.type === event.type && ['output', 'system'].includes(event.type)) {
-    const separator = previous.text && event.text ? '\n' : ''
-    return [
-      ...events.slice(0, -1),
-      { ...previous, text: `${previous.text}${separator}${event.text}`, data: { ...previous.data, ...event.data } },
-    ]
-  }
-  return [...events, event]
 }
 
 /**
@@ -110,8 +98,12 @@ function SessionPane({
   // Window scrolling is asynchronous. Guard every scheduled scroll with this
   // pane's current visibility so a callback from a pane that was just hidden
   // cannot move the newly selected session.
+  // At most one tail scroll per animation frame, however many renders land.
+  const scrollFrame = useRef<number | null>(null)
   const scrollToTail = useCallback(() => {
-    requestAnimationFrame(() => {
+    if (scrollFrame.current !== null) return
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null
       if (activeRef.current) {
         window.scrollTo({ top: document.documentElement.scrollHeight })
       }

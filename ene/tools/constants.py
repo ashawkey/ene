@@ -11,6 +11,10 @@ MAX_EXEC_ARTIFACT_BYTES = 100 * 1024 * 1024
 MAX_PROCESS_LOG_BYTES = 100 * 1024 * 1024
 MAX_PROCESS_LOG_TAIL_CHARS = MAX_TOOL_OUTPUT_CHARS
 EXEC_READER_JOIN_TIMEOUT = 5
+# Once the shell has exited its pipe holds at most one buffer of output, so a
+# reader still blocked after this grace period is held open by a background
+# descendant rather than by pending data.
+EXEC_READER_EXIT_GRACE_SECONDS = 0.5
 # How often streamed command output is flushed to the terminal, and how many
 # lines a single raw block write may carry. Raw block writes keep the cost low
 # even for high-volume output, and every line is streamed to the terminal (the

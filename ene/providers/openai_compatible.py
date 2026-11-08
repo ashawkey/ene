@@ -79,6 +79,9 @@ class OpenAICompatibleProvider(LLMProvider):
         self._base_url = settings.base_url
         self._reasoning_style = settings.reasoning_style
         self._active_client: Any = None
+        # One long-lived client per provider keeps its HTTP connection pool, so
+        # each round skips a new TCP and TLS handshake. Only cancel() closes it.
+        self._client: Any = None
         self._client_lock = threading.Lock()
 
     def _new_client(self):
@@ -90,28 +93,26 @@ class OpenAICompatibleProvider(LLMProvider):
             max_retries=0,
         )
 
-    def _activate(self, client: Any) -> None:
+    def _acquire(self) -> Any:
         with self._client_lock:
             if self._active_client is not None:
                 raise RuntimeError("Provider already has an active request")
-            self._active_client = client
+            if self._client is None:
+                self._client = self._new_client()
+            self._active_client = self._client
+            return self._client
 
     def _release(self, client: Any) -> None:
+        # The client stays open for reuse. cancel() already closed and
+        # discarded it if the request was interrupted.
         with self._client_lock:
-            was_active = self._active_client is client
-            if was_active:
+            if self._active_client is client:
                 self._active_client = None
-        # Only close when the client is still the active one; cancel() already
-        # closed it and cleared the reference, so a late-release from the old
-        # stream skips the double-close.
-        if was_active:
-            client.close()
 
     def context_length(self, model: str) -> int | None:
         from openai import APIError
 
-        client = self._new_client()
-        self._activate(client)
+        client = self._acquire()
         try:
             # /models is optional on compatible gateways. A failed discovery
             # must not prevent an otherwise supported completion request.
@@ -169,8 +170,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def complete(self, request: CompletionRequest) -> CompletionResult:
         if request.stream:
             raise ValueError("complete() requires stream=False")
-        client = self._new_client()
-        self._activate(client)
+        client = self._acquire()
         try:
             response = client.chat.completions.create(**self._kwargs(request))
             choice = response.choices[0]
@@ -185,8 +185,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def open_stream(self, request: CompletionRequest) -> CompletionStream:
         if not request.stream:
             raise ValueError("open_stream() requires stream=True")
-        client = self._new_client()
-        self._activate(client)
+        client = self._acquire()
         try:
             raw_stream = client.chat.completions.create(**self._kwargs(request))
         except BaseException:
@@ -195,9 +194,13 @@ class OpenAICompatibleProvider(LLMProvider):
         return _OpenAICompletionStream(raw_stream, lambda: self._release(client))
 
     def cancel(self) -> None:
+        # Closing the client is what interrupts a blocked request; the next
+        # request then builds a fresh one.
         with self._client_lock:
             client = self._active_client
             self._active_client = None
+            if client is not None and client is self._client:
+                self._client = None
         if client is not None:
             client.close()
 

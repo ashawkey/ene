@@ -361,3 +361,35 @@ def test_cancellation_releases_active_prompt():
     thread.join(timeout=2)
     assert not thread.is_alive()
     assert result == [None]
+
+
+def test_event_hub_drops_superseded_stream_fragments_without_replay_gap():
+    from ene.utils.io import EventHub
+
+    hub = EventHub(max_events=30)
+    hub.publish("user_message", text="hi")
+    hub.publish("thinking_delta", text="hmm")
+    for index in range(20):
+        hub.publish("assistant_delta", text=str(index))
+    hub.publish("assistant_message", text="final")
+    assert [event.type for event in hub.snapshot()] == [
+        "user_message", "thinking_delta", "assistant_message",
+    ]
+    # Space freed by superseded fragments keeps later history replayable.
+    for index in range(27):
+        hub.publish("system", text=str(index))
+    assert hub.snapshot()[0].type == "user_message"
+    assert not hub.has_replay_gap(0)
+    assert [event.type for event in hub.after(hub.latest_seq - 1)] == ["system"]
+
+
+def test_event_hub_reports_gap_only_for_capacity_eviction():
+    from ene.utils.io import EventHub
+
+    hub = EventHub(max_events=3)
+    for index in range(5):
+        hub.publish("system", text=str(index))
+    assert hub.has_replay_gap(0)
+    assert hub.has_replay_gap(1)
+    assert not hub.has_replay_gap(2)
+    assert [event.seq for event in hub.after(3)] == [4, 5]

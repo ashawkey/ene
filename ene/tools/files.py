@@ -177,16 +177,29 @@ def _encode_text(content: str, newline: str) -> bytes:
     return content.encode("utf-8")
 
 
-def _count_lines(f) -> int:
-    """Count the remaining lines of binary file *f* without decoding them."""
+# Counting the lines after a truncated window is informational only; past this
+# many bytes the total is reported as a lower bound instead of reading to EOF.
+MAX_LINE_COUNT_BYTES = 64 * 1024 * 1024
+
+
+def _count_lines(f, max_bytes: int = MAX_LINE_COUNT_BYTES) -> tuple[int, bool]:
+    """Count the remaining lines of binary file *f* without decoding them.
+
+    Returns ``(count, exact)``; ``exact`` is false when the scan stopped at
+    *max_bytes* and *count* is only a lower bound.
+    """
     count = 0
+    scanned = 0
     last = b""
     while chunk := f.read(64 * 1024):
         count += chunk.count(b"\n")
         last = chunk
+        scanned += len(chunk)
+        if scanned >= max_bytes:
+            return count, False
     if last and not last.endswith(b"\n"):
         count += 1
-    return count
+    return count, True
 
 
 class FileToolsMixin:
@@ -238,6 +251,7 @@ class FileToolsMixin:
         wanted = effective_limit + 1
         lines: list[str] = []
         remaining_lines = 0
+        count_exact = True
         # Lines are split and counted as bytes and only the window is decoded,
         # so content outside it can neither fail the read nor be decoded.
         try:
@@ -251,7 +265,8 @@ class FileToolsMixin:
                 truncated_by_lines = len(lines) > effective_limit
                 if truncated_by_lines:
                     lines.pop()
-                    remaining_lines = _count_lines(f) + 1
+                    remaining_lines, count_exact = _count_lines(f)
+                    remaining_lines += 1
         except UnicodeDecodeError:
             return {"error": f"Cannot read binary file: {file}", "success": False}
 
@@ -266,7 +281,8 @@ class FileToolsMixin:
         if truncated_by_lines and not truncated_by_chars:
             total_lines = skip + len(lines) + remaining_lines
             notice = (
-                f"\n[output truncated: {len(lines)} of {total_lines} lines shown. "
+                f"\n[output truncated: {len(lines)} of "
+                f"{total_lines if count_exact else f'at least {total_lines}'} lines shown. "
                 "Use offset/limit for more.]"
             )
             content = content[:MAX_TOOL_OUTPUT_CHARS - len(notice)] + notice

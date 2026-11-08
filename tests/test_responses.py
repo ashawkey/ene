@@ -149,7 +149,8 @@ def test_responses_tool_round_trip_with_images_and_encrypted_state(
     assert second['input'][-1]['content'][-1] == {
         'type': 'input_image', 'image_url': 'data:image/png;base64,AA==', 'detail': 'original',
     }
-    assert all(client.is_closed() for client in clients)
+    # Both rounds share one client, and so one connection pool.
+    assert len(clients) == 1 and not clients[0].is_closed()
     if streaming:
         assert thinking == ['Inspecting.', 'Inspecting.']
         assert content == ['Red.']
@@ -194,7 +195,8 @@ def test_responses_structured_output_and_incomplete_response(monkeypatch, stream
     assert 'tool_choice' not in seen[0]
     assert result.finish_reason == finish_reason
     assert result.message.provider_state is None
-    assert clients[0].is_closed()
+    assert not clients[0].is_closed()
+    assert provider._active_client is None
 
 
 @pytest.mark.parametrize('mode', ['cancel', 'partial', 'failed', 'error', 'http_error'])
@@ -234,7 +236,8 @@ def test_responses_stream_termination_and_cleanup(monkeypatch, mode):
             stream.close()
             stream.close()
     assert provider._active_client is None
-    assert all(client.is_closed() for client in clients)
+    # Only an interrupted request closes (and discards) the shared client.
+    assert [client.is_closed() for client in clients] == [mode == 'cancel']
 
 
 def test_responses_nonreasoning_models_omit_reasoning_controls():

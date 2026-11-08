@@ -261,7 +261,9 @@ def test_openai_provider_builds_chat_request_and_normalizes_usage(monkeypatch):
     assert result.usage.cached_prompt_tokens == 3
     assert result.usage.reasoning_tokens == 2
     assert result.finish_reason == "stop"
-    assert client.close_calls == 1
+    # Kept open for connection reuse; only cancel() closes the client.
+    assert client.close_calls == 0
+    assert provider._active_client is None
 
 
 def test_openai_provider_stream_is_closed_and_normalized(monkeypatch):
@@ -311,7 +313,12 @@ def test_openai_provider_stream_is_closed_and_normalized(monkeypatch):
     assert result.usage.total_tokens == 14
     assert parts == ["hello"]
     assert raw_stream.close_calls == 1
+    assert client.close_calls == 0
+    assert provider._active_client is None
+    provider._acquire()
+    provider.cancel()
     assert client.close_calls == 1
+    assert provider._client is None
 
 
 @pytest.mark.parametrize("model", [

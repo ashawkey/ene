@@ -39,24 +39,35 @@ def _decode_bytes(b: bytes | None) -> str:
 
 def _build_search_result(matches: list, truncated: bool, guidance: str) -> dict[str, Any]:
     """Build a search result, dropping trailing matches until it fits."""
-    kept = matches.copy()
-    reason = "item cap" if truncated else None
 
-    while True:
+    def build(count: int, truncated: bool, reason: str | None) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "matches": kept,
-            "count": len(kept),
+            "matches": matches[:count],
+            "count": count,
             "truncated": truncated,
             "success": True,
         }
         if truncated:
             result["truncation_reason"] = reason
             result["guidance"] = guidance
-        if len(json.dumps(result, indent=2)) <= MAX_TOOL_OUTPUT_CHARS:
-            return result
-        kept.pop()
-        truncated = True
-        reason = "character cap"
+        return result
+
+    def fits(result: dict[str, Any]) -> bool:
+        return len(json.dumps(result, indent=2)) <= MAX_TOOL_OUTPUT_CHARS
+
+    result = build(len(matches), truncated, "item cap" if truncated else None)
+    if fits(result):
+        return result
+    # Binary search for the longest prefix that fits, instead of re-serializing
+    # the whole result after every single dropped match.
+    low, high = 0, len(matches) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(build(middle, True, "character cap")):
+            low = middle
+        else:
+            high = middle - 1
+    return build(low, True, "character cap")
 
 
 class SearchToolsMixin:
@@ -362,6 +373,7 @@ class SearchToolsMixin:
 
         matches: list[dict[str, Any]] = []
         truncated = False
+        base_is_dir = base.is_dir()
         interrupted = False
         timed_out = False
         deadline = time.monotonic() + GREP_TIMEOUT_SECONDS
@@ -379,6 +391,9 @@ class SearchToolsMixin:
                     continue
                 if raw_line is None:
                     break
+                # Only match events are used; skip decoding begin/end/summary.
+                if b'"type":"match"' not in raw_line[:24]:
+                    continue
                 try:
                     event = json.loads(raw_line)
                 except (json.JSONDecodeError, UnicodeDecodeError):
@@ -402,7 +417,7 @@ class SearchToolsMixin:
 
                 # make path relative to base when base is a directory; when base is
                 # a single file, rg reports that file's own path, so keep it as-is.
-                if base.is_dir():
+                if base_is_dir:
                     try:
                         rel = str(Path(file_str).relative_to(base))
                     except ValueError:

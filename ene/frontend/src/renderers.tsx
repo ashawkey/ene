@@ -1,5 +1,7 @@
 import { diffLines } from 'diff'
+import { memo, useMemo } from 'react'
 import type { ReactNode } from 'react'
+import type { Components } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -33,16 +35,18 @@ const activityTypes = new Set(['tool_start', 'tool_result', 'output', 'debug', '
 // Output longer than this collapses behind a <details> toggle.
 const COLLAPSE_LINES = 14
 
+// Stable module-level props: fresh arrays/objects per render would defeat
+// react-markdown's own memoization.
+const markdownPlugins = [remarkGfm]
+const markdownComponents: Components = {
+  a: ({ node: _node, ...props }) => (
+    <a {...props} target="_blank" rel="noreferrer noopener" />
+  ),
+}
+
 export function MarkdownMessage({ children }: { children: string }) {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a: ({ node: _node, ...props }) => (
-          <a {...props} target="_blank" rel="noreferrer noopener" />
-        ),
-      }}
-    >
+    <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
       {children}
     </ReactMarkdown>
   )
@@ -100,11 +104,36 @@ function countLines(value: string) {
 export function DiffView({ data }: { data: EventData }) {
   const oldText = data.old_text ?? ''
   const newText = data.new_text ?? ''
-  const changes = diffLines(oldText, newText)
-  const language = languageForPath(data.path)
-  // Full-file writes send a null line number and are numbered from line one.
-  let oldLine = data.line_num ?? 1
-  let newLine = data.line_num ?? 1
+  const path = data.path
+  const lineNum = data.line_num
+  // Diffing and highlighting dominate this component; redo them only when
+  // the change itself changes.
+  const rows = useMemo(() => {
+    const changes = diffLines(oldText, newText)
+    const language = languageForPath(path)
+    // Full-file writes send a null line number and are numbered from line one.
+    let oldLine = lineNum ?? 1
+    let newLine = lineNum ?? 1
+    return changes.flatMap((change, changeIndex) => {
+      const lines = change.value.split('\n')
+      if (lines.at(-1) === '') lines.pop()
+      return lines.map((line, lineIndex) => {
+        const kind = change.added ? 'added' : change.removed ? 'removed' : 'context'
+        const currentOld = change.added ? null : oldLine++
+        const currentNew = change.removed ? null : newLine++
+        return (
+          <div className={`diff-line ${kind}`} role="row" key={`${changeIndex}-${lineIndex}`}>
+            <span className="diff-number" role="cell">{currentOld ?? ''}</span>
+            <span className="diff-number" role="cell">{currentNew ?? ''}</span>
+            <span className="diff-sign" aria-hidden="true">
+              {change.added ? '+' : change.removed ? '−' : ' '}
+            </span>
+            <code role="cell">{line ? highlightLine(line, language) : ' '}</code>
+          </div>
+        )
+      })
+    })
+  }, [oldText, newText, path, lineNum])
   const removed = countLines(oldText)
   const added = countLines(newText)
 
@@ -115,25 +144,7 @@ export function DiffView({ data }: { data: EventData }) {
         {data.count && data.count > 1 ? <span>{data.count} occurrences</span> : null}
       </div>
       <div className="diff-lines" role="table" aria-label={`Changes to ${data.path ?? 'file'}`}>
-        {changes.flatMap((change, changeIndex) => {
-          const lines = change.value.split('\n')
-          if (lines.at(-1) === '') lines.pop()
-          return lines.map((line, lineIndex) => {
-            const kind = change.added ? 'added' : change.removed ? 'removed' : 'context'
-            const currentOld = change.added ? null : oldLine++
-            const currentNew = change.removed ? null : newLine++
-            return (
-              <div className={`diff-line ${kind}`} role="row" key={`${changeIndex}-${lineIndex}`}>
-                <span className="diff-number" role="cell">{currentOld ?? ''}</span>
-                <span className="diff-number" role="cell">{currentNew ?? ''}</span>
-                <span className="diff-sign" aria-hidden="true">
-                  {change.added ? '+' : change.removed ? '−' : ' '}
-                </span>
-                <code role="cell">{line ? highlightLine(line, language) : ' '}</code>
-              </div>
-            )
-          })
-        })}
+        {rows}
       </div>
       <div className="diff-summary">
         {removed > 0 ? `${removed} removed` : null}
@@ -224,7 +235,9 @@ function EventBody({ type, text, data, failed }: {
   }
 }
 
-export function EventCard({ event }: { event: DisplayEvent }) {
+// Memoized: a streaming token only replaces the live event object, so every
+// historical card skips re-parsing Markdown and re-highlighting diffs.
+export const EventCard = memo(function EventCard({ event }: { event: DisplayEvent }) {
   const failed = event.data.success === false
   const showHead = !activityTypes.has(event.type)
   return (
@@ -235,4 +248,4 @@ export function EventCard({ event }: { event: DisplayEvent }) {
       </div>
     </article>
   )
-}
+})

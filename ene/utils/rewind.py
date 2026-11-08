@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from ene import session_store
 from ene.session_store import PathDelta, SessionStore
 from ene.ui import AgentConsole
 
@@ -106,9 +107,19 @@ class ChangeTracker:
             self.store.skipped_paths(record.before, record.path)
             + self.store.skipped_paths(record.after, record.path)
         )
+        tree_skipped = any(
+            descriptor is not None and descriptor.get("tree")
+            for descriptor in (record.before, record.after)
+        )
         for path in skipped:
+            limit = (
+                f"directory exceeds {session_store.MAX_BACKUP_TREE_FILES} files or "
+                f"{session_store.MAX_BACKUP_TREE_BYTES // (1024 * 1024)} MiB"
+                if tree_skipped and path == record.path
+                else "exceeds the 10 MiB file limit"
+            )
             self.console.warn(
-                f"Not backed up for rewind: {path} (exceeds the 10 MiB file limit). "
+                f"Not backed up for rewind: {path} ({limit}). "
                 "Code rewind across this change is unavailable."
             )
         return record

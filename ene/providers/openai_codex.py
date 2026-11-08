@@ -95,6 +95,7 @@ class OpenAICodexProvider(LLMProvider):
             raise ValueError("openai-codex uses OAuth; api_key is not allowed")
         self._store = store or CredentialStore()
         self._active_client: httpx.Client | None = None
+        self._client: httpx.Client | None = None
         self._client_lock = threading.Lock()
 
     def _resolve_credential(self) -> OAuthCredential:
@@ -153,25 +154,26 @@ class OpenAICodexProvider(LLMProvider):
     def _new_client(self, timeout: httpx.Timeout) -> httpx.Client:
         return httpx.Client(timeout=timeout)
 
-    def _activate(self, client: httpx.Client) -> None:
+    def _acquire(self) -> httpx.Client:
         with self._client_lock:
             if self._active_client is not None:
                 raise RuntimeError("Provider already has an active request")
-            self._active_client = client
+            if self._client is None:
+                # Per-request timeouts are passed to build_request.
+                self._client = self._new_client(httpx.Timeout(600, connect=30))
+            self._active_client = self._client
+            return self._client
 
     def _release(self, client: httpx.Client) -> None:
+        # The client stays open so its connection pool serves the next round.
         with self._client_lock:
-            was_active = self._active_client is client
-            if was_active:
+            if self._active_client is client:
                 self._active_client = None
-        if was_active:
-            client.close()
 
     def open_stream(self, request: CompletionRequest) -> CompletionStream:
         credential = self._resolve_credential()
         timeout = httpx.Timeout(request.timeout or 600, connect=30)
-        client = self._new_client(timeout)
-        self._activate(client)
+        client = self._acquire()
         try:
             headers = self._headers(credential)
             cache_key = _prompt_cache_key(request.session_id)
@@ -183,6 +185,7 @@ class OpenAICodexProvider(LLMProvider):
                 CODEX_RESPONSES_URL,
                 headers=headers,
                 json=sanitize_unicode(_build_body(request)),
+                timeout=timeout,
             )
             response = client.send(outbound, stream=True)
             if not response.is_success:
@@ -267,5 +270,7 @@ class OpenAICodexProvider(LLMProvider):
         with self._client_lock:
             client = self._active_client
             self._active_client = None
+            if client is not None and client is self._client:
+                self._client = None
         if client is not None:
             client.close()

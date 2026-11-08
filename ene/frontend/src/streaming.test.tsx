@@ -1,4 +1,4 @@
-import { appendDelta, finalizeStream } from './streaming'
+import { appendDelta, appendEvent, finalizeStream } from './streaming'
 import type { DisplayEvent } from './types'
 
 function run(events: DisplayEvent[], step: (e: DisplayEvent[]) => DisplayEvent[]) {
@@ -47,5 +47,24 @@ describe('streaming fold', () => {
     expect(events[0].text).toBe('old turn')
     expect(events[1]).toMatchObject({ type: 'thinking', text: 'new turn' })
     expect(events[1].data.streaming).toBe(true)
+  })
+})
+
+describe('output fold', () => {
+  it('accumulates ansi output instead of keeping only the newest chunk', () => {
+    let events: DisplayEvent[] = []
+    events = appendEvent(events, { key: 'a', type: 'output', text: 'one', data: { ansi: '\u001b[2mone' } })
+    events = appendEvent(events, { key: 'b', type: 'output', text: 'two', data: { ansi: 'two' } })
+    expect(events).toHaveLength(1)
+    expect(events[0].text).toBe('one\ntwo')
+    expect(events[0].data.ansi).toBe('\u001b[2mone\ntwo')
+  })
+
+  it('keeps untouched events by identity so memoized cards skip rendering', () => {
+    const first: DisplayEvent = { key: 'a', type: 'user_message', text: 'hi', data: {} }
+    let events: DisplayEvent[] = [first]
+    events = appendDelta(events, 'assistant_delta', 'x')
+    events = appendDelta(events, 'assistant_delta', 'y')
+    expect(events[0]).toBe(first)
   })
 })

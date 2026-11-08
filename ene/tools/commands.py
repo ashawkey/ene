@@ -23,6 +23,7 @@ from ene.utils.process import (
 from .constants import (
     EXEC_DISPLAY_FLUSH_LINES,
     EXEC_DISPLAY_FLUSH_SECONDS,
+    EXEC_READER_EXIT_GRACE_SECONDS,
     EXEC_READER_JOIN_TIMEOUT,
     MAX_EXEC_ARTIFACT_BYTES,
     MAX_EXEC_OUTPUT_CHARS,
@@ -120,13 +121,33 @@ class CommandToolsMixin:
             display_buf: deque[str] = deque()
             last_flush = time.monotonic()
             stream_output = getattr(self.console, "stream_output", None)
+            display_lock = threading.Lock()
+            deferred_flush: list[threading.Timer] = []
 
             def flush_display(force: bool = False) -> None:
+                with display_lock:
+                    _flush_display_locked(force)
+
+            def _deferred_flush() -> None:
+                with display_lock:
+                    deferred_flush.clear()
+                    _flush_display_locked(True)
+
+            def _flush_display_locked(force: bool) -> None:
                 nonlocal last_flush
                 if not display_buf:
                     return
                 now = time.monotonic()
                 if not force and now - last_flush < EXEC_DISPLAY_FLUSH_SECONDS:
+                    # Throttled: make sure the buffered lines still reach the
+                    # screen if the command goes quiet before the next read.
+                    if not deferred_flush:
+                        timer = threading.Timer(
+                            EXEC_DISPLAY_FLUSH_SECONDS - (now - last_flush), _deferred_flush,
+                        )
+                        timer.daemon = True
+                        deferred_flush.append(timer)
+                        timer.start()
                     return
                 while display_buf:
                     batch: list[str] = []
@@ -191,12 +212,13 @@ class CommandToolsMixin:
                             consume(decode_output_text(pending))
                             pending = b""
                     else:
+                        # Consume every complete line of the chunk at once;
+                        # per-line handling costs several microseconds each.
                         pending += decoder.decode(raw)
-                        start = 0
-                        for match in re.finditer(r"\r\n|\r|\n", pending):
-                            consume(pending[start:match.end()])
-                            start = match.end()
-                        pending = pending[start:]
+                        end = max(pending.rfind("\n"), pending.rfind("\r")) + 1
+                        if end:
+                            consume(pending[:end])
+                            pending = pending[end:]
                         if len(pending) > MAX_PENDING_LINE_CHARS:
                             consume(pending)
                             pending = ""
@@ -208,7 +230,11 @@ class CommandToolsMixin:
                     pending += decoder.decode(b"", final=True)
                     consume(pending)
             finally:
-                flush_display(force=True)
+                with display_lock:
+                    for timer in deferred_flush:
+                        timer.cancel()
+                    deferred_flush.clear()
+                    _flush_display_locked(True)
                 stream.close()
 
         reader = threading.Thread(
@@ -230,7 +256,12 @@ class CommandToolsMixin:
                         timed_out = proc.poll() is None
                         if timed_out:
                             break
-                    time.sleep(0.1)
+                    # Return as soon as the command exits instead of sleeping
+                    # a fixed interval past its exit.
+                    try:
+                        proc.wait(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        pass
         except KeyboardInterrupt:
             interrupted = True
 
@@ -252,7 +283,7 @@ class CommandToolsMixin:
         # A background descendant can retain the pipes after the shell exits.
         # Stop capture before closing the shared artifact, then let any lingering
         # daemon drainers discard bytes rather than touching closed state.
-        reader.join(timeout=EXEC_READER_JOIN_TIMEOUT)
+        reader.join(timeout=EXEC_READER_EXIT_GRACE_SECONDS)
         readers_incomplete = reader.is_alive()
         if readers_incomplete:
             with artifact_lock:

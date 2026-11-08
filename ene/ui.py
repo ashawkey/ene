@@ -242,6 +242,7 @@ class ThinkingIndicator:
         self._start_time: float = 0
         self._started_at: float = 0
         self._running = False
+        self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._indicator_stack = indicator_stack
         self._indicator_lock = indicator_lock
@@ -250,6 +251,7 @@ class ThinkingIndicator:
         self._start_time = time.monotonic() - self._initial_elapsed
         self._started_at = time.time()
         self._running = True
+        self._stop_event.clear()
         if self._indicator_stack is None:
             self._start_visual(self._initial_elapsed)
             self._publish_start()
@@ -285,6 +287,8 @@ class ThinkingIndicator:
 
     def __exit__(self, *args) -> None:
         self._running = False
+        # Wake the tick thread so exit does not wait out its sleep interval.
+        self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         if self._indicator_stack is None:
@@ -451,7 +455,7 @@ class ThinkingIndicator:
     def _tick(self) -> None:
         """Background loop that updates the elapsed-time label."""
         while self._running:
-            time.sleep(0.08 if self._status_sink is not None else 0.5)
+            self._stop_event.wait(0.08 if self._status_sink is not None else 0.5)
             if not self._running:
                 continue
             elapsed = time.monotonic() - self._start_time
@@ -542,6 +546,11 @@ class _TerminalMarkdownStream:
         self._buffer = ""
         self._references: dict[str, dict] = {}
         self._started = False
+        # Re-parsing the whole uncommitted block on every line is quadratic
+        # for a long list, table or fence. After a parse that commits nothing,
+        # wait for a structural hint or geometric growth before trying again.
+        self._last_block_type: str | None = None
+        self._next_parse_len = 0
 
     def _print(self, renderable) -> None:
         row = Table.grid(padding=0, expand=True)
@@ -661,11 +670,34 @@ class _TerminalMarkdownStream:
         markdown.parsed = tokens
         self._print(markdown)
 
+    # Buffers shorter than this are always re-parsed: it is cheap, and it
+    # keeps short replies rendering promptly at every block boundary.
+    _EAGER_PARSE_CHARS = 4096
+
+    def _should_parse(self, new_lines: str) -> bool:
+        if len(self._buffer) < self._EAGER_PARSE_CHARS:
+            return True
+        if len(self._buffer) >= self._next_parse_len:
+            return True
+        block_type = self._last_block_type
+        if block_type == "fence":
+            # Only a fence marker can close a fenced block.
+            return any(
+                line.lstrip(" ").startswith(("```", "~~~"))
+                for line in new_lines.splitlines()
+            )
+        if block_type in self._BLANK_TERMINATED:
+            return any(not line.strip() for line in new_lines.splitlines())
+        return False
+
     def _commit_stable(self) -> None:
         tokens, env, blocks = self._parse(self._buffer)
+        self._last_block_type = blocks[-1][2] if blocks else None
         stable_line = self._stable_line(self._buffer, env, blocks, tokens)
         if not stable_line:
+            self._next_parse_len = len(self._buffer) + len(self._buffer) // 4
             return
+        self._next_parse_len = 0
         offset = self._line_offset(self._buffer, stable_line)
         source, self._buffer = self._buffer[:offset], self._buffer[offset:]
         self._render(source, env.get("references"))
@@ -680,9 +712,11 @@ class _TerminalMarkdownStream:
         complete = self._pending.rpartition("\n")
         if not complete[1]:
             return
-        self._buffer += complete[0] + "\n"
+        new_lines = complete[0] + "\n"
+        self._buffer += new_lines
         self._pending = complete[2]
-        self._commit_stable()
+        if self._should_parse(new_lines):
+            self._commit_stable()
 
     def close(self) -> None:
         self._buffer += self._pending
@@ -694,6 +728,7 @@ class _TerminalMarkdownStream:
     def abort(self) -> None:
         self._pending = ""
         self._buffer = ""
+        self._next_parse_len = 0
 
 
 class ResponseStream:
@@ -702,9 +737,15 @@ class ResponseStream:
     Complete Markdown blocks are rendered as they arrive. The active top-level
     container remains buffered so nested lists, quotes, tables, and fenced code
     retain their structure. No committed terminal rows are rewritten, so tall
-    responses remain correct in scrollback. Web clients still receive token
-    fragments plus consolidated events for late joiners.
+    responses remain correct in scrollback. Web clients receive coalesced
+    token fragments plus consolidated events for late joiners.
     """
+
+    # Token fragments are batched for web clients: one event per token would
+    # cost a frame and a render per token and evict real history from the
+    # bounded reconnect buffer within a single long reply.
+    DELTA_INTERVAL_SECONDS = 0.05
+    DELTA_MAX_CHARS = 2048
 
     def __init__(
         self,
@@ -712,18 +753,27 @@ class ResponseStream:
         events: "EventHub | None",
         *,
         show_thinking: bool = False,
+        render_terminal: bool = True,
     ):
         self._console = console
         self._events = events
         self._show_thinking = show_thinking
-        self._content = ""
-        self._thinking = ""
+        # A quiet console discards output only after Rich has fully rendered
+        # it, so skip the (incremental Markdown) rendering work altogether.
+        self._render_terminal = render_terminal
+        self._content_parts: list[str] = []
+        self._thinking_parts: list[str] = []
         self._content_visible = False
         self._thinking_visible = False
         self._thinking_terminal = _TerminalTextStream(console, "thinking")
         self._terminal = _TerminalMarkdownStream(console)
         self._closed = False
         self._lock = threading.Lock()
+        self._delta_type: str | None = None
+        self._delta_parts: list[str] = []
+        self._delta_chars = 0
+        self._delta_published_at = 0.0
+        self._delta_timer: threading.Timer | None = None
 
     def __enter__(self) -> "ResponseStream":
         return self
@@ -731,22 +781,58 @@ class ResponseStream:
     def __exit__(self, exc_type, *args) -> None:
         self.close(render_terminal=exc_type is None)
 
+    def _flush_delta_locked(self) -> None:
+        if self._delta_timer is not None:
+            self._delta_timer.cancel()
+            self._delta_timer = None
+        if self._delta_parts and self._events is not None:
+            self._events.publish(self._delta_type, text="".join(self._delta_parts))
+            self._delta_published_at = time.monotonic()
+        self._delta_type = None
+        self._delta_parts = []
+        self._delta_chars = 0
+
+    def _flush_delta_later(self) -> None:
+        with self._lock:
+            self._delta_timer = None
+            if not self._closed:
+                self._flush_delta_locked()
+
+    def _queue_delta_locked(self, kind: str, text: str) -> None:
+        if self._events is None:
+            return
+        if self._delta_type != kind:
+            self._flush_delta_locked()
+            self._delta_type = kind
+        self._delta_parts.append(text)
+        self._delta_chars += len(text)
+        wait = self.DELTA_INTERVAL_SECONDS - (time.monotonic() - self._delta_published_at)
+        if wait <= 0 or self._delta_chars >= self.DELTA_MAX_CHARS:
+            self._flush_delta_locked()
+        elif self._delta_timer is None:
+            # Publish the tail even if the provider goes quiet (for example
+            # while it streams a large tool call after the visible text).
+            self._delta_timer = threading.Timer(wait, self._flush_delta_later)
+            self._delta_timer.daemon = True
+            self._delta_timer.start()
+
     def on_content(self, text: str) -> None:
         with self._lock:
             if self._closed:
                 return
-            self._content += text
+            self._content_parts.append(text)
             if not self._content_visible:
-                if not self._content.strip():
+                if not text.strip():
                     return
                 self._content_visible = True
-                text = self._content
+                text = "".join(self._content_parts)
             if self._thinking_visible:
-                self._thinking_terminal.flush()
+                if self._render_terminal:
+                    self._thinking_terminal.flush()
                 self._thinking_visible = False
-            self._terminal.feed(text)
-            if self._events is not None:
-                self._events.publish("assistant_delta", text=text)
+            if self._render_terminal:
+                self._terminal.feed(text)
+            self._queue_delta_locked("assistant_delta", text)
 
     def on_thinking(self, text: str) -> None:
         # show_thinking gates reasoning output uniformly across terminal and
@@ -757,20 +843,21 @@ class ResponseStream:
         with self._lock:
             if self._closed:
                 return
-            self._thinking += text
-            self._thinking_terminal.feed(text)
+            self._thinking_parts.append(text)
+            if self._render_terminal:
+                self._thinking_terminal.feed(text)
             self._thinking_visible = True
-            if self._events is not None:
-                self._events.publish("thinking_delta", text=text)
+            self._queue_delta_locked("thinking_delta", text)
 
     def close(self, *, render_terminal: bool = True) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            thinking = self._thinking
-            content = self._content if self._content_visible else ""
-        if render_terminal:
+            self._flush_delta_locked()
+            thinking = "".join(self._thinking_parts)
+            content = "".join(self._content_parts) if self._content_visible else ""
+        if render_terminal and self._render_terminal:
             self._thinking_terminal.flush()
             if content:
                 self._terminal.close()
@@ -958,6 +1045,7 @@ class AgentConsole:
             self._console,
             self.events if not self.quiet else None,
             show_thinking=show_thinking,
+            render_terminal=not self._console.quiet,
         )
 
     # -- raw pass-through (for rich markup, tables, etc.) -------------------

@@ -900,3 +900,22 @@ def test_apply_plan_failure_names_already_restored_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(tracker, "_apply", fail_second)
     with pytest.raises(RuntimeError, match=f"disk full. Already restored: {first_path}$"):
         tracker.apply_plan(plan)
+
+
+def test_removed_tree_over_backup_budget_is_skipped_without_reading(tmp_path, monkeypatch):
+    monkeypatch.setattr("ene.session_store.MAX_BACKUP_TREE_FILES", 3)
+    store, tracker, work = _session(tmp_path)
+    deps = work / "node_modules"
+    deps.mkdir()
+    for index in range(5):
+        (deps / f"f{index}.js").write_text("x")
+    monkeypatch.setattr(
+        store, "_store_object", lambda *args: pytest.fail("Over-budget tree must not be stored")
+    )
+    tracker.track_remove(1, str(deps))
+    descriptor = tracker.pending_changes[0]["before"]
+    assert descriptor["kind"] == "skipped" and descriptor["tree"]
+    assert tracker.console.warnings == [
+        "Not backed up for rewind: node_modules (directory exceeds 3 files or 64 MiB). "
+        "Code rewind across this change is unavailable."
+    ]
