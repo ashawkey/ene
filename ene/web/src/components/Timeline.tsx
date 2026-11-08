@@ -1,6 +1,6 @@
 import { ArrowDown, History, MessagesSquare } from 'lucide-react'
 import type { RefObject } from 'react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { RoundStats } from '../lib/protocol'
 import type { SessionView, TimelineItem } from '../lib/session'
@@ -27,7 +27,9 @@ export type TimelineHandle = {
 
 const PIN_DISTANCE = 160
 
-export function Timeline({
+// Memoized: parent re-renders (session list updates, composer typing) must
+// not walk the whole transcript.
+export const Timeline = memo(function Timeline({
   view,
   active,
   handle,
@@ -200,4 +202,4 @@ export function Timeline({
       ) : null}
     </div>
   )
-}
+})

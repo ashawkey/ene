@@ -38,7 +38,7 @@ export function SessionPane({
   findOpen: boolean
   onFindOpen: (open: boolean) => void
 }) {
-  const session = useSession(summary.id, onGone)
+  const session = useSession(summary.id, onGone, active)
   const { view } = session
   const connected = session.status === 'open'
   const timeline = useRef<TimelineHandle | null>(null)

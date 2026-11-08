@@ -125,7 +125,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 }) {
   return (
     <div className={`assistant ${item.streaming ? 'streaming' : ''}`}>
-      <Markdown text={item.text} />
+      <Markdown text={item.text} streaming={item.streaming} />
       {!item.streaming && (item.text || round) ? (
         <div className="reply-foot">
           {item.text ? <CopyButton text={item.text} label="Copy reply" /> : null}

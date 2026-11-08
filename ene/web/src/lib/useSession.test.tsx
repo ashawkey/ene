@@ -150,4 +150,15 @@ describe('useSession outbox', () => {
     })
     expect(text()).toBe('Hello!')
   })
+
+  it('holds renders while hidden and catches up when shown', () => {
+    const { result, rerender } = renderHook(({ visible }) => useSession('s1', () => undefined, visible), {
+      initialProps: { visible: false },
+    })
+    connect()
+    act(() => latest().push({ type: 'user_message', seq: 1, data: { text: 'hi', source: 'web' } }))
+    expect(result.current.view.items).toHaveLength(0)
+    rerender({ visible: true })
+    expect(result.current.view.items).toHaveLength(1)
+  })
 })

@@ -53,6 +53,13 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeChoice>(loadTheme)
   const searchRef = useRef<HTMLInputElement>(null)
   const previousStates = useRef(new Map<string, string>())
+  const listSignature = useRef('')
+  // Local edits diverge from the last list the hub sent; forget it so the
+  // hub's next list is always applied.
+  const updateSessions = useCallback((update: SessionSummary[] | ((current: SessionSummary[]) => SessionSummary[])) => {
+    listSignature.current = ''
+    setSessions(update)
+  }, [])
   const activeRef = useRef(activeId)
   activeRef.current = activeId
 
@@ -104,7 +111,13 @@ export default function App() {
         const next = new Set([...current, ...finished].filter((id) => alive.has(id)))
         return next.size === current.size && [...next].every((id) => current.has(id)) ? current : next
       })
-      setSessions(list)
+      // The hub re-sends the list on every change to any session; an
+      // identical list must not re-render every pane.
+      const signature = JSON.stringify(list)
+      if (signature !== listSignature.current) {
+        listSignature.current = signature
+        setSessions(list)
+      }
     },
   })
 
@@ -131,10 +144,10 @@ export default function App() {
   }, [busyId])
 
   const markOwned = useCallback((session: SessionSummary) => {
-    setSessions((current) => current.some((item) => item.id === session.id)
+    updateSessions((current) => current.some((item) => item.id === session.id)
       ? current.map((item) => (item.id === session.id ? { ...item, ...session } : item))
       : [...current, session])
-  }, [])
+  }, [updateSessions])
 
   const attach = useCallback((id: string) => run(id, async () => {
     const session = await attachSession(id)
@@ -144,16 +157,16 @@ export default function App() {
 
   const detach = useCallback((id: string) => run(id, async () => {
     await detachSession(id)
-    setSessions((current) => current.map((item) => (item.id === id ? { ...item, attached_by: '' } : item)))
+    updateSessions((current) => current.map((item) => (item.id === id ? { ...item, attached_by: '' } : item)))
     store.set(`ene.draft.${id}`, null)
-  }), [run])
+  }), [run, updateSessions])
 
   const end = useCallback((id: string) => run(id, async () => {
     await endSession(id)
-    setSessions((current) => current.filter((item) => item.id !== id))
+    updateSessions((current) => current.filter((item) => item.id !== id))
     store.set(`ene.draft.${id}`, null)
     toast('Session ended.', 'success', 2500)
-  }), [run])
+  }), [run, updateSessions])
 
   const signOut = useCallback(async () => {
     try {
@@ -161,9 +174,9 @@ export default function App() {
     } catch {
       // Local sign-out proceeds regardless.
     }
-    setSessions([])
+    updateSessions([])
     setAuth(false)
-  }, [])
+  }, [updateSessions])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -245,7 +258,7 @@ export default function App() {
             onInspector={setInspector}
             onDetach={() => detach(session.id)}
             detaching={busyId === session.id}
-            onGone={() => setSessions((current) => current.map((item) => (item.id === session.id ? { ...item, attached_by: '' } : item)))}
+            onGone={() => updateSessions((current) => current.map((item) => (item.id === session.id ? { ...item, attached_by: '' } : item)))}
             onMenu={() => setSidebarOpen(true)}
             findOpen={findOpen}
             onFindOpen={setFindOpen}

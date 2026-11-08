@@ -27,7 +27,7 @@ const BATCHED = new Set<string>(['assistant_delta', 'thinking_delta', 'thinking_
  * agent before the drop is not delivered twice. A rejection puts the text back
  * into the composer instead of losing it.
  */
-export function useSession(sessionId: string, onGone: () => void) {
+export function useSession(sessionId: string, onGone: () => void, visible = true) {
   const [view, setView] = useState<SessionView>(initialView)
   const viewRef = useRef(view)
   const [draft, setDraftState] = useState(() => store.get(draftKey(sessionId)) ?? '')
@@ -123,6 +123,10 @@ export function useSession(sessionId: string, onGone: () => void) {
   // socket task; render them at most once per frame. Any other event renders
   // immediately (and carries the pending deltas with it).
   const frame = useRef<number | null>(null)
+  // A hidden pane folds events into the view without rendering them; it
+  // catches up in one render when shown again.
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
   const commit = useCallback(() => {
     if (frame.current !== null) {
       cancelAnimationFrame(frame.current)
@@ -133,6 +137,9 @@ export function useSession(sessionId: string, onGone: () => void) {
   useEffect(() => () => {
     if (frame.current !== null) cancelAnimationFrame(frame.current)
   }, [])
+  useEffect(() => {
+    if (visible) commit()
+  }, [visible, commit])
 
   const onMessage = useCallback((raw: Record<string, unknown>) => {
     const message = raw as ServerEvent
@@ -140,7 +147,9 @@ export function useSession(sessionId: string, onGone: () => void) {
     const [next, signals] = reduce(viewRef.current, message)
     if (next !== viewRef.current) {
       viewRef.current = next
-      if (!BATCHED.has(message.type)) commit()
+      if (!visibleRef.current) {
+        // Rendered when the pane is shown again.
+      } else if (!BATCHED.has(message.type)) commit()
       else if (frame.current === null) {
         frame.current = requestAnimationFrame(() => {
           frame.current = null

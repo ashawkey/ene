@@ -71,13 +71,57 @@ const components: Components = {
   },
 }
 
-/** Markdown with raw HTML disabled (react-markdown never renders it). */
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+const FENCE = /^ {0,3}(`{3,}|~{3,})/
+
+/**
+ * Split Markdown at blank lines between top-level blocks (never inside a
+ * fenced code block, nor before an indented continuation line). Earlier
+ * blocks of a growing text come out byte-identical, so they can be memoized.
+ */
+export function splitBlocks(text: string): string[] {
+  const lines = text.split('\n')
+  const blocks: string[] = []
+  let start = 0
+  let fence: string | null = null
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
+    const marker = FENCE.exec(line)?.[1]
+    if (marker) {
+      if (fence === null) fence = marker
+      else if (marker[0] === fence[0] && marker.length >= fence.length && !line.trim().slice(marker.length)) fence = null
+      continue
+    }
+    if (fence !== null || line.trim() !== '' || index === start) continue
+    const following = lines[index + 1]
+    if (following === undefined || following === '' || /^\s/.test(following)) continue
+    blocks.push(lines.slice(start, index).join('\n'))
+    start = index + 1
+  }
+  blocks.push(lines.slice(start).join('\n'))
+  return blocks
+}
+
+const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} skipHtml>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
+/**
+ * Markdown with raw HTML disabled (react-markdown never renders it).
+ *
+ * While *streaming*, the text is rendered block by block so each delta
+ * re-parses only the last block instead of the whole reply. The final text
+ * is parsed as one document (lists or references spanning blocks).
+ */
+export const Markdown = memo(function Markdown({ text, streaming = false }: { text: string; streaming?: boolean }) {
   return (
     <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} skipHtml>
-        {text}
-      </ReactMarkdown>
+      {streaming
+        ? splitBlocks(text).map((block, index) => <MarkdownBlock key={index} text={block} />)
+        : <MarkdownBlock text={text} />}
     </div>
   )
 })
