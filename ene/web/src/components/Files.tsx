@@ -16,7 +16,7 @@ import {
   Search,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import { errorMessage, fileDiff, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
 import { bytes, relativeTime } from '../lib/format'
@@ -43,7 +43,12 @@ const STATUS_LETTER: Record<string, string> = {
   modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', conflict: 'U', untracked: '?',
 }
 
-export function FileBrowser({
+/** Lines per lazily painted block of the code view. */
+const CODE_CHUNK = 200
+
+// Memoized: the inspector re-renders on every streamed update, and a large
+// folder listing must not re-render with it.
+export const FileBrowser = memo(function FileBrowser({
   sessionId,
   onOpen,
   refreshKey,
@@ -110,9 +115,13 @@ export function FileBrowser({
   }, [changes])
 
   const join = useCallback((name: string) => (listing?.path ? `${listing.path}/${name}` : name), [listing])
-  const needle = filter.trim().toLowerCase()
-  const entries = (listing?.entries ?? []).filter(
-    (entry) => (showHidden || !entry.hidden) && (!needle || entry.name.toLowerCase().includes(needle)),
+  // Typing stays responsive while a long listing re-filters in the background.
+  const needle = useDeferredValue(filter).trim().toLowerCase()
+  const entries = useMemo(
+    () => (listing?.entries ?? []).filter(
+      (entry) => (showHidden || !entry.hidden) && (!needle || entry.name.toLowerCase().includes(needle)),
+    ),
+    [listing, showHidden, needle],
   )
   const crumbs = listing?.path ? listing.path.split('/') : []
   const changeCount = changes?.changes.length ?? 0
@@ -222,9 +231,9 @@ export function FileBrowser({
       )}
     </div>
   )
-}
+})
 
-export function FileViewer({
+export const FileViewer = memo(function FileViewer({
   sessionId,
   path,
   changed,
@@ -286,14 +295,25 @@ export function FileViewer({
   const Icon = fileIcon(path, 'file')
   const hasDiff = diff !== null && diff.status !== 'unchanged'
   const showDiff = mode === 'diff' && (hasDiff || changed)
+  // Diffed once: the stat and the split view share the same rows.
+  const diffRows = useMemo(
+    () => (diff && !diff.binary && !diff.too_large ? splitLines(diff.old, diff.new) : null),
+    [diff],
+  )
   const stat = useMemo(() => {
-    if (!diff) return null
-    const lines = splitLines(diff.old, diff.new)
+    if (!diffRows) return null
     return {
-      added: lines.filter((line) => line.right?.kind === 'add').length,
-      removed: lines.filter((line) => line.left?.kind === 'del').length,
+      added: diffRows.filter((line) => line.right?.kind === 'add').length,
+      removed: diffRows.filter((line) => line.left?.kind === 'del').length,
     }
-  }, [diff])
+  }, [diffRows])
+  const chunks = useMemo(() => {
+    const result: Array<{ start: number; lines: typeof lines }> = []
+    for (let start = 0; start < lines.length; start += CODE_CHUNK) {
+      result.push({ start, lines: lines.slice(start, start + CODE_CHUNK) })
+    }
+    return result
+  }, [lines])
 
   return (
     <Modal onClose={onClose} className="viewer" label={`File ${path}`}>
@@ -335,7 +355,7 @@ export function FileViewer({
               ? <Empty icon={File}>Binary file changed.</Empty>
               : diff.too_large
                 ? <Empty icon={File}>Too large to diff.</Empty>
-                : <SplitDiff path={path} oldText={diff.old} newText={diff.new} />
+                : <SplitDiff path={path} oldText={diff.old} newText={diff.new} lines={diffRows ?? undefined} />
         ) : (
           <>
             {error ? <div className="panel-error">{error}</div> : null}
@@ -349,12 +369,17 @@ export function FileViewer({
             ) : null}
             {file?.kind === 'text' && !(rendered && isMarkdown) ? (
               <div className="code-view">
-                {lines.map((line, index) => (
-                  <div className="code-line" key={index}>
-                    <span className="ln" aria-hidden>{index + 1}</span>
-                    {line.html !== null
-                      ? <code className="hljs" dangerouslySetInnerHTML={{ __html: line.html || ' ' }} />
-                      : <code>{line.text || ' '}</code>}
+                {/* Chunks off screen skip layout and paint (content-visibility). */}
+                {chunks.map((chunk) => (
+                  <div className="code-chunk" key={chunk.start}>
+                    {chunk.lines.map((line, offset) => (
+                      <div className="code-line" key={offset}>
+                        <span className="ln" aria-hidden>{chunk.start + offset + 1}</span>
+                        {line.html !== null
+                          ? <code className="hljs" dangerouslySetInnerHTML={{ __html: line.html || ' ' }} />
+                          : <code>{line.text || ' '}</code>}
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -365,4 +390,4 @@ export function FileViewer({
       </div>
     </Modal>
   )
-}
+})

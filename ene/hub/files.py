@@ -191,7 +191,7 @@ def git_changes(root: str | Path) -> dict:
             cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
         ).stdout.strip()
         status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+            ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
             cwd=base, capture_output=True, timeout=GIT_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError):

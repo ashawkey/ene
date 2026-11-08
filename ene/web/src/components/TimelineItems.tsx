@@ -172,6 +172,11 @@ export const DiffView = memo(function DiffView({ item, onOpenFile }: { item: Ite
   const removed = rows.filter((row) => row.sign === '-').length
   const [expanded, setExpanded] = useState(rows.length <= 40)
   const shown = expanded ? rows : rows.slice(0, 24)
+  // Highlight only the rows shown, once each; expanding reuses earlier work.
+  const html = useMemo(
+    () => (expanded ? rows : rows.slice(0, 24)).map((row) => highlight(row.text, language)),
+    [rows, expanded, language],
+  )
   return (
     <div className={`diff glass-soft ${item.success ? '' : 'failed'}`}>
       <div className="diff-head">
@@ -189,14 +194,14 @@ export const DiffView = memo(function DiffView({ item, onOpenFile }: { item: Ite
       {item.success ? (
         <div className="diff-body">
           {shown.map((row, index) => {
-            const html = highlight(row.text, language)
+            const rowHtml = html[index] ?? null
             return (
               <div className={`diff-line ${row.sign === '+' ? 'add' : row.sign === '-' ? 'del' : ''}`} key={index}>
                 <span className="ln">{row.oldNo ?? ''}</span>
                 <span className="ln">{row.newNo ?? ''}</span>
                 <span className="sign">{row.sign}</span>
-                {html !== null
-                  ? <code className="hljs" dangerouslySetInnerHTML={{ __html: html || ' ' }} />
+                {rowHtml !== null
+                  ? <code className="hljs" dangerouslySetInnerHTML={{ __html: rowHtml || ' ' }} />
                   : <code>{row.text || ' '}</code>}
               </div>
             )
@@ -276,17 +281,23 @@ export const RoundChip = memo(function RoundChip({ round, onOpen }: { round: Rou
   )
 })
 
-export function ActivityGroup({
-  items,
-  live,
-  render,
-}: {
+type GroupProps = {
   items: TimelineItem[]
   live: boolean
   render: (item: TimelineItem, live: boolean) => ReactNode
-}) {
+}
+
+// Grouping rebuilds each run's array on every update; compare the items
+// themselves so settled groups skip re-rendering while the reply streams.
+const sameGroup = (a: GroupProps, b: GroupProps) =>
+  a.live === b.live &&
+  a.render === b.render &&
+  a.items.length === b.items.length &&
+  a.items.every((item, index) => item === b.items[index])
+
+export const ActivityGroup = memo(function ActivityGroup({ items, live, render }: GroupProps) {
   const [open, setOpen] = useState(false)
-  const summary = summarize(items)
+  const summary = useMemo(() => summarize(items), [items])
   const tail = live ? items.slice(-2) : []
   return (
     <div className={`activity ${open ? 'open' : ''} ${live ? 'live' : ''}`}>
@@ -308,4 +319,4 @@ export function ActivityGroup({
           : null}
     </div>
   )
-}
+}, sameGroup)

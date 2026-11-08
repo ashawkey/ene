@@ -43,6 +43,7 @@ export function SessionPane({
   const timeline = useRef<TimelineHandle | null>(null)
   const [viewing, setViewing] = useState<{ path: string; changed?: boolean } | null>(null)
   const openFile = useCallback((path: string, changed?: boolean) => setViewing({ path, changed }), [])
+  const closeFile = useCallback(() => setViewing(null), [])
   const [query, setQuery] = useState('')
   const [matchIndex, setMatchIndex] = useState(0)
   const [matchCount, setMatchCount] = useState(0)
@@ -72,13 +73,18 @@ export function SessionPane({
     if (window.matchMedia?.('(max-width: 1100px)').matches) onInspector(null)
   }, [onInspector])
 
+  // Read the draft through a ref so this callback stays stable and the
+  // memoized file viewer does not re-render on every streamed update.
+  const draftRef = useRef(session.draft)
+  draftRef.current = session.draft
+  const { setDraft } = session
   const mention = useCallback((path: string) => {
-    const draft = session.draft
+    const draft = draftRef.current
     const token = `@${path} `
-    session.setDraft(draft && !/\s$/.test(draft) ? `${draft} ${token}` : `${draft}${token}`)
+    setDraft(draft && !/\s$/.test(draft) ? `${draft} ${token}` : `${draft}${token}`)
     setViewing(null)
     setFocusSignal((value) => value + 1)
-  }, [session])
+  }, [setDraft])
 
   const contextTip = useMemo(() => {
     const context = view.context
@@ -221,7 +227,7 @@ export function SessionPane({
           sessionId={summary.id}
           path={viewing.path}
           changed={viewing.changed}
-          onClose={() => setViewing(null)}
+          onClose={closeFile}
           onMention={mention}
         />
       ) : null}

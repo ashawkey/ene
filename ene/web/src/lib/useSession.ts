@@ -14,6 +14,8 @@ export type OutboxEntry = { actionId: string; text: string; sentAt: number; atte
 const draftKey = (id: string) => `ene.draft.${id}`
 // Guards against a double Enter / double tap re-sending the same text.
 const DOUBLE_SEND_WINDOW = 1500
+// High-frequency events whose renders are coalesced per animation frame.
+const BATCHED = new Set<string>(['assistant_delta', 'thinking_delta', 'thinking_update', 'output', 'debug'])
 
 /**
  * One attached session: its event stream, derived view, composer draft, and
@@ -117,16 +119,37 @@ export function useSession(sessionId: string, onGone: () => void) {
     }
   }, [restoreDraft, setDraft, updateOutbox])
 
+  // Streaming deltas can arrive hundreds of times a second, each as its own
+  // socket task; render them at most once per frame. Any other event renders
+  // immediately (and carries the pending deltas with it).
+  const frame = useRef<number | null>(null)
+  const commit = useCallback(() => {
+    if (frame.current !== null) {
+      cancelAnimationFrame(frame.current)
+      frame.current = null
+    }
+    setView(viewRef.current)
+  }, [])
+  useEffect(() => () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+  }, [])
+
   const onMessage = useCallback((raw: Record<string, unknown>) => {
     const message = raw as ServerEvent
     if (message.type === 'state' && typeof raw.csrf === 'string') setCsrf(raw.csrf)
     const [next, signals] = reduce(viewRef.current, message)
     if (next !== viewRef.current) {
       viewRef.current = next
-      setView(next)
+      if (!BATCHED.has(message.type)) commit()
+      else if (frame.current === null) {
+        frame.current = requestAnimationFrame(() => {
+          frame.current = null
+          setView(viewRef.current)
+        })
+      }
     }
     if (signals.length) handleSignals(signals)
-  }, [handleSignals])
+  }, [commit, handleSignals])
 
   const socket = useSocket({
     url: () => {

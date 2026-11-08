@@ -127,4 +127,27 @@ describe('useSession outbox', () => {
     expect(ok).toBe(false)
     expect(submits(latest())).toHaveLength(1)
   })
+
+  it('renders streaming deltas once per frame and flushes them with the next event', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    const { result } = renderHook(() => useSession('s1', () => undefined))
+    connect()
+    const text = () => result.current.view.items.map((item) => ('text' in item ? item.text : '')).join('|')
+    act(() => {
+      latest().push({ type: 'assistant_delta', seq: 1, data: { text: 'Hel' } })
+      latest().push({ type: 'assistant_delta', seq: 2, data: { text: 'lo' } })
+    })
+    expect(text()).toBe('')
+    expect(frames).toHaveLength(1)
+    act(() => frames.shift()!(0))
+    expect(text()).toBe('Hello')
+
+    act(() => {
+      latest().push({ type: 'assistant_delta', seq: 3, data: { text: '!' } })
+      latest().push({ type: 'assistant_message', seq: 4, data: { text: 'Hello!' } })
+    })
+    expect(text()).toBe('Hello!')
+  })
 })

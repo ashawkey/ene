@@ -1,5 +1,5 @@
 import { Check, Copy } from 'lucide-react'
-import { memo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -28,8 +28,10 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
   )
 }
 
-export function CodeBlock({ code, language }: { code: string; language?: string | null }) {
-  const html = highlight(code, language)
+// Memoized: a streaming reply re-renders its Markdown on every delta, and
+// finished code blocks above the cursor must not be re-highlighted each time.
+export const CodeBlock = memo(function CodeBlock({ code, language }: { code: string; language?: string | null }) {
+  const html = useMemo(() => highlight(code, language), [code, language])
   return (
     <div className="code-block">
       <div className="code-head">
@@ -41,7 +43,7 @@ export function CodeBlock({ code, language }: { code: string; language?: string 
         : <pre><code>{code}</code></pre>}
     </div>
   )
-}
+})
 
 const components: Components = {
   code({ className, children, ...props }) {

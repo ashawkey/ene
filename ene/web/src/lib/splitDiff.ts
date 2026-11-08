@@ -11,6 +11,21 @@ export const CONTEXT = 3
 
 const split = (value: string) => value.replace(/\n$/, '').split('\n')
 
+/** Give up on a minimal diff after this long; the main thread must stay responsive. */
+export const DIFF_TIMEOUT_MS = 1000
+
+type Part = { value: string; added?: boolean; removed?: boolean }
+
+/** Line diff, degrading to "replace everything" when it would take too long. */
+function lineParts(oldText: string, newText: string): Part[] {
+  const parts = diffLines(oldText, newText, { timeout: DIFF_TIMEOUT_MS }) as Part[] | undefined
+  if (parts) return parts
+  const fallback: Part[] = []
+  if (oldText) fallback.push({ value: oldText, removed: true })
+  if (newText) fallback.push({ value: newText, added: true })
+  return fallback
+}
+
 /** Side-by-side rows: removals on the left paired with additions on the right. */
 export function splitLines(oldText: string, newText: string): SplitLine[] {
   const lines: SplitLine[] = []
@@ -23,7 +38,7 @@ export function splitLines(oldText: string, newText: string): SplitLine[] {
     }
     removed = []
   }
-  for (const part of diffLines(oldText, newText)) {
+  for (const part of lineParts(oldText, newText)) {
     const texts = split(part.value)
     if (part.removed) {
       flush()

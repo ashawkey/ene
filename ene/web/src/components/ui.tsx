@@ -149,23 +149,28 @@ export function Modal({
   label: string
 }) {
   const panel = useRef<HTMLDivElement>(null)
+  // Callers often pass an inline onClose; keep the latest in a ref so the
+  // focus trap below runs once per mount instead of bouncing focus out and
+  // back on every parent render (e.g. each streamed token).
+  const close = useRef(onClose)
+  close.current = onClose
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         event.preventDefault()
-        onClose()
+        close.current()
       }
     }
     window.addEventListener('keydown', onKey)
     panel.current?.focus()
     return () => {
       window.removeEventListener('keydown', onKey)
-      previous?.focus?.()
+      previous?.focus?.({ preventScroll: true })
     }
-  }, [onClose])
+  }, [])
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && close.current()}>
       <div className={`modal glass ${className}`} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} ref={panel}>
         {children}
       </div>
