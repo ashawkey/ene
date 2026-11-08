@@ -88,7 +88,7 @@ See [Library](library.md) for `ene lib` workflows.
   | `○ waiting` | Continues on its own: a queued message, notification, or watcher remains |
   | `✓ done` | Finished; review it |
 
-- Markers after a state count background work: `↻2` watchers that can wake the session (processes that notify), `⚙1` processes running with `notify="none"`. The terminal status bar and Web UI use the same markers.
+- Markers after a state count background work: `↻2` watchers that can wake the session (processes that notify), `⚙1` processes running with `notify="none"`. The Web UI shows the combined count on the session row.
 - One owner per session: a terminal attachment waits briefly for another terminal to release it; Web UI ownership is refused immediately. Detach in the browser first.
 
 ### Clean project state
@@ -125,7 +125,7 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 | `/recap` | Summarize the conversation's task in one sentence, focusing on user requests |
 | `/export <path/filename>` | Export the last assistant response as UTF-8 text; relative paths are resolved from the working directory |
 | `/continue` | Resume an unfinished round without a new user message; warn if already complete |
-| `/usage` | Show token usage for this session |
+| `/usage` | Show token usage for this session, plus time, tokens, and tool calls for recent rounds |
 | `/ps [label\|process-id] [tail-chars]`; `/ps stop <label\|process-id>` | List managed background processes, inspect recent output, or stop one process |
 | `/agents` | List Ene agents working in this workspace, including this session |
 | `/model [name]` | Show or switch LLM model mid-session; accepts an exact alias or unique alias prefix |

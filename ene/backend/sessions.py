@@ -337,6 +337,8 @@ class SessionMixin:
         target = source_store.materialize(candidate["id"])
         target.pop("revision_id", None)
         target.pop("code_revision_id", None)
+        # The fork's own history starts here, so carry the earlier rounds.
+        target["round_history_base"] = target.pop("round_history", [])
         target["session_name"] = requested_name
         session_id = self._reserve_session_id()
         target_store = self._session_store_for(session_id)
@@ -604,6 +606,10 @@ class SessionMixin:
             "skill_loads": self.tool_executor._skill_loads,
             "messages": self.context.messages,
             "compaction_state": asdict(self.context.compaction_state),
+            **(
+                self._round_session_data()
+                if hasattr(self, "_round_session_data") else {}
+            ),
         }
 
     def save_session(self, name: str | None = None, *, reason: str = "autosave") -> Path:
@@ -694,6 +700,9 @@ class SessionMixin:
         self.token_totals.update(data.get("token_totals") or {})
         self.tool_compaction_totals.update(data.get("tool_compaction_totals") or {})
         self.compaction_totals.update(data.get("compaction_totals") or {})
+        restore_rounds = getattr(self, "_restore_round_history", None)
+        if restore_rounds is not None:
+            restore_rounds(data)
 
         available = set(self.skills)
         self.tool_executor._loaded_skills = {

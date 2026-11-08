@@ -519,7 +519,30 @@ class SessionStore:
             raise ValueError(f"Session revision references unknown message: {e.args[0]}") from None
         data["revision_id"] = revision_id
         data["code_revision_id"] = revision.get("codeRevisionId")
+        data["round_history"] = self.round_history(revision_id)
         return data
+
+    def round_history(self, revision_id: str | None = None) -> list[dict[str, Any]]:
+        """Round statistics leading to *revision_id*, oldest first.
+
+        Each revision stores only its latest round (``last_round``); walking
+        the ancestors rebuilds the list for exactly this branch. A forked
+        session starts from the rounds carried in ``round_history_base``.
+        """
+        revision_id = revision_id or self.head_id
+        if revision_id is None or revision_id not in self.revisions:
+            return []
+        state = self.revisions[revision_id]["state"]
+        base = state.get("round_history_base")
+        rounds = [item for item in base if isinstance(item, dict)] if isinstance(base, list) else []
+        seen = {item.get("id") for item in rounds}
+        collected: list[dict[str, Any]] = []
+        for ancestor in self.revision_ancestors(revision_id):
+            last = self.revisions[ancestor]["state"].get("last_round")
+            if isinstance(last, dict) and last.get("id") not in seen:
+                seen.add(last.get("id"))
+                collected.append(last)
+        return rounds + collected[::-1]
 
     def commit(
         self,

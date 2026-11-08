@@ -148,6 +148,13 @@ class EventHub:
             self._listeners.discard(listener)
 
     def publish(self, event_type: str, **data: Any) -> AgentEvent:
+        return self.publish_at(event_type, data, time.time())
+
+    def publish_at(
+        self, event_type: str, data: dict[str, Any], timestamp: float
+    ) -> AgentEvent:
+        """Publish with an explicit timestamp, e.g. when relaying another hub's
+        events so their original timing survives the hop."""
         data = sanitize_unicode(data)
         data = {
             key: _clip_text(value) if isinstance(value, str) else value
@@ -155,7 +162,7 @@ class EventHub:
         }
         with self._cond:
             self._seq += 1
-            event = AgentEvent(self._seq, event_type, data, time.time())
+            event = AgentEvent(self._seq, event_type, data, timestamp)
             if event_type in _STREAM_FRAGMENT_TYPES:
                 self._discard_fragments_locked(_STREAM_FRAGMENT_TYPES[event_type])
             if len(self._events) == self._events.maxlen:

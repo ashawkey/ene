@@ -413,6 +413,13 @@ class Worker:
             status["processes"] = process_status_snapshot(
                 *process_counts, process_activity,
             )
+            # Per-round statistics, including rounds restored from history.
+            round_history = getattr(agent, "round_history", None)
+            if isinstance(round_history, list):
+                status["rounds"] = round_history
+            active_round = getattr(agent, "active_round", None)
+            if callable(active_round) and operation_id is not None:
+                status["active_round"] = active_round()
             get_context_status = getattr(agent, "_status_suffix", None)
             if get_context_status is not None:
                 status["context_status"] = get_context_status().event_data()

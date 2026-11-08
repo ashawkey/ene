@@ -14,6 +14,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from ene.backend.batch import BatchCompletionMixin
 from ene.backend.commands import AgentCommandsMixin
+from ene.backend.rounds import RoundStatsMixin
 from ene.backend.inbox import format_inbox_message, idle_timeout_notice
 from ene.personas import (
     DEFAULT_PERSONA,
@@ -254,7 +255,8 @@ def sanitize_unparseable_tool_calls(context) -> None:
 
 
 class LLMAgent(
-    BatchCompletionMixin, AgentCommandsMixin, SkillCommandsMixin, SessionMixin
+    BatchCompletionMixin, AgentCommandsMixin, SkillCommandsMixin, SessionMixin,
+    RoundStatsMixin,
 ):
     INITIAL_BACKOFF = 1.0   # seconds
     MAX_BACKOFF = 64.0      # seconds
@@ -1099,6 +1101,14 @@ class LLMAgent(
                 result,
                 spec.describe_output if spec is not None else None,
             )
+            edits = (
+                1 if function_name in ("edit_file", "write_file") and "diff" in result
+                else len(result.get("diffs") or []) if function_name == "multi_edit"
+                else 0
+            )
+            note_tool_result = getattr(self, "_note_tool_result", None)
+            if note_tool_result is not None:
+                note_tool_result(bool(success), edits if success else 0)
             if result.get("streamed"):
                 self.console.tool_result(output_description, success=success)
             elif function_name in ("edit_file", "write_file") and "diff" in result:
@@ -1450,7 +1460,8 @@ class LLMAgent(
         """
         self.console.tool(f"! {command}")
         arguments = {"command": command}
-        with AgentCommandsMixin._round_timer(self):
+        # A shell command is not an agent round: no model, no statistics.
+        with AgentCommandsMixin._round_timer(self, record=False):
             with self._operation("shell command"):
                 with self.console.thinking(label="Executing", status_suffix="exec_command"):
                     result = self.tool_executor.execute("exec_command", arguments)
@@ -1491,6 +1502,9 @@ class LLMAgent(
         self.token_totals = {key: 0 for key in self.token_totals}
         self.tool_compaction_totals = {key: 0 for key in self.tool_compaction_totals}
         self.compaction_totals = {key: 0 for key in self.compaction_totals}
+        reset_rounds = getattr(self, "_reset_round_history", None)
+        if reset_rounds is not None:
+            reset_rounds()
         self._compaction_floor_tokens = None
         self._discard_background_work()
         self.tool_executor.reset_skill_tools()

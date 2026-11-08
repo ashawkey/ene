@@ -1,0 +1,220 @@
+/** Wire types shared with the hub (`ene/hub/server.py`). */
+
+export type SessionState = 'working' | 'waiting' | 'done' | 'starting' | string
+
+export type SessionSummary = {
+  id: string
+  title: string
+  name: string
+  cwd: string
+  model: string
+  host: string
+  conversation_id: string
+  preview: string
+  /** 'web' when this hub owns the session, 'terminal' when a terminal does, '' when free. */
+  attached_by: string
+  state: SessionState
+  watchers?: number
+  background?: number
+}
+
+export type Prompt = {
+  id: string
+  kind: 'select' | 'text'
+  message: string
+  choices: string[]
+  default: string
+}
+
+export type PendingMessage = {
+  id: string
+  text: string
+  source: string
+  action_id?: string | null
+  appendable?: boolean
+}
+
+export type ProcessActivity = {
+  process_id: string
+  label: string
+  elapsed_seconds: number
+  last_line: string
+  watching?: boolean
+}
+
+export type ProcessSnapshot = {
+  running: number
+  finished: number
+  processes: ProcessActivity[]
+}
+
+export type ContextSnapshot = {
+  context_tokens: number
+  context_limit: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  model?: string
+  model_icon?: string
+}
+
+export type Indicator = {
+  label?: string
+  suffix?: string
+  started_at?: number
+  progress?: boolean
+  countdown?: number | null
+  round_elapsed?: number | null
+  context_tokens?: number
+  context_limit?: number
+  input_tokens?: number
+  output_tokens?: number
+  cached_tokens?: number
+}
+
+/** One agent round, recorded and persisted by the agent (ene/backend/rounds.py). */
+export type RoundStats = {
+  id: string
+  index: number
+  /** 'user', 'notification', or 'continue'. */
+  kind: string
+  model: string
+  prompt: string
+  started_at: number
+  ended_at: number | null
+  duration: number
+  /** Event seq where the round began in this view; 0 for rounds from history. */
+  start_seq: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
+  context_tokens: number
+  context_limit: number
+  tool_calls: number
+  tool_failures: number
+  edits: number
+  cancelled: boolean
+}
+
+export type StateFrame = {
+  type: 'state'
+  csrf: string
+  session: string
+  stream_id: string
+  latest_seq: number
+  oldest_seq: number
+  replay_truncated: boolean
+  operation_id: string | null
+  process_status: string
+  processes?: ProcessSnapshot
+  context_status: ContextSnapshot | null
+  active_indicator: Indicator | null
+  commands: Record<string, string>
+  prompt: Prompt | null
+  pending: PendingMessage | null
+  info?: Record<string, string>
+  rounds?: RoundStats[]
+  active_round?: { started_at: number } | null
+}
+
+export type ServerEvent = {
+  type: string
+  seq?: number
+  timestamp?: number
+  data?: Record<string, unknown>
+  // Acknowledgements.
+  ok?: boolean
+  error?: string
+  action_id?: string
+  duplicate?: boolean
+}
+
+export type ClientAction =
+  | { type: 'submit'; text: string; action_id: string }
+  | { type: 'withdraw_pending'; id: string; action_id: string }
+  | { type: 'prompt_response'; id: string; answer: string }
+  | { type: 'prompt_cancel'; id: string }
+  | { type: 'cancel'; operation_id: string | null }
+
+export type DirEntry = {
+  name: string
+  type: 'dir' | 'file'
+  size: number
+  mtime: number
+  hidden: boolean
+  symlink: boolean
+}
+
+export type DirListing = {
+  root: string
+  path: string
+  entries: DirEntry[]
+  truncated: boolean
+}
+
+export type FilePreview = {
+  path: string
+  name: string
+  size: number
+  mtime: number
+  kind: 'text' | 'image' | 'binary'
+  mime?: string
+  text?: string
+  truncated?: boolean
+}
+
+export type GitChange = {
+  path: string
+  status: 'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'conflict' | 'untracked'
+  staged: boolean
+}
+
+export type GitChanges = {
+  git: boolean
+  branch: string
+  changes: GitChange[]
+}
+
+export type FsListing = {
+  path: string
+  parent: string
+  entries: { name: string; path: string; hidden: boolean }[]
+}
+
+export type SessionOptions = {
+  models: string[]
+  default_model: string
+  personas: string[]
+  reasoning_efforts: string[]
+}
+
+export type ConversationSummary = {
+  id: string
+  name: string
+  message_count: number | string
+  round_id: number | string
+  last_user_message: string
+  live: boolean
+}
+
+export type NewSessionRequest = {
+  cwd: string
+  name: string
+  model: string
+  persona: string
+  reasoning_effort: string
+  resume: string
+}
+
+export function isPrompt(value: unknown): value is Prompt {
+  if (!value || typeof value !== 'object') return false
+  const v = value as Record<string, unknown>
+  return (
+    typeof v.id === 'string' &&
+    (v.kind === 'select' || v.kind === 'text') &&
+    typeof v.message === 'string' &&
+    Array.isArray(v.choices) &&
+    typeof v.default === 'string'
+  )
+}

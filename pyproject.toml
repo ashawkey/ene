@@ -49,7 +49,7 @@ include = ["ene*"]
 ene = [
   "bundled_skills/**/*",
   "bundled_personas/**/*",
-  "frontend/dist/**/*",
+  "web/dist/**/*",
 ]
 
 [tool.setuptools.exclude-package-data]

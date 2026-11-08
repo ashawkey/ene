@@ -13,9 +13,9 @@ pytest.importorskip("uvicorn")
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from ene import hub as hub_module
+from ene.hub import server as hub_module
 from ene import live
-from ene.hub import Hub, RemoteSession
+from ene.hub.server import Hub, RemoteSession
 from ene.live_worker import Worker
 from ene.utils.io import CancellationToken, EventHub, InputBroker, PromptBroker
 
@@ -157,7 +157,7 @@ def ws_header_kwargs(websockets, headers):
 # -- static / auth (browser surface) ---------------------------------------
 
 def test_hub_binds_all_interfaces_and_builds_network_urls(monkeypatch):
-    monkeypatch.setattr("ene.hub._local_ipv4", lambda: "192.168.1.25")
+    monkeypatch.setattr("ene.hub.server._local_ipv4", lambda: "192.168.1.25")
     monkeypatch.setattr(socket, "getfqdn", lambda: "ene.example.com")
     hub = make_hub()
     assert hub.host == "0.0.0.0"
@@ -301,7 +301,7 @@ def test_logout_closes_all_sockets_for_only_that_login(monkeypatch):
 
 @pytest.mark.parametrize("channel", ["", "?session=s1"])
 def test_expired_login_closes_idle_browser_sockets(monkeypatch, channel):
-    monkeypatch.setattr("ene.hub.SESSION_TTL", 1)
+    monkeypatch.setattr("ene.hub.server.SESSION_TTL", 1)
     hub = make_hub()
     add_session(hub, "s1")
     monkeypatch.setattr(hub, "_start_poller", lambda: None)
@@ -315,7 +315,7 @@ def test_expired_login_closes_idle_browser_sockets(monkeypatch, channel):
 
 
 def test_evicted_login_closes_existing_socket(monkeypatch):
-    monkeypatch.setattr("ene.hub.MAX_SESSIONS", 1)
+    monkeypatch.setattr("ene.hub.server.MAX_SESSIONS", 1)
     hub = make_hub()
     monkeypatch.setattr(hub, "_start_poller", lambda: None)
     with TestClient(hub.app) as client:
@@ -737,7 +737,7 @@ def test_create_session_validates_the_working_directory(tmp_path):
 def test_create_session_reports_worker_failures(monkeypatch, tmp_path):
     hub = make_hub()
     monkeypatch.setattr(
-        "ene.hub.start_session",
+        "ene.hub.server.start_session",
         lambda **_kwargs: (_ for _ in ()).throw(
             live.LiveError("A live session named 'dup' already exists")
         ),
@@ -763,8 +763,8 @@ def test_create_session_starts_and_attaches_a_worker(monkeypatch, tmp_path):
         hub._records = [worker.record]
         return worker.record
 
-    monkeypatch.setattr("ene.hub.start_session", fake_start_session)
-    monkeypatch.setattr("ene.hub.list_records", lambda: [worker.record])
+    monkeypatch.setattr("ene.hub.server.start_session", fake_start_session)
+    monkeypatch.setattr("ene.hub.server.list_records", lambda: [worker.record])
     try:
         with TestClient(hub.app) as client:
             response = client.post(
@@ -795,7 +795,7 @@ def test_attach_endpoint_conflicts_with_a_terminal_owner(monkeypatch):
     worker = FakeWorker()
     terminal = worker.attach_terminal()
     hub = make_hub()
-    monkeypatch.setattr("ene.hub.list_records", lambda: [worker.record])
+    monkeypatch.setattr("ene.hub.server.list_records", lambda: [worker.record])
     try:
         with TestClient(hub.app) as client:
             headers = {"x-csrf-token": login(client)}
@@ -814,7 +814,7 @@ def test_attach_endpoint_conflicts_with_a_terminal_owner(monkeypatch):
 def test_attach_and_detach_endpoints_round_trip(monkeypatch):
     worker = FakeWorker()
     hub = make_hub()
-    monkeypatch.setattr("ene.hub.list_records", lambda: [worker.record])
+    monkeypatch.setattr("ene.hub.server.list_records", lambda: [worker.record])
     try:
         with TestClient(hub.app) as client:
             headers = {"x-csrf-token": login(client)}
@@ -1050,3 +1050,199 @@ def test_path_completion_endpoint_authenticates_on_the_event_loop():
     )
     # Login expiry revokes asyncio events, which must happen on the app loop.
     assert inspect.iscoroutinefunction(route.endpoint)
+
+
+# -- new web UI support ------------------------------------------------------
+
+def test_resent_submit_with_the_same_action_id_reaches_the_worker_once(monkeypatch):
+    """A browser re-sends unacknowledged submits after reconnecting."""
+    worker = FakeWorker()
+    hub = make_hub()
+    monkeypatch.setattr("ene.hub.server.list_records", lambda: [worker.record])
+    try:
+        with TestClient(hub.app) as client:
+            headers = {"x-csrf-token": login(client)}
+            assert client.post("/api/sessions/runtime-1/attach", headers=headers).status_code == 200
+            action = {"type": "submit", "text": "hello", "action_id": "act-1"}
+            for duplicate in (False, True):
+                with client.websocket_connect(
+                    "/api/ws?session=runtime-1", headers={"origin": "http://testserver"}
+                ) as sock:
+                    receive_type(sock, "state")
+                    sock.send_json(action)
+                    reply = receive_type(sock, "accepted", limit=40)
+                    assert reply["action_id"] == "act-1"
+                    assert reply.get("duplicate", False) is duplicate
+            submitted = [
+                event for event in worker.events.snapshot() if event.type == "pending_set"
+            ]
+            assert [event.data["text"] for event in submitted] == ["hello"]
+    finally:
+        hub.stop()
+        worker.close()
+
+
+def test_failed_forward_is_not_remembered_so_a_retry_can_deliver():
+    import asyncio
+
+    hub = make_hub()
+    add_session(hub, "s1")
+    calls = []
+
+    async def forward(session_id, payload):
+        calls.append(payload["action_id"])
+        return len(calls) > 1
+
+    hub._forward_to_worker = forward
+    loop = asyncio.new_event_loop()
+    try:
+        action = {"type": "submit", "text": "x", "action_id": "a"}
+        assert loop.run_until_complete(hub._deduplicated_forward("s1", action)) == (False, False)
+        assert loop.run_until_complete(hub._deduplicated_forward("s1", action)) == (True, False)
+        assert loop.run_until_complete(hub._deduplicated_forward("s1", action)) == (True, True)
+        assert calls == ["a", "a"]
+    finally:
+        loop.close()
+
+
+def test_relayed_events_keep_worker_timestamps_and_relay_rounds():
+    session = RemoteSession("s1", {"cwd": "/proj"})
+    session.hydrate({"rounds": [{"id": "old", "prompt": "earlier"}], "active_round": None})
+    assert [item["id"] for item in session.rounds] == ["old"]
+
+    session.ingest({"type": "user_message", "data": {"text": "do it"}, "timestamp": 100.0})
+    session.ingest({"type": "operation_start", "data": {"id": "op"}, "timestamp": 101.0})
+    assert session.active_round == {"started_at": 101.0}
+    session.ingest({"type": "operation_end", "data": {"id": "op"}, "timestamp": 111.0})
+    session.ingest({"type": "round_stats", "data": {"id": "r1", "duration": 10.0}, "timestamp": 111.0})
+    session.ingest({"type": "round_stats", "data": {"id": "r1", "duration": 10.5}, "timestamp": 112.0})
+
+    assert session.events.snapshot()[0].timestamp == 100.0
+    assert session.active_round is None
+    assert [(item["id"], item.get("duration")) for item in session.rounds] == [
+        ("old", None), ("r1", 10.5),
+    ]
+    # A rewind or resume replaces the whole list.
+    session.ingest({"type": "round_history", "data": {"rounds": [{"id": "old"}]}})
+    assert [item["id"] for item in session.rounds] == ["old"]
+
+
+def test_state_frame_includes_rounds_and_startup_info():
+    hub = make_hub()
+    session = add_session(hub, "s1")
+    session.hydrate({
+        "startup": {"model": "openai/m"},
+        "rounds": [{"id": "r1"}],
+        "active_round": {"started_at": 5.0},
+    })
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect(
+            "/api/ws?session=s1", headers={"origin": "http://testserver"}
+        ) as sock:
+            state = receive_type(sock, "state")
+            assert state["info"] == {"model": "openai/m"}
+            assert state["rounds"] == [{"id": "r1"}]
+            assert state["active_round"] == {"started_at": 5.0}
+
+
+def test_workspace_browsing_endpoints(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(tmp_path))
+    try:
+        with TestClient(hub.app) as client:
+            assert client.get("/api/sessions/s1/files").status_code == 403
+            login(client)
+            root = client.get("/api/sessions/s1/files").json()
+            assert [(e["name"], e["type"]) for e in root["entries"]] == [("src", "dir"), ("logo.png", "file")]
+            assert client.get("/api/sessions/s1/files", params={"path": "src"}).json()["path"] == "src"
+
+            text = client.get("/api/sessions/s1/file", params={"path": "src/app.py"}).json()
+            assert text["kind"] == "text" and text["text"] == "print('hi')\n"
+            # Absolute paths inside the workspace are accepted (tools report them).
+            absolute = client.get("/api/sessions/s1/file", params={"path": str(tmp_path / "src/app.py")})
+            assert absolute.json()["path"] == "src/app.py"
+
+            for escape in ("../" + outside.name, str(outside)):
+                assert client.get("/api/sessions/s1/file", params={"path": escape}).status_code == 403
+            assert client.get("/api/sessions/s1/file", params={"path": "missing"}).status_code == 404
+            assert client.get("/api/sessions/unknown/files").status_code == 404
+
+            image = client.get("/api/sessions/s1/raw", params={"path": "logo.png"})
+            assert image.status_code == 200
+            assert image.headers["content-type"] == "image/png"
+            assert "sandbox" in image.headers["content-security-policy"]
+            assert client.get("/api/sessions/s1/raw", params={"path": "src/app.py"}).status_code == 415
+
+            assert client.get("/api/sessions/s1/changes").json()["git"] in {True, False}
+    finally:
+        outside.unlink()
+
+
+def test_symlink_out_of_the_workspace_is_refused(tmp_path):
+    from ene.hub import files as hubfiles
+
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "key").write_text("k", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "link").symlink_to(secret)
+    with pytest.raises(hubfiles.WorkspaceError) as exc:
+        hubfiles.read_file(workspace, "link/key")
+    assert exc.value.status == 403
+
+
+def test_git_changes_reports_workspace_relative_paths(tmp_path):
+    import shutil
+    import subprocess
+
+    from ene.hub import files as hubfiles
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sub = tmp_path / "pkg"
+    sub.mkdir()
+    (sub / "new.py").write_text("x", encoding="utf-8")
+    changes = hubfiles.git_changes(sub)
+    assert changes["git"] is True
+    assert changes["changes"] == [{"path": "new.py", "status": "untracked", "staged": False}]
+
+
+def test_end_endpoint_stops_a_session_but_not_a_terminal_owned_one(monkeypatch):
+    worker = FakeWorker()
+    hub = make_hub()
+    monkeypatch.setattr("ene.hub.server.list_records", lambda: [worker.record])
+    killed = []
+    monkeypatch.setattr("ene.hub.server.kill_session", lambda record: killed.append(record["runtime_id"]))
+    try:
+        with TestClient(hub.app) as client:
+            headers = {"x-csrf-token": login(client)}
+            assert client.post("/api/sessions/runtime-1/end").status_code == 403
+
+            terminal = worker.attach_terminal()
+            worker.record["attached"] = True
+            worker.record["attached_by"] = "terminal"
+            hub.refresh_records()
+            assert client.post("/api/sessions/runtime-1/end", headers=headers).status_code == 409
+            assert killed == []
+            terminal.close()
+            worker.record["attached"] = False
+            worker.record["attached_by"] = ""
+            assert wait_until(lambda: worker.attached_by == "")
+            hub.refresh_records()
+
+            assert client.post("/api/sessions/runtime-1/attach", headers=headers).status_code == 200
+            assert client.post("/api/sessions/runtime-1/end", headers=headers).status_code == 200
+            assert killed == ["runtime-1"]
+            assert hub.get_session("runtime-1") is None
+            assert client.post("/api/sessions/missing/end", headers=headers).status_code == 404
+    finally:
+        hub.stop()
+        worker.close()

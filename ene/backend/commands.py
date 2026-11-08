@@ -2,7 +2,7 @@
 
 import math
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from rich.cells import cell_len, set_cell_size
@@ -71,9 +71,15 @@ def _format_elapsed(seconds: float) -> str:
 
 
 class AgentCommandsMixin:
-    def _round_timer(self):
+    @contextmanager
+    def _round_timer(self, *, record: bool = True):
+        """Time one round for the status bar and, unless *record* is false,
+        record its statistics (see :mod:`ene.backend.rounds`)."""
         timer = getattr(self.console, "round_timer", None)
-        return timer() if timer is not None else nullcontext()
+        track = getattr(self, "_track_round", None) if record else None
+        with timer() if timer is not None else nullcontext():
+            with track() if track is not None else nullcontext():
+                yield
 
     # Single source of truth for slash commands: name → help line.
     # Drives dispatch (COMMANDS), /help output, and terminal auto-completion.
@@ -85,7 +91,7 @@ class AgentCommandsMixin:
         "recap": "Summarize the conversation's task in one sentence",
         "export": "Export the last assistant response (/export <path/filename>)",
         "continue": "Resume an unfinished round without adding a user message",
-        "usage": "Show token usage for this session",
+        "usage": "Show token usage for this session and recent rounds",
         "ps": "List processes; /ps <label|id> [tail-chars] inspects; /ps stop <label|id> stops",
         "agents": "List ene agents working in this workspace",
         "model": "Show or switch LLM model (/model <name>)",
@@ -612,6 +618,11 @@ class AgentCommandsMixin:
             f"  Tool compaction: {self._tool_compaction_summary()}\n"
             f"  Compactions    : {self._compaction_summary()}"
         )
+        round_lines = getattr(self, "_round_usage_lines", None)
+        if round_lines is not None:
+            lines = round_lines()
+            if lines:
+                self.console.print("\n".join(lines), markup=False)
 
         skill_loads = self.tool_executor._skill_loads
         if skill_loads:

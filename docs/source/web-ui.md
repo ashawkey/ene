@@ -7,7 +7,7 @@ Start `ene hub` to create and manage live sessions from your browser.
 - **Hub:** serves HTTP, authenticates browsers, and manages sessions.
 - **Workers:** one detached process and working directory per session, shared with the terminal interface.
 - **Ownership:** one terminal or hub per session, never both.
-- **Tabs:** attached sessions appear as UI tabs; others remain in the sidebar.
+- **Sessions:** attached sessions open in the browser; others remain available in the sidebar.
 - **Network:** binds to `0.0.0.0`, reachable by hostname or IP from other devices.
 
 ## Start the hub
@@ -34,63 +34,79 @@ ene hub --port 8765
 
 ## Create a session
 
-Select **+ New session** in the sidebar to open the session dialog:
+Select **+** in the sidebar (or **New session** on the empty screen):
 
-- **Working directory:** type or browse a path; recent-workspace shortcuts and a hidden-directory toggle are available.
+- **Working directory:** type a path, browse folders, or pick a recent workspace.
 - **Name:** optional, as with `ene new NAME`.
-- **Model / Persona / Reasoning effort:** CLI-equivalent choices, including the selected workspace's personas.
-- **Resume conversation:** continue a saved conversation; already-live conversations cannot be selected twice.
+- **Model / Persona / Reasoning:** CLI-equivalent choices, including the workspace's personas.
+- **Resume:** continue a saved conversation; live conversations cannot be selected twice.
 
-The hub starts and attaches the worker, then focuses its tab. Errors appear in the dialog.
+The hub starts and attaches the worker, then opens it. The dialog remembers your last choices.
 
-## Attach and detach
+## Sessions
 
-The sidebar lists every live session on the machine:
+The sidebar groups every live session on the machine:
 
-- **Attach:** click a detached session.
-- **Detach:** select **×** on its tab. The worker keeps running and becomes available elsewhere.
-- **Terminal-owned:** marked `terminal`; run `/detach` or Ctrl+D there before attaching in the browser.
-- **Hub-owned:** terminal attachment is refused; select **×** in the browser first.
-- **Stop:** send `/exit` or `/quit`. The worker shuts down and leaves the list.
+| Group | Meaning | Action |
+| --- | --- | --- |
+| **Open here** | Attached by this hub | Click to switch |
+| **Available** | Running, unattached | Click to attach |
+| **In a terminal** | Owned by a terminal | Run `/detach` or Ctrl+D there first |
 
-## Browser behavior
+- **Detach:** the unlink icon in the session header. The worker keeps running.
+- **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
+- **State dot:** blue = working, orange = will continue on its own, green = idle. A blue badge marks rounds that finished while you were elsewhere.
 
-- **Activity:** conversation, tools, selections, queued input, and process status are visible per session. The [model marker](commands.md#model-status-markers) stays first in the status bar.
-- **Tool runs:** three or more consecutive tool calls fold into one summary row once the agent moves on; click to expand.
-- **Copy:** hover a message or code block and select **⧉**.
-- **Jump to latest:** appears when you scroll away from the newest output.
-- **Tab title:** shows how many sessions finished and await review.
-- **Queue:** follow-up messages append to the pending one; commands cannot join it. Refusals are reported, not silently dropped.
+## Conversation
 
-### Background tasks
+- **Timeline:** messages, reasoning, tool calls, diffs, and command output. Three or more consecutive tool calls fold into one row.
+- **Round summary:** a chip after each round shows its time, tokens, cache hit rate, and tool calls; click it for statistics.
+- **Diffs:** click the file name to open the file.
+- **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.
+- **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
 
-- The status bar above the composer summarizes the session's background processes; select **Details** or the top-bar **⚙** (badge = process count).
-- The task panel lists each process with ID, label, live runtime, and latest output.
-- **Show log:** runs `/ps <id>`. **Stop:** click twice to run `/ps stop <id>`.
+### Composer
 
-### Search
+- Enter sends; Shift+Enter adds a line. On touch devices, use the send button.
+- `/` at the start: commands and skills. `@`: workspace files. Up/Down select, Tab/Enter complete.
+- Up/Down without suggestions: recall earlier input.
+- While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
+- Escape or the stop button stops the round.
 
-- **Conversation:** Ctrl/Cmd+F or **⌕** searches messages, tool calls, and diffs. Enter/Shift+Enter step through matches; folded blocks open to show them.
-- **Sessions:** Ctrl/Cmd+K focuses the sidebar filter (name, last message, directory, model). Enter opens the first match, attaching a free session.
+## Inspector
 
-### Composer shortcuts
+Toggle panels from the session header (icons) or the context gauge:
 
-- `/` at an empty composer's start: suggest commands and skills.
-- `@` at a word's start: search workspace paths and filenames.
-- With suggestions open: type to filter, Up/Down to select, Tab/Enter to complete; Enter again sends.
-- Without suggestions: Up/Down recalls browser-session input history, restoring the draft after the newest entry.
-- Escape while the agent works: stop the round, as in the terminal.
-- Prompts: press a choice's number key to answer; Escape or **Cancel** dismisses, as in the terminal.
+| Panel | Contents |
+| --- | --- |
+| **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. Open a file to preview it (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
+| **Statistics** | Rounds, agent time, tokens (input / cached / output), tool calls, context usage, and per-round charts. Click a round to jump to it. |
+| **Tasks** | Background processes with runtime and latest output; show a log (`/ps <id>`) or stop one (click twice). |
+| **Info** | Model, context, reasoning, persona, skills, IDs, and the command list. |
 
-### Connection lifecycle
+- File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
+- Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
 
-- Disconnect: show reconnecting status, preserve drafts, and disable actions until recovery.
-- Reload or close the browser tab: sessions stay attached. Use **×** to detach.
-- Stop the hub: release attachments; workers keep running and can be attached from a terminal.
+## Keyboard
+
+| Keys | Action |
+| --- | --- |
+| Ctrl/Cmd+K | Search sessions (Enter opens or attaches the first match) |
+| Ctrl/Cmd+B | Toggle the sidebar |
+| Ctrl/Cmd+F | Find in conversation |
+| Escape | Close dialogs and suggestions, dismiss a question, or stop the round |
+
+## Connection handling
+
+- Each tab keeps its sockets alive with heartbeats and reconnects automatically with backoff, immediately when the network or tab returns.
+- While disconnected, a banner appears, sending is disabled, and drafts are kept (also across reloads).
+- A message whose delivery was not confirmed is re-sent after reconnecting; the hub recognizes it and never delivers it twice.
+- A message the agent refuses returns to the composer.
+- Reloading or closing the tab keeps sessions attached. Stopping the hub releases them for terminals.
 
 ## Network and remote access
 
-- **Treat the token as shell access:** signed-in browsers can browse files and start agents in any directory.
+- **Treat the token as shell access:** signed-in browsers can read workspace files and start agents in any directory.
 - Use a long random token and run the hub only on trusted networks.
 - For remote access, use a protected tunnel or reverse proxy.
 
