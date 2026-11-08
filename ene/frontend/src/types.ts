@@ -51,6 +51,8 @@ export type ProcessStatus = {
   running: number
   finished: number
   processes: ProcessActivity[]
+  /** Browser time (ms) the status arrived; runtimes keep counting from it. */
+  receivedAt?: number
 }
 
 export type StateMessage = {
@@ -187,4 +189,5 @@ export type ClientAction =
   | { type: 'submit'; text: string; action_id: string }
   | { type: 'withdraw_pending'; id: string; action_id: string }
   | { type: 'prompt_response'; id: string; answer: string }
+  | { type: 'prompt_cancel'; id: string }
   | { type: 'cancel'; operation_id: string | null }

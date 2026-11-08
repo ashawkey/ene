@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { newActionId } from './actionId'
 import { ApiError, attachSession, createSession, detachSession, listPathCompletions } from './api'
-import { ActivityStatus, Composer, ConnectionBanner, Login, NewSessionButton, PromptDialog, ScrollTopButton, SessionSidebar, SidebarToggle, ThemeToggle } from './components'
+import { ActivityStatus, Composer, ConnectionBanner, FindButton, Login, NewSessionButton, PromptDialog, ScrollTopButton, SessionSidebar, SidebarToggle, TasksButton, ThemeToggle } from './components'
 import type { ContextStatusProps, ThinkingProps } from './components'
 import { useConnectionSocket } from './connection'
 import { NewSessionDialog } from './NewSessionDialog'
-import { EventCard } from './renderers'
+import { FindBar, TaskPanel } from './panels'
+import { ActivityGroup, EventCard } from './renderers'
+import { findMatches, groupTimeline } from './timeline'
 import { applyTheme, hasStoredTheme, resolveInitialTheme, storeTheme } from './theme'
 import type { Theme } from './theme'
 import type { AgentEvent, ClientAction, DisplayEvent, NewSessionRequest, PendingMessage, ProcessStatus, Prompt, SessionSummary, StateMessage } from './types'
@@ -52,6 +54,7 @@ function parseProcessStatus(data: Record<string, unknown>): ProcessStatus {
     running: typeof data.running === 'number' ? data.running : processes.length,
     finished: typeof data.finished === 'number' ? data.finished : 0,
     processes,
+    receivedAt: Date.now(),
   }
 }
 
@@ -61,6 +64,30 @@ function parseProcessStatus(data: Record<string, unknown>): ProcessStatus {
  * reconnect and no history replay. Composer/prompt render only for the active
  * pane, so exactly one of each exists in the DOM.
  */
+const SEARCH_HIGHLIGHT = 'ene-search'
+// Text highlighting walks the DOM, so cap it for very broad queries.
+const MAX_HIGHLIGHTED_EVENTS = 300
+
+function supportsHighlights() {
+  return typeof CSS !== 'undefined' && 'highlights' in CSS && typeof Highlight !== 'undefined'
+}
+
+/** Ranges for every case-insensitive occurrence of *needle* under *root*. */
+function textRanges(root: Element, needle: string): Range[] {
+  const ranges: Range[] = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = (node.nodeValue ?? '').toLowerCase()
+    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+      const range = document.createRange()
+      range.setStart(node, at)
+      range.setEnd(node, at + needle.length)
+      ranges.push(range)
+    }
+  }
+  return ranges
+}
+
 function SessionPane({
   sessionId,
   active,
@@ -68,6 +95,10 @@ function SessionPane({
   restoreScroll,
   showConnectionStatus,
   onDraftChange,
+  findOpen,
+  onFindClose,
+  tasksOpen,
+  onTasksOpenChange,
 }: {
   sessionId: string
   active: boolean
@@ -75,6 +106,10 @@ function SessionPane({
   restoreScroll: number | undefined
   showConnectionStatus: boolean
   onDraftChange: (text: string) => void
+  findOpen: boolean
+  onFindClose: () => void
+  tasksOpen: boolean
+  onTasksOpenChange: (open: boolean) => void
 }) {
   const [events, setEvents] = useState<DisplayEvent[]>([])
   const [commandHistory, setCommandHistory] = useState<string[]>([])
@@ -93,6 +128,10 @@ function SessionPane({
   const streamKey = useRef('')
   const localKey = useRef(0)
   const pinned = useRef(true)
+  const [awayFromTail, setAwayFromTail] = useState(false)
+  const timelineRef = useRef<HTMLDivElement>(null)
+  const [findQuery, setFindQuery] = useState('')
+  const [findIndex, setFindIndex] = useState(0)
   const activeRef = useRef(active)
   activeRef.current = active
   // Window scrolling is asynchronous. Guard every scheduled scroll with this
@@ -351,6 +390,7 @@ function SessionPane({
       const distance =
         document.documentElement.scrollHeight - window.innerHeight - window.scrollY
       pinned.current = distance < 220
+      setAwayFromTail(distance > 600)
     }
     onScroll()
     window.addEventListener('scroll', onScroll, { passive: true })
@@ -374,7 +414,65 @@ function SessionPane({
     if (activeRef.current && pinned.current) scrollToTail()
   }, [events, thinkingStatus, operationId, scrollToTail])
 
+  const items = useMemo(() => groupTimeline(events), [events])
+  const matches = useMemo(
+    () => (findOpen ? findMatches(events, findQuery) : []),
+    [events, findOpen, findQuery],
+  )
+  useEffect(() => setFindIndex(0), [findQuery])
+  const currentMatch = matches.length ? matches[Math.min(findIndex, matches.length - 1)] : null
+
+  // Mark every matching card and, where the browser supports the CSS Custom
+  // Highlight API, the matching text itself — without touching React's DOM.
+  useEffect(() => {
+    const root = timelineRef.current
+    const needle = findQuery.trim().toLowerCase()
+    if (!root || !active || !needle) return
+    const marked: Element[] = []
+    for (const key of matches.slice(0, MAX_HIGHLIGHTED_EVENTS)) {
+      const element = root.querySelector(`[data-event-key="${key}"]`)
+      if (!element) continue
+      element.classList.add('search-hit')
+      marked.push(element)
+    }
+    const highlights = supportsHighlights()
+    if (highlights) {
+      CSS.highlights.set(SEARCH_HIGHLIGHT, new Highlight(...marked.flatMap((el) => textRanges(el, needle))))
+    }
+    return () => {
+      for (const element of marked) element.classList.remove('search-hit')
+      if (highlights) CSS.highlights.delete(SEARCH_HIGHLIGHT)
+    }
+  }, [matches, findQuery, active])
+
+  // Reveal the current match: unfold anything hiding it, then center it.
+  useEffect(() => {
+    const root = timelineRef.current
+    if (!root || !active || !currentMatch) return
+    const element = root.querySelector(`[data-event-key="${currentMatch}"]`)
+    if (!element) return
+    for (let parent = element.parentElement; parent && parent !== root; parent = parent.parentElement) {
+      if (parent instanceof HTMLDetailsElement) parent.open = true
+    }
+    element.querySelectorAll('details').forEach((details) => { details.open = true })
+    element.classList.add('search-current')
+    pinned.current = false
+    element.scrollIntoView?.({ block: 'center' })
+    return () => element.classList.remove('search-current')
+  }, [currentMatch, active])
+
   const send = useCallback((action: ClientAction): boolean => connection.send(action), [connection.send])
+  // Process controls reuse the session's instant `/ps` commands, so the
+  // browser and terminal share one implementation and one transcript.
+  const runCommand = useCallback((text: string) => {
+    if (!send({ type: 'submit', text, action_id: newActionId() })) return
+    pinned.current = true
+    scrollToTail()
+  }, [send, scrollToTail])
+  const jumpToLatest = useCallback(() => {
+    pinned.current = true
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' })
+  }, [])
   const fetchPathCompletions = useCallback(
     (query: string) => listPathCompletions(sessionId, query),
     [sessionId],
@@ -383,10 +481,48 @@ function SessionPane({
   return (
     <>
       <section className="workspace" style={active ? undefined : { display: 'none' }}>
-        <div className="timeline" aria-live="polite">
-          {events.map((event) => <EventCard event={event} key={event.key} />)}
+        <div className="timeline" aria-live="polite" ref={timelineRef}>
+          {items.map((item, index) => (
+            item.kind === 'event'
+              ? <EventCard event={item.event} key={item.event.key} />
+              : (
+                <ActivityGroup
+                  key={item.key}
+                  events={item.events}
+                  live={operationId !== null && index === items.length - 1}
+                />
+              )
+          ))}
         </div>
       </section>
+      {active && findOpen ? (
+        <FindBar
+          query={findQuery}
+          count={matches.length}
+          index={Math.min(findIndex, Math.max(matches.length - 1, 0))}
+          onQuery={setFindQuery}
+          onStep={(direction) => {
+            if (!matches.length) return
+            setFindIndex((current) => (Math.min(current, matches.length - 1) + direction + matches.length) % matches.length)
+          }}
+          onClose={onFindClose}
+        />
+      ) : null}
+      {active && tasksOpen ? (
+        <TaskPanel
+          processStatus={processStatus}
+          connected={connection.status === 'connected'}
+          onClose={() => onTasksOpenChange(false)}
+          onInspect={(id) => runCommand(`/ps ${id}`)}
+          onStop={(id) => runCommand(`/ps stop ${id}`)}
+          onListAll={() => runCommand('/ps')}
+        />
+      ) : null}
+      {active && awayFromTail && !prompt ? (
+        <button type="button" className="jump-latest" onClick={jumpToLatest} aria-label="Jump to latest">
+          ↓ Latest
+        </button>
+      ) : null}
       {active && showConnectionStatus ? (
         <ConnectionBanner status={connection.status} onRetry={connection.retry} />
       ) : null}
@@ -395,6 +531,7 @@ function SessionPane({
           prompt={prompt}
           connected={connection.status === 'connected'}
           onAnswer={(answer) => send({ type: 'prompt_response', id: prompt.id, answer })}
+          onCancel={() => send({ type: 'prompt_cancel', id: prompt.id })}
         />
       ) : null}
       {active ? (
@@ -405,6 +542,7 @@ function SessionPane({
               status={thinkingStatus}
               processStatus={processStatus}
               contextStatus={contextStatus}
+              onOpenTasks={() => onTasksOpenChange(true)}
             />
           )}
           operationId={operationId}
@@ -451,6 +589,9 @@ export default function App() {
   // Drawer state for narrow screens; the rail is always visible when wide.
   const [railOpen, setRailOpen] = useState(false)
   const [busySession, setBusySession] = useState<string | null>(null)
+  const [findOpen, setFindOpen] = useState(false)
+  const [tasksOpen, setTasksOpen] = useState(false)
+  const sessionSearch = useRef<HTMLInputElement>(null)
   const [actionError, setActionError] = useState('')
   const csrf = useRef('')
   const scrollPositions = useRef(new Map<string, number>())
@@ -591,6 +732,40 @@ export default function App() {
 
   // Panes exist only for sessions this hub owns; the rest are attach targets.
   const attachedSessions = sessions.filter((session) => session.attached_by === 'web')
+  const hasPane = attachedSessions.length > 0
+
+  // Keyboard shortcuts: Ctrl/Cmd+F searches the conversation, Ctrl/Cmd+K
+  // jumps to the session search, Escape closes the task panel.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey
+      const key = event.key.toLowerCase()
+      if (mod && !event.shiftKey && !event.altKey && key === 'f' && hasPane) {
+        event.preventDefault()
+        setFindOpen(true)
+        document.querySelector<HTMLInputElement>('.find-bar input')?.focus()
+      } else if (mod && !event.shiftKey && !event.altKey && key === 'k') {
+        event.preventDefault()
+        setRailOpen(true)
+        sessionSearch.current?.focus()
+        sessionSearch.current?.select()
+      } else if (event.key === 'Escape' && tasksOpen && !event.defaultPrevented) {
+        setTasksOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [hasPane, tasksOpen])
+
+  // Surface finished rounds in the browser tab title, so a backgrounded tab
+  // still says when something wants review.
+  const reviewCount = sessions.filter((session) => session.state === 'done').length
+  useEffect(() => {
+    document.title = reviewCount > 0 ? `(${reviewCount}) ene` : 'ene'
+  }, [reviewCount])
+
+  const activeSummary = sessions.find((session) => session.id === activeSession)
+  const activeTasks = (activeSummary?.watchers ?? 0) + (activeSummary?.background ?? 0)
 
   if (authenticated === false) {
     return <Login onSuccess={() => setAuthenticated(null)} />
@@ -615,6 +790,12 @@ export default function App() {
         }} />
         <div className="top-controls">
           <ScrollTopButton onClick={scrollToTop} />
+          {hasPane ? (
+            <>
+              <FindButton active={findOpen} onClick={() => setFindOpen((open) => !open)} />
+              <TasksButton active={tasksOpen} count={activeTasks} onClick={() => setTasksOpen((open) => !open)} />
+            </>
+          ) : null}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <button className="logout" type="button" onClick={logout} aria-label="Sign out" title="Sign out">⏻</button>
         </div>
@@ -629,6 +810,7 @@ export default function App() {
           onAttach={attach}
           onDetach={detach}
           onClose={() => setRailOpen(false)}
+          searchRef={sessionSearch}
         />
         <div className="panes">
           {actionError ? <p className="action-error" role="alert">{actionError}</p> : null}
@@ -648,6 +830,10 @@ export default function App() {
               restoreScroll={scrollPositions.current.get(session.id)}
               showConnectionStatus={controlConnection.status === 'connected'}
               onDraftChange={(text) => setDraft(session.id, text)}
+              findOpen={findOpen}
+              onFindClose={() => setFindOpen(false)}
+              tasksOpen={tasksOpen}
+              onTasksOpenChange={setTasksOpen}
             />
           ))}
         </div>

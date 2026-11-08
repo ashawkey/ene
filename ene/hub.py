@@ -1361,7 +1361,8 @@ class Hub:
                     await websocket.send_json({"type": "pong"})
                     continue
                 if action not in {
-                    "submit", "withdraw_pending", "prompt_response", "cancel"
+                    "submit", "withdraw_pending", "prompt_response",
+                    "prompt_cancel", "cancel",
                 }:
                     await websocket.send_json({
                         "type": "rejected", "error": "Unknown action type."
@@ -1382,7 +1383,7 @@ class Hub:
                             "error": "The session is no longer attached.",
                             "action_id": payload.get("action_id", ""),
                         })
-                elif action == "prompt_response":
+                elif action in {"prompt_response", "prompt_cancel"}:
                     await websocket.send_json({"type": "prompt_ack", "ok": ok})
                 elif action == "cancel":
                     await websocket.send_json({"type": "cancel_ack", "ok": ok})

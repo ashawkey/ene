@@ -357,6 +357,26 @@ def test_expired_socket_cannot_forward_actions_while_watcher_is_waiting(monkeypa
             assert forwarded == []
 
 
+def test_browser_can_cancel_a_prompt(monkeypatch):
+    hub = make_hub()
+    add_session(hub, "s1")
+    monkeypatch.setattr(hub, "_start_poller", lambda: None)
+    forwarded = []
+
+    async def forward(session_id, payload):
+        forwarded.append(payload)
+        return True
+
+    monkeypatch.setattr(hub, "_forward_to_worker", forward)
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect("/api/ws?session=s1", headers={"origin": "http://testserver"}) as sock:
+            receive_type(sock, "state")
+            sock.send_json({"type": "prompt_cancel", "id": "p1"})
+            assert receive_type(sock, "prompt_ack")["ok"] is True
+    assert forwarded == [{"type": "prompt_cancel", "id": "p1"}]
+
+
 # -- RemoteSession derived-state unit --------------------------------------
 
 def test_remote_session_tracks_context_status_for_authoritative_state():

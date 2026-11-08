@@ -47,7 +47,7 @@ describe('interaction components', () => {
   it('sends composer text with Enter', () => {
     const onSend = vi.fn()
     render(<ControlledComposer onSend={onSend} />)
-    const field = screen.getByPlaceholderText('Type Anything...')
+    const field = screen.getByPlaceholderText('Message ene — / for commands, @ for files')
     fireEvent.change(field, { target: { value: 'hello' } })
     fireEvent.keyDown(field, { key: 'Enter' })
     expect(onSend).toHaveBeenCalledWith('hello')
@@ -68,7 +68,7 @@ describe('interaction components', () => {
         onCancel={() => undefined}
       />,
     )
-    const field = screen.getByPlaceholderText('Type Anything...')
+    const field = screen.getByPlaceholderText('Message ene — / for commands, @ for files')
     fireEvent.keyDown(field, { key: 'ArrowUp' })
     expect(onDraftChange).toHaveBeenLastCalledWith('second command')
 
@@ -109,7 +109,7 @@ describe('interaction components', () => {
         onCancel={() => undefined}
       />,
     )
-    const field = screen.getByPlaceholderText('Type Anything...')
+    const field = screen.getByPlaceholderText('Message ene — / for commands, @ for files')
     fireEvent.select(field, { target: { selectionStart: 11 } })
     await waitFor(() => expect(fetchPathCompletions).toHaveBeenCalledWith('src'))
     expect(await screen.findByRole('option', { name: '@src/' })).toBeInTheDocument()
@@ -133,7 +133,7 @@ describe('interaction components', () => {
         onCancel={() => undefined}
       />,
     )
-    const field = screen.getByPlaceholderText('Type Anything...')
+    const field = screen.getByPlaceholderText('Message ene — / for commands, @ for files')
     expect(screen.getByRole('option', { name: '/help Show help' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(field, { key: 'ArrowDown' })
     expect(screen.getByRole('option', { name: '/context List context' })).toHaveAttribute('aria-selected', 'true')
@@ -172,7 +172,7 @@ describe('interaction components', () => {
         onCancel={() => undefined}
       />,
     )
-    fireEvent.keyDown(screen.getByPlaceholderText('Type Anything...'), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByPlaceholderText('Message ene — / for commands, @ for files'), { key: 'Enter' })
     expect(onSend).toHaveBeenCalledWith('/help')
   })
 
@@ -190,7 +190,7 @@ describe('interaction components', () => {
         onCancel={() => undefined}
       />,
     )
-    expect(screen.getByPlaceholderText('Queue a message...')).not.toBeDisabled()
+    expect(screen.getByPlaceholderText('Queue a message… (Esc to stop)')).not.toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()
   })
@@ -210,7 +210,7 @@ describe('interaction components', () => {
       />,
     )
     expect(screen.getByText('follow up later')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Queue a message...')).not.toBeDisabled()
+    expect(screen.getByPlaceholderText('Queue a message… (Esc to stop)')).not.toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: /Pending/ }))
     expect(onWithdraw).toHaveBeenCalled()
   })
@@ -343,11 +343,13 @@ describe('interaction components', () => {
     expect(container.querySelector('.composer-shell > .activity-dock')).toBeInTheDocument()
   })
 
-  it('shows each background process as a separate activity row', () => {
+  it('summarizes background processes in one row that opens the task panel', () => {
+    const onOpenTasks = vi.fn()
     render(
       <ActivityStatus
         busy={false}
         status={null}
+        onOpenTasks={onOpenTasks}
         processStatus={{
           running: 2,
           finished: 1,
@@ -358,18 +360,11 @@ describe('interaction components', () => {
         }}
       />,
     )
-    const panel = screen.getByLabelText('background processes')
-    expect(within(panel).getAllByRole('listitem')).toHaveLength(2)
-    expect(within(panel).getByText('#1')).toBeInTheDocument()
-    expect(within(panel).getByText(/review parser/)).toBeInTheDocument()
-    expect(within(panel).getByText('reading src/parse.py')).toBeInTheDocument()
-    expect(within(panel).getByText('1m 15s')).toBeInTheDocument()
-    expect(within(panel).getByText('Waiting for output…')).toBeInTheDocument()
-    expect(within(panel).queryByText('Background tasks')).not.toBeInTheDocument()
-    expect(within(panel).queryByText('1 finished')).not.toBeInTheDocument()
-    // Watchers and silent background processes carry different markers.
-    expect(within(panel).getByTitle('Notifies the agent')).toHaveTextContent('↻')
-    expect(within(panel).getByTitle('Runs without notifying the agent')).toHaveTextContent('⚙')
+    const summary = screen.getByRole('button', { name: /2 background tasks/ })
+    expect(summary).toHaveTextContent('↻1 ⚙1')
+    expect(summary).toHaveTextContent('reading src/parse.py')
+    fireEvent.click(summary)
+    expect(onOpenTasks).toHaveBeenCalledOnce()
   })
 
   it('keeps context usage visible while idle', () => {

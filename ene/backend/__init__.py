@@ -1856,7 +1856,7 @@ class LLMAgent(
             return True
         if query.startswith("/"):
             cmd_word = query.split()[0][1:].lower()
-            if submission.source == "web" and cmd_word in {"resume", "rewind", "fork"}:
+            if submission.source == "web" and cmd_word in {"resume", "fork"}:
                 self.console.warn(
                     f"/{cmd_word} is only available from an attached terminal."
                 )

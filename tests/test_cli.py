@@ -119,6 +119,26 @@ def test_get_agent_rejects_invalid_summary_alias(monkeypatch):
     assert get_agent(Args(model="main")) is None
 
 
+@pytest.mark.parametrize(
+    ("options", "port"),
+    [([], 8765), (["--port", "9000"], 9000)],
+)
+def test_hub_accepts_port_options(monkeypatch, options, port):
+    hubs = []
+    monkeypatch.setattr(cli, "cmd_hub", hubs.append)
+
+    assert cli.main(["hub", *options]) == 0
+
+    assert hubs[0].port == port
+
+
+def test_hub_rejects_web_port_alias():
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["hub", "--web-port", "9001"])
+
+    assert exc.value.code == 2
+
+
 def test_clean_accepts_entry_names(monkeypatch):
     cleaned = []
     monkeypatch.setattr(

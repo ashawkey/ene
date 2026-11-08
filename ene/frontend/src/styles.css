@@ -967,18 +967,8 @@ html { scrollbar-gutter: stable; }
 .context-progress.info, .context-usage strong.info { color: var(--info); }
 .context-progress.warning, .context-usage strong.warning { color: var(--warning); }
 .context-progress.danger, .context-usage strong.danger { color: var(--danger); }
-.process-panel { border-top: 1px solid var(--line); }
-.process-panel ul { max-height: min(27dvh, 14rem); margin: 0; padding: 0.5rem; overflow-y: auto; list-style: none; }
-.process-panel li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.55rem; padding: 0.5rem 0.6rem; border-radius: 11px; background: var(--surface-soft); }
-.process-panel li + li { margin-top: 0.35rem; }
-/* ↻ watchers can wake the agent (accent); ⚙ background processes never do (dim). */
 .process-indicator { width: 1rem; color: var(--dim); font-size: 0.85rem; line-height: 1; text-align: center; }
 .process-indicator.watcher { color: var(--accent); }
-.process-copy { display: flex; min-width: 0; flex-direction: column; gap: 0.12rem; }
-.process-copy strong { overflow: hidden; color: var(--text); font-size: 0.78rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.process-copy code { color: var(--accent); font-size: 0.72rem; }
-.process-copy small { overflow: hidden; color: var(--dim); font: 0.72rem ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.process-panel li time { color: var(--dim); font: 0.72rem ui-monospace, SFMono-Regular, Consolas, monospace; }
 
 .prompt-backdrop {
   position: fixed;
@@ -1173,8 +1163,8 @@ html { scrollbar-gutter: stable; }
   .hint { display: none; }
   :root { --gutter: 0.75rem; }
   .context-progress { width: 4rem; }
-  .process-panel li { align-items: start; }
-  .process-panel li time { grid-column: 3; }
+  .process-summary small { display: none; }
+  .session-search kbd { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; scroll-behavior: auto !important; }
@@ -1183,3 +1173,271 @@ html { scrollbar-gutter: stable; }
 @supports not (backdrop-filter: blur(1px)) {
   .event-body, .composer, .activity-dock, .prompt, .login-row, .pending-message { background-color: var(--bg); }
 }
+
+/* -- copy controls -------------------------------------------------------- */
+.copy-button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  color: var(--dim);
+  background: var(--pill-bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 0.85rem;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.copy-button:hover { color: var(--text); }
+.copy-button.copied { color: var(--success); opacity: 1; }
+.copy-button.failed { color: var(--danger); opacity: 1; }
+.event-head .copy-button { margin-left: auto; }
+.event:hover > .event-head .copy-button,
+.code-block:hover > .copy-button,
+.copy-button:focus-visible { opacity: 1; }
+.code-block { position: relative; }
+.code-block > .copy-button { position: absolute; top: 0.4rem; right: 0.4rem; }
+@media (hover: none) {
+  .event-head .copy-button, .code-block > .copy-button { opacity: 0.7; }
+}
+
+/* -- folded tool runs ---------------------------------------------------- */
+.activity-group { width: 100%; }
+.activity-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.35rem 0.6rem;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  font-size: 0.86rem;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.activity-group > summary::-webkit-details-marker { display: none; }
+.activity-group > summary::before { content: '▸'; color: var(--dim); }
+.activity-group[open] > summary::before { content: '▾'; }
+.activity-group > summary:hover { color: var(--text); border-color: var(--line-strong); }
+.group-count { flex: none; color: var(--accent); font-weight: 650; }
+.group-tools { min-width: 0; overflow: hidden; color: var(--dim); font: 0.8rem ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.group-failed { flex: none; margin-left: auto; color: var(--danger); font-size: 0.78rem; }
+.activity-group.live > summary .group-count::after { content: ' · running'; color: var(--dim); font-weight: 500; }
+.activity-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  margin: 0.5rem 0 0 0.45rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--line-strong);
+}
+
+/* -- background task digest in the dock --------------------------------- */
+.process-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.85rem;
+  color: var(--muted);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.activity-dock > .process-summary:first-child { border-top: 0; }
+.process-summary:hover:not(:disabled) { background: var(--btn-subtle); }
+.process-summary:disabled { cursor: default; }
+.process-summary-marker { flex: none; color: var(--accent); font: 0.78rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.process-summary strong { flex: none; color: var(--text); font-size: 0.82rem; font-weight: 600; }
+.process-summary small { min-width: 0; overflow: hidden; color: var(--dim); font: 0.74rem ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.process-summary small code { color: var(--accent); }
+.process-summary em { flex: none; margin-left: auto; color: var(--accent); font-size: 0.78rem; font-style: normal; }
+
+/* -- top-bar toggles ------------------------------------------------------ */
+.find-toggle, .tasks-toggle { position: relative; line-height: 1; font-size: 0.95rem; }
+.top-bar button.active { opacity: 1; color: var(--accent); border-color: var(--accent-focus); }
+.badge {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  min-width: 1.05rem;
+  height: 1.05rem;
+  padding: 0 0.25rem;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.05rem;
+  text-align: center;
+}
+
+/* -- side panels (tasks) -------------------------------------------------- */
+.task-panel {
+  position: fixed;
+  z-index: 33;
+  top: var(--top-bar);
+  right: 0;
+  bottom: 0;
+  width: min(24rem, 92vw);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--glass-border);
+  background: linear-gradient(145deg, var(--glass-highlight), transparent 42%), var(--elevated);
+  box-shadow: -8px 0 28px rgba(0, 8, 28, 0.14);
+  backdrop-filter: blur(28px) saturate(170%);
+  -webkit-backdrop-filter: blur(28px) saturate(170%);
+  animation: slide-in 0.2s ease both;
+}
+.panel-header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 0.9rem 0.5rem; }
+.panel-header h2 { margin: 0; font-size: 0.95rem; font-weight: 700; }
+.panel-close { padding: 0 0.3rem; color: var(--dim); background: transparent; border: 0; font-size: 1.2rem; line-height: 1; }
+.panel-close:hover { color: var(--text); }
+.panel-scroll { flex: 1; min-height: 0; padding: 0 0.75rem 1rem; overflow-y: auto; overscroll-behavior: contain; }
+.panel-empty { margin: 0.5rem 0.15rem; color: var(--muted); font-size: 0.85rem; }
+.task-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.task-row { padding: 0.6rem 0.65rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.task-head { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+.task-id { flex: none; color: var(--accent); font-size: 0.75rem; }
+.task-label { min-width: 0; overflow: hidden; color: var(--text); font-size: 0.84rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.task-head time { flex: none; margin-left: auto; color: var(--dim); font: 0.74rem ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.task-line {
+  max-height: 6.5rem;
+  margin: 0.45rem 0 0;
+  padding: 0.4rem 0.5rem;
+  overflow: auto;
+  color: var(--mono-text);
+  background: var(--code-bg);
+  border-radius: 7px;
+  font: 0.74rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.5rem; }
+.task-actions button, .panel-link {
+  padding: 0.25rem 0.65rem;
+  color: var(--text);
+  background: var(--btn-subtle);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.task-actions button.danger { color: var(--danger); border-color: var(--danger-weak); }
+.task-actions button.danger.confirming { color: var(--accent-ink); background: var(--danger); border-color: transparent; }
+.task-actions button:disabled, .panel-link:disabled { opacity: 0.5; cursor: not-allowed; }
+.panel-link { display: block; width: 100%; margin-top: 0.6rem; color: var(--muted); }
+.panel-link:hover:not(:disabled) { color: var(--text); }
+
+/* -- conversation search -------------------------------------------------- */
+.find-bar {
+  position: fixed;
+  z-index: 34;
+  top: calc(var(--top-bar) + 0.5rem);
+  right: max(1rem, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 0.3rem 0.35rem 0.3rem 0.6rem;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 14px;
+  background: var(--elevated);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+}
+.find-bar input { flex: 1; min-width: 0; padding: 0.3rem 0; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 0.88rem; }
+.find-status { flex: none; color: var(--dim); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.find-bar button { flex: none; width: 1.8rem; height: 1.8rem; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 7px; line-height: 1; }
+.find-bar button:hover:not(:disabled) { color: var(--text); background: var(--btn-subtle); }
+.find-bar button:disabled { opacity: 0.4; cursor: default; }
+.search-hit > .event-body { box-shadow: 0 0 0 1px var(--warning-weak); }
+.search-current > .event-body { box-shadow: 0 0 0 2px var(--warning); }
+::highlight(ene-search) { color: var(--accent-ink); background-color: var(--warning); }
+
+/* -- session search ------------------------------------------------------- */
+.session-search { position: relative; flex: none; }
+.session-search input {
+  width: 100%;
+  padding: 0.4rem 3.4rem 0.4rem 0.6rem;
+  color: var(--text);
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 0.82rem;
+}
+.session-search input:focus { border-color: var(--accent-focus); outline: none; }
+.session-search kbd {
+  position: absolute;
+  top: 50%;
+  right: 0.45rem;
+  color: var(--dim);
+  font: 0.66rem ui-monospace, SFMono-Regular, Consolas, monospace;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* -- jump to latest ------------------------------------------------------- */
+.jump-latest {
+  position: fixed;
+  z-index: 21;
+  bottom: calc(var(--composer-reserve) - 0.5rem);
+  left: calc(var(--rail) + (100vw - var(--rail)) / 2);
+  padding: 0.35rem 0.8rem;
+  color: var(--text);
+  background: var(--elevated);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 999px;
+  box-shadow: var(--glass-shadow-soft);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  font-size: 0.8rem;
+  font-weight: 650;
+  transform: translateX(-50%);
+  animation: fade-in 0.2s ease both;
+}
+.jump-latest:hover { color: var(--accent); }
+
+/* -- prompt choice shortcuts --------------------------------------------- */
+.choice-key {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.3rem;
+  height: 1.3rem;
+  margin-right: 0.6rem;
+  padding: 0 0.25rem;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  font: 0.72rem ui-monospace, SFMono-Regular, Consolas, monospace;
+  opacity: 0.6;
+}
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(1.5rem); } to { opacity: 1; transform: none; } }
+
+/* Both search fields have their own clear/close affordances. */
+.find-bar input::-webkit-search-cancel-button,
+.session-search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+
+.prompt-cancel {
+  display: block;
+  margin: 0.75rem 0 0 auto;
+  padding: 0.35rem 0.8rem;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.prompt-cancel:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.prompt-cancel:disabled { opacity: 0.5; cursor: default; }

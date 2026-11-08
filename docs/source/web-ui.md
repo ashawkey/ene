@@ -21,12 +21,13 @@ ene_web_token: replace-with-a-long-random-secret
 Start the hub in a dedicated terminal:
 
 ```bash
-ene hub --web-port 8765
+ene hub --port 8765
 ```
 
 1. Open a printed URL (local IPv4 or fully qualified hostname) and enter the printed token.
 2. Keep the hub terminal running while using the UI.
 
+- `--port` defaults to `8765`.
 - Without `ene_web_token`, Ene generates a temporary token for that hub process.
 - A second hub cannot use an occupied hub port.
 - Login creates an httponly cookie. Logout or expiry closes that login's WebSocket connections across tabs; other authenticated browsers stay signed in.
@@ -55,8 +56,22 @@ The sidebar lists every live session on the machine:
 ## Browser behavior
 
 - **Activity:** conversation, tools, selections, queued input, and process status are visible per session. The [model marker](commands.md#model-status-markers) stays first in the status bar.
-- **Process dock:** stays above the composer; scrollable rows show ID, label, runtime, and latest output.
+- **Tool runs:** three or more consecutive tool calls fold into one summary row once the agent moves on; click to expand.
+- **Copy:** hover a message or code block and select **⧉**.
+- **Jump to latest:** appears when you scroll away from the newest output.
+- **Tab title:** shows how many sessions finished and await review.
 - **Queue:** follow-up messages append to the pending one; commands cannot join it. Refusals are reported, not silently dropped.
+
+### Background tasks
+
+- The status bar above the composer summarizes the session's background processes; select **Details** or the top-bar **⚙** (badge = process count).
+- The task panel lists each process with ID, label, live runtime, and latest output.
+- **Show log:** runs `/ps <id>`. **Stop:** click twice to run `/ps stop <id>`.
+
+### Search
+
+- **Conversation:** Ctrl/Cmd+F or **⌕** searches messages, tool calls, and diffs. Enter/Shift+Enter step through matches; folded blocks open to show them.
+- **Sessions:** Ctrl/Cmd+K focuses the sidebar filter (name, last message, directory, model). Enter opens the first match, attaching a free session.
 
 ### Composer shortcuts
 
@@ -64,6 +79,8 @@ The sidebar lists every live session on the machine:
 - `@` at a word's start: search workspace paths and filenames.
 - With suggestions open: type to filter, Up/Down to select, Tab/Enter to complete; Enter again sends.
 - Without suggestions: Up/Down recalls browser-session input history, restoring the draft after the newest entry.
+- Escape while the agent works: stop the round, as in the terminal.
+- Prompts: press a choice's number key to answer; Escape or **Cancel** dismisses, as in the terminal.
 
 ### Connection lifecycle
 
@@ -89,7 +106,7 @@ cloudflared tunnel route dns ene ene.example.com
 Run the hub and tunnel in separate terminals:
 
 ```bash
-ene hub --web-port 8765
+ene hub --port 8765
 ```
 
 ```bash

@@ -53,7 +53,7 @@ class Args:
 
     resume: str | None = None  # saved session ID to resume
     name: str = ""
-    web_port: int = 8765
+    port: int = 8765
 
 
 # ---------------------------------------------------------------------------
@@ -341,8 +341,8 @@ def cmd_hub(args: Args):
     console = AgentConsole()
     from ene.hub import Hub, discover_hub
 
-    running = discover_hub(args.web_port)
-    if running and int(running.get("port", 0)) == args.web_port:
+    running = discover_hub(args.port)
+    if running and int(running.get("port", 0)) == args.port:
         console.error(
             f"A hub is already running at "
             f"http://{running.get('host', '127.0.0.1')}:{running.get('port')}"
@@ -350,7 +350,7 @@ def cmd_hub(args: Args):
         return
 
     try:
-        hub = Hub(port=args.web_port, token=conf.get("ene_web_token"), console=console)
+        hub = Hub(port=args.port, token=conf.get("ene_web_token"), console=console)
         hub.start()
     except Exception as exc:
         console.error(f"Could not start hub: {exc}")
@@ -711,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="also remove saved conversation sessions",
     )
     hub = commands.add_parser("hub", help="run the shared web hub")
-    hub.add_argument("--web-port", type=int, default=8765, help="listener port (default: 8765)")
+    hub.add_argument("--port", type=int, default=8765, help="listener port (default: 8765)")
     commands.add_parser("update", help="update ene from its source repository")
     commands.add_parser("lib", help="manage the Git-backed resource library", add_help=False)
     return parser
@@ -753,7 +753,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "clean":
         cmd_clean(args.entries, history=args.history)
     elif args.command == "hub":
-        cmd_hub(Args(web_port=args.web_port))
+        cmd_hub(Args(port=args.port))
     elif args.command == "update":
         return cmd_update()
     elif args.command in {"new", "resume", "r"}:

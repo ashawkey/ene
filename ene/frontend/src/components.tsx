@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent, ReactNode, RefObject, useEffect, useRef, useState } from 'react'
 
 import type { ConnectionStatus } from './connection'
 import type { PendingMessage, ProcessStatus, Prompt, SessionSummary } from './types'
@@ -37,6 +37,21 @@ function sessionDir(session: SessionSummary) {
  */
 function sessionLabel(session: SessionSummary) {
   return session.name || session.preview || 'New session'
+}
+
+/** Whether a session's name, last message, directory, or model mentions *query*. */
+export function sessionMatches(session: SessionSummary, query: string) {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  return [session.name, session.preview, session.cwd, session.model, session.title]
+    .some((value) => typeof value === 'string' && value.toLowerCase().includes(needle))
+}
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+
+/** Platform-appropriate label for a Ctrl/Cmd shortcut. */
+export function shortcutLabel(key: string) {
+  return isMac ? `⌘${key}` : `Ctrl+${key}`
 }
 
 // A watcher can still wake the agent; a background process never will.
@@ -118,6 +133,7 @@ export function SessionSidebar({
   onAttach,
   onDetach,
   onClose,
+  searchRef,
 }: {
   sessions: SessionSummary[]
   activeId: string | null
@@ -127,16 +143,59 @@ export function SessionSidebar({
   onAttach: (id: string) => void
   onDetach: (id: string) => void
   onClose: () => void
+  searchRef?: RefObject<HTMLInputElement | null>
 }) {
-  const attached = sessions.filter((session) => session.attached_by === 'web')
-  const others = sessions.filter((session) => session.attached_by !== 'web')
+  const [query, setQuery] = useState('')
+  const visible = sessions.filter((session) => sessionMatches(session, query))
+  const attached = visible.filter((session) => session.attached_by === 'web')
+  const others = visible.filter((session) => session.attached_by !== 'web')
+
+  function searchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      if (query) setQuery('')
+      else {
+        event.currentTarget.blur()
+        onClose()
+      }
+      return
+    }
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    // Enter opens the best match: an open tab first, else a free session.
+    const tab = attached[0]
+    const free = others.find((session) => session.attached_by !== 'terminal')
+    if (tab) onSelect(tab.id)
+    else if (free) onAttach(free.id)
+    else return
+    setQuery('')
+    event.currentTarget.blur()
+  }
+
   return (
     <>
       {open ? <div className="sidebar-scrim" onClick={onClose} aria-hidden="true" /> : null}
       <nav className={open ? 'sidebar open' : 'sidebar'} aria-label="Agent sessions">
+        {sessions.length > 0 ? (
+          <div className="session-search">
+            <input
+              ref={searchRef}
+              type="search"
+              aria-label="Search sessions"
+              placeholder="Search sessions"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={searchKeyDown}
+            />
+            <kbd aria-hidden="true">{shortcutLabel('K')}</kbd>
+          </div>
+        ) : null}
         <div className="session-scroll">
-          {attached.length === 0 && others.length === 0 ? (
+          {sessions.length === 0 ? (
             <p className="sidebar-empty">No live sessions yet.</p>
+          ) : null}
+          {sessions.length > 0 && visible.length === 0 ? (
+            <p className="sidebar-empty">No sessions match “{query}”.</p>
           ) : null}
           {attached.length > 0 ? (
             <ul className="session-list">
@@ -239,6 +298,38 @@ export function NewSessionButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+export function FindButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      className={active ? 'find-toggle active' : 'find-toggle'}
+      type="button"
+      onClick={onClick}
+      aria-label="Search conversation"
+      aria-pressed={active}
+      title={`Search conversation (${shortcutLabel('F')})`}
+    >
+      ⌕
+    </button>
+  )
+}
+
+/** Opens the task panel; the badge counts the active session's processes. */
+export function TasksButton({ active, count, onClick }: { active: boolean; count: number; onClick: () => void }) {
+  return (
+    <button
+      className={active ? 'tasks-toggle active' : 'tasks-toggle'}
+      type="button"
+      onClick={onClick}
+      aria-label={count ? `Background tasks (${count} running)` : 'Background tasks'}
+      aria-pressed={active}
+      title="Background tasks"
+    >
+      {BACKGROUND_GLYPH}
+      {count > 0 ? <span className="badge" aria-hidden="true">{count}</span> : null}
+    </button>
+  )
+}
+
 /** Opens the session rail when it is collapsed into a drawer (narrow screens). */
 export function SidebarToggle({ onClick }: { onClick: () => void }) {
   return (
@@ -318,7 +409,7 @@ function compactTokens(value: number) {
   return String(value)
 }
 
-function formatDuration(value: number) {
+export function formatDuration(value: number) {
   const total = Math.max(0, Math.ceil(value))
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor((total % 3600) / 60)
@@ -447,16 +538,47 @@ export function Thinking({
   )
 }
 
+/**
+ * One-line digest of the session's background processes. The full list,
+ * with logs and stop controls, lives in the task panel it opens.
+ */
+function ProcessSummary({ processStatus, onOpen }: { processStatus: ProcessStatus; onOpen?: () => void }) {
+  const { processes } = processStatus
+  const watchers = processes.filter((process) => process.watching).length
+  const count = processes.length || processStatus.running
+  const marker = backgroundMarker(watchers, count - watchers)
+  const latest = processes.find((process) => process.last_line)
+  return (
+    <button
+      type="button"
+      className="process-summary"
+      onClick={onOpen}
+      disabled={!onOpen}
+      aria-label={`${count} background ${count === 1 ? 'task' : 'tasks'}; show details`}
+      title="Show background tasks"
+    >
+      <span className="process-summary-marker" aria-hidden="true">{marker}</span>
+      <strong>{count} background {count === 1 ? 'task' : 'tasks'}</strong>
+      {latest ? (
+        <small><code>#{latest.process_id}</code> {latest.last_line}</small>
+      ) : null}
+      <em>Details</em>
+    </button>
+  )
+}
+
 export function ActivityStatus({
   busy,
   status,
   processStatus = { running: 0, finished: 0, processes: [] },
   contextStatus = null,
+  onOpenTasks,
 }: {
   busy: boolean
   status: ThinkingProps | null
   processStatus?: ProcessStatus
   contextStatus?: ContextStatusProps | null
+  onOpenTasks?: () => void
 }) {
   const active = busy || status !== null
   const hasProcesses = processStatus.running > 0 || processStatus.processes.length > 0
@@ -472,25 +594,7 @@ export function ActivityStatus({
         ) : null
       )}
       {hasProcesses ? (
-        <section className="process-panel" aria-label="background processes">
-          <ul>
-            {processStatus.processes.map((process) => (
-              <li key={process.process_id}>
-                <span
-                  className={process.watching ? 'process-indicator watcher' : 'process-indicator'}
-                  title={process.watching ? 'Notifies the agent' : 'Runs without notifying the agent'}
-                >
-                  {process.watching ? WATCHER_GLYPH : BACKGROUND_GLYPH}
-                </span>
-                <span className="process-copy">
-                  <strong><code>#{process.process_id}</code> {process.label}</strong>
-                  {process.last_line ? <small>{process.last_line}</small> : <small>Waiting for output…</small>}
-                </span>
-                <time>{formatDuration(process.elapsed_seconds)}</time>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <ProcessSummary processStatus={processStatus} onOpen={onOpenTasks} />
       ) : null}
     </aside>
   )
@@ -556,14 +660,20 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
   )
 }
 
+// A choice that already cancels makes a separate Cancel button redundant.
+const CANCEL_CHOICE = /^\s*(\d+\.\s*)?cancel\s*$/i
+
 export function PromptDialog({
   prompt,
   connected = true,
   onAnswer,
+  onCancel,
 }: {
   prompt: Prompt
   connected?: boolean
   onAnswer: (answer: string) => void
+  /** Dismiss without answering, like Escape in the terminal. */
+  onCancel?: () => void
 }) {
   const [answer, setAnswer] = useState(prompt.default)
   useEffect(() => setAnswer(prompt.default), [prompt.id, prompt.default])
@@ -571,6 +681,32 @@ export function PromptDialog({
   // Highlight the default choice; fall back to the first when the default is
   // absent from the list so exactly one button always reads as primary.
   const primary = prompt.choices.includes(prompt.default) ? prompt.default : prompt.choices[0]
+
+  // Number keys pick a choice, so routine approvals need no mouse travel;
+  // Escape dismisses the prompt, as in the terminal.
+  useEffect(() => {
+    if (!connected) return
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.key === 'Escape') {
+        if (onCancel && !event.defaultPrevented) {
+          event.preventDefault()
+          onCancel()
+        }
+        return
+      }
+      if (prompt.kind !== 'select') return
+      const target = event.target as HTMLElement | null
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
+      const index = Number(event.key) - 1
+      if (Number.isInteger(index) && index >= 0 && index < Math.min(prompt.choices.length, 9)) {
+        event.preventDefault()
+        onAnswer(prompt.choices[index])
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [prompt, connected, onAnswer, onCancel])
 
   return (
     <div className="prompt-backdrop">
@@ -587,7 +723,7 @@ export function PromptDialog({
           )
         })()}
         <div className="prompt-options">
-          {prompt.kind === 'select' ? prompt.choices.map((choice) => (
+          {prompt.kind === 'select' ? prompt.choices.map((choice, index) => (
             <button
               type="button"
               key={choice}
@@ -595,6 +731,9 @@ export function PromptDialog({
               disabled={!connected}
               onClick={() => onAnswer(choice)}
             >
+              {index < 9 && !/^\s*\d+\.\s/.test(choice) ? (
+                <kbd className="choice-key" aria-hidden="true">{index + 1}</kbd>
+              ) : null}
               {choice}
             </button>
           )) : (
@@ -604,6 +743,11 @@ export function PromptDialog({
             </>
           )}
         </div>
+        {onCancel && !prompt.choices.some((choice) => CANCEL_CHOICE.test(choice)) ? (
+          <button type="button" className="prompt-cancel" disabled={!connected} onClick={onCancel} title="Cancel (Esc)">
+            Cancel
+          </button>
+        ) : null}
       </section>
     </div>
   )
@@ -814,6 +958,12 @@ export function Composer({
         return
       }
     }
+    // Like the terminal: Escape stops the running round.
+    if (event.key === 'Escape' && operationId && connected) {
+      event.preventDefault()
+      onCancel()
+      return
+    }
     if (event.key === 'ArrowUp' && recallHistory(-1)) {
       event.preventDefault()
       return
@@ -884,7 +1034,7 @@ export function Composer({
           ref={field}
           rows={1}
           maxLength={32768}
-          placeholder={operationId ? 'Queue a message...' : 'Type Anything...'}
+          placeholder={operationId ? 'Queue a message… (Esc to stop)' : 'Message ene — / for commands, @ for files'}
           value={text}
           onChange={(event) => updateText(event.target.value, event.target.selectionStart)}
           onSelect={(event) => setCursor(event.currentTarget.selectionStart)}

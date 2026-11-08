@@ -1321,7 +1321,7 @@ def _skill_invocation_agent(tmp_path, name="general-skill"):
 
 
 @pytest.mark.parametrize(
-    "query", ["/resume", "/resume saved-session", "/rewind", "/fork", "/fork branch"]
+    "query", ["/resume", "/resume saved-session", "/fork", "/fork branch"]
 )
 def test_web_cannot_switch_conversation(query, tmp_path):
     agent, _ = _skill_invocation_agent(tmp_path)
@@ -1337,6 +1337,20 @@ def test_web_cannot_switch_conversation(query, tmp_path):
     assert dispatched == []
     assert agent.context.messages == []
     assert agent.round_id == 0
+
+
+def test_web_can_rewind(tmp_path):
+    """Rewind's pickers and draft restore reach the browser, so web may run it."""
+    agent, _ = _skill_invocation_agent(tmp_path)
+    warnings = []
+    dispatched = []
+    agent.console.warn = warnings.append
+    agent._run_command = lambda query: dispatched.append(query) or False
+
+    assert agent._process_query(UserSubmission("/rewind", "web", "s1")) is False
+
+    assert warnings == []
+    assert dispatched == ["/rewind"]
 
 
 def test_peer_notice_is_injected_once_before_the_user_prompt(tmp_path):

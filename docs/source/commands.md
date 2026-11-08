@@ -70,7 +70,7 @@ Prefer `--api-key-env`: `--api-key` can expose secrets in shell history and proc
 | `ene notify NAME_OR_ID [TEXT] [--source LABEL]` | Send an [inbox notification](tools.md#inbox-notifications) to a live session; reads stdin when `TEXT` is omitted. |
 | `ene status` | Show disk usage for entries under the current project's `.ene/`. |
 | `ene clean [--history] [ENTRY ...]` | Remove disposable project state or selected entries; `--history` also removes sessions. |
-| `ene hub --web-port PORT` | Start the [Web UI](web-ui.md); default port: `8765`. |
+| `ene hub --port PORT` | Start the [Web UI](web-ui.md); default port: `8765`. |
 | `ene update` | Update Ene from its editable checkout or reinstall the latest GitHub source. |
 | `ene lib --help` | Manage the Git-backed library of skills and personas. |
 
@@ -133,7 +133,7 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 | `/logout [provider\|model-alias]` | Remove stored OAuth credentials |
 | `/auth [provider\|model-alias]` | Show authentication status |
 | `/effort [level]` | Show or set reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) |
-| `/rewind` | In an attached terminal, restore conversation, tracked files, or both at an earlier prompt; edit and branch |
+| `/rewind` | In a terminal or the Web UI, restore conversation, tracked files, or both at an earlier prompt; edit and branch |
 | `/fork [name]` | In an attached terminal, fork an earlier prompt into a new session; leave tracked files unchanged |
 | `/skills` | List installed skills; `/skills reload` to re-scan; `/skills <name>` to load one |
 | `/<skill-name> [task]` | Invoke a skill for an optional task; without one, run its declared default or ask what to do |

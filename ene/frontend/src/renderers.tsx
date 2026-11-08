@@ -1,12 +1,14 @@
 import { diffLines } from 'diff'
-import { memo, useMemo } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Components } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+import { CopyButton } from './clipboard'
 import type { DisplayEvent, EventData } from './types'
 import { highlightLine, languageForPath } from './highlight'
+import { summarizeGroup } from './timeline'
 
 // Matches ANSI/VT control sequences (CSI colour codes, cursor moves, OSC, etc.).
 const ANSI_PATTERN =
@@ -38,9 +40,25 @@ const COLLAPSE_LINES = 14
 // Stable module-level props: fresh arrays/objects per render would defeat
 // react-markdown's own memoization.
 const markdownPlugins = [remarkGfm]
+type HastNode = { type?: string; value?: string; children?: HastNode[] }
+
+function hastText(node: HastNode | undefined): string {
+  if (!node) return ''
+  if (node.type === 'text') return node.value ?? ''
+  return (node.children ?? []).map(hastText).join('')
+}
+
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => (
     <a {...props} target="_blank" rel="noreferrer noopener" />
+  ),
+  // Code blocks get their own copy control; the text comes from the syntax
+  // tree so it is exactly the fenced source, never the rendered DOM.
+  pre: ({ node, children, ...props }) => (
+    <div className="code-block">
+      <pre {...props}>{children}</pre>
+      <CopyButton text={() => hastText(node as HastNode).replace(/\n$/, '')} label="Copy code" />
+    </div>
   ),
 }
 
@@ -235,17 +253,71 @@ function EventBody({ type, text, data, failed }: {
   }
 }
 
+// Messages a reader is likely to reuse get a copy control.
+const copyableTypes = new Set(['assistant_message', 'user_message'])
+
 // Memoized: a streaming token only replaces the live event object, so every
 // historical card skips re-parsing Markdown and re-highlighting diffs.
 export const EventCard = memo(function EventCard({ event }: { event: DisplayEvent }) {
   const failed = event.data.success === false
   const showHead = !activityTypes.has(event.type)
+  const copyable = copyableTypes.has(event.type) && !event.data.streaming && Boolean(event.text)
   return (
-    <article className={`event ${event.type}${failed ? ' failed' : ''}`}>
-      {showHead ? <div className="event-head"><i /><span>{labels[event.type] ?? event.type}</span></div> : null}
+    <article className={`event ${event.type}${failed ? ' failed' : ''}`} data-event-key={event.key}>
+      {showHead ? (
+        <div className="event-head">
+          <i /><span>{labels[event.type] ?? event.type}</span>
+          {copyable ? <CopyButton text={event.text} label="Copy message" /> : null}
+        </div>
+      ) : null}
       <div className="event-body">
         <EventBody type={event.type} text={event.text} data={event.data} failed={failed} />
       </div>
     </article>
   )
 })
+
+/**
+ * A long run of tool activity folded behind one summary row. It stays open
+ * while the run is live so progress is visible, then folds once the agent
+ * moves on — unless the reader has opened or closed it by hand.
+ */
+export function ActivityGroup({ events, live }: { events: DisplayEvent[]; live: boolean }) {
+  const [open, setOpen] = useState(live)
+  const touched = useRef(false)
+  useEffect(() => {
+    if (!touched.current) setOpen(live)
+  }, [live])
+  const summary = useMemo(() => summarizeGroup(events), [events])
+  const shown = summary.tools.slice(0, 4)
+  const more = summary.tools.length - shown.length
+  return (
+    <details
+      className={`activity-group${live ? ' live' : ''}`}
+      open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open
+        if (next !== open) {
+          touched.current = true
+          setOpen(next)
+        }
+      }}
+    >
+      <summary>
+        <span className="group-count">{summary.calls} tool calls</span>
+        {live && summary.latest ? (
+          <span className="group-tools">{summary.latest}</span>
+        ) : (
+          <span className="group-tools">
+            {shown.map(([name, count]) => (count > 1 ? `${name} ×${count}` : name)).join(', ')}
+            {more > 0 ? `, +${more}` : ''}
+          </span>
+        )}
+        {summary.failed > 0 ? <span className="group-failed">{summary.failed} failed</span> : null}
+      </summary>
+      <div className="activity-group-body">
+        {events.map((event) => <EventCard event={event} key={event.key} />)}
+      </div>
+    </details>
+  )
+}
