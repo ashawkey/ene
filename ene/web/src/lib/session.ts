@@ -13,6 +13,15 @@ import { isPrompt } from './protocol'
 type Base = { key: string; seq: number; ts: number }
 
 export type ToolResult = { text: string; success: boolean }
+export type OutputBlock = { text: string; ansi: string | null }
+export type DiffData = {
+  path: string
+  oldText: string
+  newText: string
+  line: number | null
+  count: number
+  success: boolean
+}
 
 export type TimelineItem =
   | (Base & { kind: 'user'; text: string; source: string; steer: boolean })
@@ -25,17 +34,13 @@ export type TimelineItem =
       qualifiers: string[]
       text: string
       result: ToolResult | null
+      /** Command output streamed while the call ran. */
+      output: OutputBlock | null
+      /** File edits the call made (edit tools report these instead of a result). */
+      diffs: DiffData[]
     })
-  | (Base & {
-      kind: 'diff'
-      path: string
-      oldText: string
-      newText: string
-      line: number | null
-      count: number
-      success: boolean
-    })
-  | (Base & { kind: 'output'; text: string; ansi: string | null })
+  | (Base & { kind: 'diff' } & DiffData)
+  | (Base & { kind: 'output' } & OutputBlock)
   | (Base & { kind: 'notice'; level: 'system' | 'debug' | 'warning' | 'error'; text: string })
   | (Base & { kind: 'round'; round: RoundStats })
 
@@ -202,10 +207,7 @@ function append(items: TimelineItem[], item: TimelineItem): TimelineItem[] {
   const last = items.at(-1)
   // Consecutive command output and system notices read as one block.
   if (last && last.kind === 'output' && item.kind === 'output') {
-    const ansi = last.ansi !== null || item.ansi !== null
-      ? `${last.ansi ?? last.text}\n${item.ansi ?? item.text}`
-      : null
-    return [...items.slice(0, -1), { ...last, text: `${last.text}\n${item.text}`, ansi }]
+    return [...items.slice(0, -1), { ...last, ...mergeOutput(last, item) }]
   }
   if (last && last.kind === 'notice' && item.kind === 'notice' && last.level === item.level && item.level === 'system') {
     return [...items.slice(0, -1), { ...last, text: `${last.text}\n${item.text}` }]
@@ -213,18 +215,62 @@ function append(items: TimelineItem[], item: TimelineItem): TimelineItem[] {
   return [...items, item]
 }
 
-/** Pair a tool result with the oldest unanswered call in the current run. */
-function attachResult(items: TimelineItem[], result: ToolResult): TimelineItem[] | null {
+type ToolItem = Extract<TimelineItem, { kind: 'tool' }>
+
+/** Index of the oldest unanswered call in the current run, or -1. */
+function openTool(items: TimelineItem[]) {
   let target = -1
   for (let i = items.length - 1; i >= 0 && i >= items.length - 40; i--) {
     const item = items[i]
     if (item.kind === 'user' || item.kind === 'round') break
     if (item.kind === 'tool' && item.result === null) target = i
   }
-  if (target < 0) return null
+  return target
+}
+
+function updateTool(items: TimelineItem[], index: number, update: (tool: ToolItem) => Partial<ToolItem>) {
   const next = items.slice()
-  next[target] = { ...(items[target] as Extract<TimelineItem, { kind: 'tool' }>), result }
+  const tool = items[index] as ToolItem
+  next[index] = { ...tool, ...update(tool) }
   return next
+}
+
+/** Pair a tool result with the oldest unanswered call in the current run. */
+function attachResult(items: TimelineItem[], result: ToolResult): TimelineItem[] | null {
+  const target = openTool(items)
+  return target < 0 ? null : updateTool(items, target, () => ({ result }))
+}
+
+/** Command output printed while a call runs belongs to that call. */
+function attachOutput(items: TimelineItem[], block: OutputBlock): TimelineItem[] | null {
+  const target = openTool(items)
+  if (target < 0) return null
+  return updateTool(items, target, (tool) => ({
+    output: tool.output ? mergeOutput(tool.output, block) : block,
+  }))
+}
+
+/**
+ * Edit tools answer with diffs instead of a result. The first diff settles
+ * the open call; further diffs from the same call (multi_edit) follow it.
+ */
+function attachDiff(items: TimelineItem[], diff: DiffData): TimelineItem[] | null {
+  let target = openTool(items)
+  if (target < 0) {
+    const last = items.length - 1
+    const tool = items[last]
+    if (tool?.kind === 'tool' && tool.diffs.length) target = last
+  }
+  if (target < 0) return null
+  return updateTool(items, target, (tool) => ({
+    diffs: [...tool.diffs, diff],
+    result: { text: tool.result?.text ?? '', success: (tool.result?.success ?? true) && diff.success },
+  }))
+}
+
+function mergeOutput(a: OutputBlock, b: OutputBlock): OutputBlock {
+  const ansi = a.ansi !== null || b.ansi !== null ? `${a.ansi ?? a.text}\n${b.ansi ?? b.text}` : null
+  return { text: `${a.text}\n${b.text}`, ansi }
 }
 
 function indicatorFrom(data: Record<string, unknown>): LiveIndicator {
@@ -356,34 +402,35 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
         qualifiers: Array.isArray(data.qualifiers) ? data.qualifiers.filter((q): q is string => typeof q === 'string') : [],
         text: str(data.text),
         result: null,
+        output: null,
+        diffs: [],
       }]
       break
     case 'tool_result': {
       const result = { text: str(data.text), success: data.success !== false }
       next.items = attachResult(items, result) ?? [...items, {
-        kind: 'tool', key, seq, ts, name: '', primary: '', qualifiers: [], text: '', result,
+        kind: 'tool', key, seq, ts, name: '', primary: '', qualifiers: [], text: '', result, output: null, diffs: [],
       }]
       break
     }
-    case 'diff':
-      next.items = [...items, {
-        kind: 'diff', key, seq, ts,
+    case 'diff': {
+      const diff: DiffData = {
         path: str(data.path),
         oldText: str(data.old_text),
         newText: str(data.new_text),
         line: typeof data.line_num === 'number' ? data.line_num : null,
         count: num(data.count, 1),
         success: data.success !== false,
-      }]
+      }
+      next.items = attachDiff(items, diff) ?? [...items, { kind: 'diff', key, seq, ts, ...diff }]
       break
+    }
     case 'output': {
       // Prefer the wide form (rows not clipped to a terminal width); this
       // view wraps lines itself.
       const ansi = typeof data.wide_ansi === 'string' ? data.wide_ansi : data.ansi
-      next.items = append(items, {
-        kind: 'output', key, seq, ts, text: str(data.wide_text, str(data.text)),
-        ansi: typeof ansi === 'string' ? ansi : null,
-      })
+      const block: OutputBlock = { text: str(data.wide_text, str(data.text)), ansi: typeof ansi === 'string' ? ansi : null }
+      next.items = attachOutput(items, block) ?? append(items, { kind: 'output', key, seq, ts, ...block })
       break
     }
     case 'system':

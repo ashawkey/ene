@@ -1166,7 +1166,9 @@ class LLMAgent(
                 self.tool_compaction_totals["original_chars"] += compacted.original_chars
                 self.tool_compaction_totals["retained_chars"] += compacted.retained_chars
                 notice = f"; full captured output: {artifact_path}" if artifact_path else ""
-                self.console.system(
+                # Routine context budgeting, not an event: a dim note that stays
+                # with the surrounding tool activity.
+                self.console.debug(
                     f"Compacted {function_name} result "
                     f"({compacted.original_chars:,}→{compacted.retained_chars:,} chars){notice}"
                 )

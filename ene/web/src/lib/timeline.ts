@@ -8,7 +8,8 @@ export type RenderNode =
   | { kind: 'group'; key: string; items: TimelineItem[]; live: boolean }
 
 const groupable = (item: TimelineItem) =>
-  item.kind === 'tool' ||
+  // Edits stay visible: they are the work a reader most wants to review.
+  (item.kind === 'tool' && item.diffs.length === 0) ||
   item.kind === 'thinking' ||
   item.kind === 'output' ||
   (item.kind === 'notice' && item.level === 'debug')
@@ -76,7 +77,10 @@ export function summarize(items: TimelineItem[]): GroupSummary {
 export function itemText(item: TimelineItem): string {
   switch (item.kind) {
     case 'tool':
-      return [item.name, item.primary, item.text, ...item.qualifiers, item.result?.text ?? ''].join('\n')
+      return [
+        item.name, item.primary, item.text, ...item.qualifiers, item.result?.text ?? '', item.output?.text ?? '',
+        ...item.diffs.flatMap((diff) => [diff.path, diff.oldText, diff.newText]),
+      ].join('\n')
     case 'diff':
       return [item.path, item.oldText, item.newText].join('\n')
     case 'round':

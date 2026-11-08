@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Cpu, Folder, GitBranch, PanelLeft, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Cpu, Folder, GitBranch, PanelLeft, Pencil, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { gitBranch } from '../lib/api'
@@ -117,7 +117,12 @@ export function SessionPane({
           <div className="pane-title">
             <div className="pane-name">
               <StateIcon state={busy ? 'working' : summary.state} />
-              <span className="clamp">{title}</span>
+              <SessionName
+                name={summary.name}
+                fallback={title}
+                disabled={!connected}
+                onRename={(name) => session.command(`/name ${name}`)}
+              />
             </div>
             <div className="pane-chips">
               <button type="button" className="chip" onClick={() => onInspector('files')} data-tip={summary.cwd}>
@@ -252,5 +257,71 @@ export function SessionPane({
         />
       ) : null}
     </section>
+  )
+}
+
+/** The session title; click to rename (same as `/name <name>`). */
+function SessionName({
+  name,
+  fallback,
+  disabled,
+  onRename,
+}: {
+  name: string | undefined
+  fallback: string
+  disabled: boolean
+  onRename: (name: string) => boolean
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (editing) input.current?.select()
+  }, [editing])
+
+  const commit = () => {
+    if (!editing) return
+    setEditing(false)
+    const next = value.replace(/\s+/g, ' ').trim()
+    if (next && next !== (name ?? '')) onRename(next)
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={input}
+        className="name-input"
+        value={value}
+        placeholder={fallback}
+        aria-label="Session name"
+        maxLength={120}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            commit()
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            setEditing(false)
+          }
+        }}
+      />
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="name-btn"
+      disabled={disabled}
+      data-tip="Rename session"
+      onClick={() => {
+        setValue(name || fallback)
+        setEditing(true)
+      }}
+    >
+      <span className="clamp">{fallback}</span>
+      <Pencil size={12} className="name-pencil" />
+    </button>
   )
 }

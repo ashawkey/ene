@@ -36,7 +36,7 @@ describe('backoff', () => {
 })
 
 describe('grouping', () => {
-  const tool = (n: number): TimelineItem => ({ kind: 'tool', key: `t${n}`, seq: n, ts: 0, name: 'x', primary: '', qualifiers: [], text: '', result: null })
+  const tool = (n: number): TimelineItem => ({ kind: 'tool', key: `t${n}`, seq: n, ts: 0, name: 'x', primary: '', qualifiers: [], text: '', result: null, output: null, diffs: [] })
   const say = (n: number): TimelineItem => ({ kind: 'assistant', key: `a${n}`, seq: n, ts: 0, text: 'hi', streaming: false })
   it('folds runs of three or more tool calls', () => {
     const nodes = groupItems([tool(1), tool(2), say(3), tool(4), tool(5), tool(6)], true)

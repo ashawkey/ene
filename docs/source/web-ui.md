@@ -53,6 +53,7 @@ The sidebar groups every live session on the machine:
 | **Available** | Running, unattached | Click to attach |
 | **In a terminal** | Owned by a terminal | Run `/detach` or Ctrl+D there first |
 
+- **Rename:** click the session name in the header; Enter saves (same as `/name <name>`), Escape cancels.
 - **Detach:** the unlink icon in the session header. The worker keeps running.
 - **Git branch:** in a Git workspace, a header chip shows the current branch (or short commit when detached); it refreshes after each round.
 - **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
@@ -61,7 +62,8 @@ The sidebar groups every live session on the machine:
 
 ## Conversation
 
-- **Timeline:** messages, reasoning, tool calls, diffs, and command output. Three or more consecutive tool calls fold into one row.
+- **Timeline:** messages, reasoning, and tool calls. A tool call holds its command output, diffs, and result.
+- **Folding:** every step folds by its chevron. Results longer than 12 lines start folded; failures and running calls start open. Three or more consecutive tool calls fold into one row.
 - **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time, tokens, cache hit rate, and tool calls; click it for statistics.
 - **Diffs:** click the file name to open the file.
 - **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.

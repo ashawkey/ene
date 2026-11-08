@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ServerEvent, StateFrame } from './protocol'
-import type { SessionView } from './session'
+import type { SessionView, TimelineItem } from './session'
 import { initialView, reduce, totals } from './session'
 
 function state(overrides: Partial<StateFrame> = {}): ServerEvent {
@@ -133,5 +133,36 @@ describe('session reducer', () => {
     const { view } = run([state(), ev(1, 'output', { text: 'a' }), ev(2, 'output', { text: 'b', ansi: '\u001b[32mb\u001b[0m' })])
     expect(view.items).toHaveLength(1)
     expect(view.items[0]).toMatchObject({ kind: 'output', text: 'a\nb', ansi: 'a\n\u001b[32mb\u001b[0m' })
+  })
+
+  it('attaches output printed during a call to that call', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'tool_start', { name: 'exec_command', primary: 'ls' }),
+      ev(2, 'output', { text: 'a' }),
+      ev(3, 'output', { text: 'b' }),
+      ev(4, 'tool_result', { text: 'exit 0', success: true }),
+      ev(5, 'output', { text: 'after' }),
+    ])
+    expect(view.items).toHaveLength(2)
+    expect(view.items[0]).toMatchObject({ kind: 'tool', output: { text: 'a\nb' }, result: { text: 'exit 0' } })
+    expect(view.items[1]).toMatchObject({ kind: 'output', text: 'after' })
+  })
+
+  it('settles edit calls with their diffs', () => {
+    const diff = (seq: number, path: string, success = true) =>
+      ev(seq, 'diff', { path, old_text: 'a', new_text: 'b', success })
+    const { view } = run([
+      state(),
+      ev(1, 'tool_start', { name: 'multi_edit', primary: 'x' }),
+      diff(2, 'x.py'),
+      diff(3, 'y.py', false),
+    ])
+    expect(view.items).toHaveLength(1)
+    expect(view.items[0]).toMatchObject({ kind: 'tool', result: { success: false } })
+    const tool = view.items[0] as Extract<TimelineItem, { kind: 'tool' }>
+    expect(tool.diffs.map((d) => d.path)).toEqual(['x.py', 'y.py'])
+    const orphan = run([state(), diff(1, 'z.py')]).view
+    expect(orphan.items[0]).toMatchObject({ kind: 'diff', path: 'z.py' })
   })
 })

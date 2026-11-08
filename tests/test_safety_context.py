@@ -39,6 +39,9 @@ class _Console:
     def print(self, *args, **kwargs):
         pass
 
+    def debug(self, *args, **kwargs):
+        pass
+
     def visible(self):
         return nullcontext()
 

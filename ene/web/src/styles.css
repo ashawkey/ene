@@ -32,6 +32,8 @@
 
   --accent: #0a7aff;
   --accent-soft: rgba(10, 122, 255, 0.12);
+  --user-bg: #dcebff;
+  --user-line: rgba(10, 122, 255, 0.2);
   --accent-text: #ffffff;
   --green: #1f9d55;
   --orange: #e58a00;
@@ -80,6 +82,8 @@
   --popover: #20232c;
     --accent: #3b93ff;
     --accent-soft: rgba(59, 147, 255, 0.18);
+    --user-bg: #1d3150;
+    --user-line: rgba(59, 147, 255, 0.3);
     --green: #3ccf7a;
     --orange: #ffad33;
     --red: #ff6166;
@@ -117,6 +121,8 @@
   --popover: #20232c;
   --accent: #3b93ff;
   --accent-soft: rgba(59, 147, 255, 0.18);
+  --user-bg: #1d3150;
+  --user-line: rgba(59, 147, 255, 0.3);
   --green: #3ccf7a;
   --orange: #ffad33;
   --red: #ff6166;
@@ -514,6 +520,12 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 }
 .pane-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .pane-name { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; letter-spacing: -0.01em; min-width: 0; }
+.name-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin: -2px -6px; padding: 2px 6px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; }
+.name-btn:hover:not(:disabled) { background: var(--hover); }
+.name-pencil { flex: none; color: var(--text-3); opacity: 0; transition: opacity 0.15s; }
+.name-btn:hover .name-pencil, .name-btn:focus-visible .name-pencil { opacity: 1; }
+.name-input { min-width: 0; width: min(320px, 100%); margin: -3px -6px; padding: 2px 6px; border: 1px solid var(--accent); border-radius: 8px; outline: 0; background: var(--glass-strong); color: var(--text); font: inherit; letter-spacing: inherit; }
+@media (hover: none) { .name-pencil { opacity: 1; } }
 .pane-chips { display: flex; gap: 6px; min-width: 0; overflow: hidden; }
 .chip-procs { flex: none; }
 .header-actions { display: flex; align-items: center; gap: 2px; }
@@ -582,8 +594,8 @@ button.chip:hover { color: var(--text); background: var(--hover); }
   max-width: min(78%, 640px);
   padding: 10px 14px 6px;
   border-radius: 18px 18px 6px 18px;
-  background: var(--glass-strong);
-  border: 1px solid var(--line);
+  background: var(--user-bg);
+  border: 1px solid var(--user-line);
   color: var(--text);
 }
 .user-text { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -641,20 +653,16 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .code-block pre { margin: 0; padding: 10px 12px; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-block pre code { white-space: inherit; }
 
-/* thinking */
-.thinking { color: var(--text-2); }
-.thinking-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-3); }
-.thinking-live-text { max-height: 4.8em; overflow: hidden; font-size: 12.5px; color: var(--text-3); white-space: pre-wrap; -webkit-mask-image: linear-gradient(transparent, black 40%); mask-image: linear-gradient(transparent, black 40%); }
-.thinking-text { padding: 4px 0 4px 22px; font-size: 13px; color: var(--text-2); border-left: 2px solid var(--line); margin-left: 6px; }
-
-/* collapsibles */
-.collapsible-head {
+/* steps: thinking, tool calls, printed output, tool-call groups */
+.timeline { --step-pad: 8px; --step-col: 14px; --step-gap: 7px; --step-indent: calc(var(--step-pad) + 2 * var(--step-col) + 2 * var(--step-gap)); }
+.step { min-width: 0; }
+.step-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--step-gap);
   width: 100%;
   min-width: 0;
-  padding: 5px 8px;
+  padding: 4px var(--step-pad);
   border: 0;
   border-radius: 10px;
   background: transparent;
@@ -662,22 +670,34 @@ button.chip:hover { color: var(--text); background: var(--hover); }
   text-align: left;
   font-size: 13px;
 }
-button.collapsible-head:hover { background: var(--hover); }
-.collapsible-head.static { padding-left: 29px; cursor: default; }
+button.step-head:hover { background: var(--hover); }
+.step-chev, .step-icon { display: grid; place-items: center; flex: none; width: var(--step-col); color: var(--text-3); }
+.step-label { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; overflow: hidden; }
 .chev { flex: none; color: var(--text-3); transition: transform 0.15s; }
-.open > .collapsible-head > .chev, .open > .activity-head > .chev { transform: rotate(90deg); }
-.collapsible-body { padding: 2px 0 4px 22px; }
+.step.open > .step-head .chev { transform: rotate(90deg); }
+/* The body hangs under the label, with a guide line under the icon. */
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 2px 0 6px calc(var(--step-pad) + var(--step-col) + var(--step-gap) + var(--step-col) / 2);
+  padding-left: calc(var(--step-col) / 2 + var(--step-gap) - 1px);
+  border-left: 1px solid var(--line);
+}
+
+.thinking-text { font-size: 13px; color: var(--text-2); }
+.thinking-live-text { max-height: 4.8em; overflow: hidden; font-size: 12.5px; color: var(--text-3); white-space: pre-wrap; -webkit-mask-image: linear-gradient(transparent, black 40%); mask-image: linear-gradient(transparent, black 40%); }
 
 .tool-head { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; }
-.tool-status { display: grid; place-items: center; flex: none; color: var(--text-3); }
 .tool-name { font-weight: 600; color: var(--text); flex: none; }
 .tool-primary { font: 12px var(--mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool-qual { flex: none; font-size: 11.5px; color: var(--text-3); }
 .tool-qual::before { content: '·'; margin-right: 6px; }
 .tool.failed .tool-name { color: var(--red); }
-.tool-output, .output, .task-line {
+.output, .task-line {
   margin: 0;
-  padding: 9px 12px;
+  padding: 8px 12px;
   max-height: 340px;
   overflow: auto;
   border-radius: 10px;
@@ -688,30 +708,20 @@ button.collapsible-head:hover { background: var(--hover); }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.output-wrap { position: relative; }
+.output-wrap { position: relative; min-width: 0; }
+.step-note { font: 12px var(--mono); color: var(--text-3); }
 .output-wrap > .copy-btn { position: absolute; top: 4px; right: 4px; opacity: 0; }
 .output-wrap:hover > .copy-btn { opacity: 1; }
-.output { max-height: 480px; }
 
-.activity { border-radius: 14px; }
-.activity-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--glass-soft);
-  color: var(--text-2);
-  text-align: left;
-  font-size: 13px;
-}
-.activity-head:hover { background: var(--hover); }
+.activity-label { gap: 8px; }
 .activity-count { flex: none; font-weight: 600; color: var(--text); }
 .activity-names { display: flex; gap: 4px; overflow: hidden; min-width: 0; }
-.activity-body { padding: 4px 0 0 14px; display: flex; flex-direction: column; gap: 2px; }
+.activity-body { gap: 2px; }
 .activity-body.tail { opacity: 0.85; }
+/* Steps nested in a group sit flush with the guide line. */
+.activity-body .step-head { padding-left: 0; }
+.activity-body .step-body { margin-left: calc(var(--step-col) + var(--step-gap) + var(--step-col) / 2); }
+.activity-body .notice.debug { padding-left: calc(var(--step-col) + var(--step-gap)); }
 
 /* diffs */
 .diff { overflow: hidden; }
@@ -737,7 +747,7 @@ button.collapsible-head:hover { background: var(--hover); }
 .notice { display: flex; gap: 8px; align-items: flex-start; padding: 6px 12px; border-radius: 12px; font-size: 13px; color: var(--text-2); }
 .notice svg { flex: none; margin-top: 3px; }
 .notice-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
-.notice.debug { color: var(--text-3); font-size: 12px; padding: 2px 12px; }
+.notice.debug { color: var(--text-3); font-size: 12px; padding: 2px var(--step-pad, 8px) 2px calc(var(--step-pad, 8px) + var(--step-col, 14px) + var(--step-gap, 7px)); gap: var(--step-gap, 7px); }
 .notice.warning { background: color-mix(in srgb, var(--orange) 11%, transparent); color: var(--text); }
 .notice.warning svg { color: var(--orange); }
 .notice.error { background: color-mix(in srgb, var(--red) 11%, transparent); color: var(--text); }
@@ -1198,9 +1208,9 @@ button.collapsible-head:hover { background: var(--hover); }
 /* ---------- conversation reading size ---------- */
 
 .timeline { font-size: 15.5px; line-height: 1.65; }
-.timeline .collapsible-head, .timeline .activity-head, .timeline .notice { font-size: 14px; }
+.timeline .step-head, .timeline .notice { font-size: 14px; }
 .timeline .notice.debug { font-size: 13px; }
 .timeline .tool-primary { font-size: 13px; }
-.timeline .tool-output, .timeline .output, .timeline .diff-body, .timeline .code-block pre { font-size: 13px; }
-.timeline .diff-head, .timeline .link, .timeline .inbox-note, .timeline .thinking-head, .timeline .thinking-live-text { font-size: 13.5px; }
+.timeline .output, .timeline .diff-body, .timeline .code-block pre { font-size: 13px; }
+.timeline .diff-head, .timeline .link, .timeline .inbox-note, .timeline .thinking-live-text { font-size: 13.5px; }
 .timeline .thinking-text, .timeline .markdown table { font-size: 14.5px; }

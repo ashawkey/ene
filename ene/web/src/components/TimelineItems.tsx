@@ -17,12 +17,12 @@ import {
   Wrench,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { memo, useMemo, useState } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { parseAnsi } from '../lib/ansi'
 import { clockTime, compactNumber, duration } from '../lib/format'
 import { highlight, languageForPath } from '../lib/highlight'
-import type { TimelineItem } from '../lib/session'
+import type { DiffData, TimelineItem } from '../lib/session'
 import { summarize } from '../lib/timeline'
 import type { RoundStats } from '../lib/protocol'
 import { CopyButton, Markdown } from './Markdown'
@@ -30,27 +30,59 @@ import { Spinner } from './ui'
 
 type ItemOf<K extends TimelineItem['kind']> = Extract<TimelineItem, { kind: K }>
 
-const LONG_LINES = 18
+/** Bodies up to this many lines start open; longer ones start folded. */
+export const AUTO_FOLD_LINES = 12
 
-function Collapsible({
-  summary,
+const lineCount = (text: string) => (text ? text.split('\n').length : 0)
+
+/**
+ * One row of agent activity: chevron, icon, label, then an indented body.
+ * Thinking, tool calls, and printed output all share this layout so they
+ * align and fold the same way. *autoOpen* applies until the reader toggles.
+ */
+function Step({
+  icon,
+  label,
   children,
-  defaultOpen = false,
+  autoOpen,
   className = '',
 }: {
-  summary: ReactNode
-  children: ReactNode
-  defaultOpen?: boolean
+  icon: ReactNode
+  label: ReactNode
+  children?: ReactNode
+  autoOpen: boolean
   className?: string
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const [manual, setManual] = useState<boolean | null>(null)
+  const foldable = children !== undefined && children !== null && children !== false
+  const open = foldable && (manual ?? autoOpen)
+  const head = (
+    <>
+      <span className="step-chev">{foldable ? <ChevronRight size={14} className="chev" /> : null}</span>
+      <span className="step-icon">{icon}</span>
+      <span className="step-label">{label}</span>
+    </>
+  )
   return (
-    <div className={`collapsible ${open ? 'open' : ''} ${className}`}>
-      <button type="button" className="collapsible-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <ChevronRight size={14} className="chev" />
-        {summary}
-      </button>
-      {open ? <div className="collapsible-body">{children}</div> : null}
+    <div className={`step ${open ? 'open' : ''} ${className}`}>
+      {foldable
+        ? <button type="button" className="step-head" aria-expanded={open} onClick={() => setManual(!open)}>{head}</button>
+        : <div className="step-head">{head}</div>}
+      {open ? <div className="step-body">{children}</div> : null}
+    </div>
+  )
+}
+
+/** A monospace block with a hover copy button; *follow* keeps the tail in view. */
+function OutputBlock({ text, ansi, follow = false }: { text: string; ansi?: string | null; follow?: boolean }) {
+  const ref = useRef<HTMLPreElement>(null)
+  useLayoutEffect(() => {
+    if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [follow, text])
+  return (
+    <div className="output-wrap">
+      <pre className="output ansi" ref={ref}>{ansi ? <AnsiText text={ansi} /> : text}</pre>
+      <CopyButton text={text} label="Copy output" />
     </div>
   )
 }
@@ -105,46 +137,63 @@ export const AssistantMessage = memo(function AssistantMessage({
 })
 
 export const Thinking = memo(function Thinking({ item }: { item: ItemOf<'thinking'> }) {
-  if (item.streaming) {
-    return (
-      <div className="thinking live">
-        <div className="thinking-head"><Brain size={14} /> Thinking</div>
-        <div className="thinking-live-text">{item.text.slice(-600)}</div>
-      </div>
-    )
-  }
   const firstLine = item.text.trim().split('\n', 1)[0] ?? ''
   return (
-    <Collapsible
+    <Step
       className="thinking"
-      summary={<><Brain size={14} /><span className="muted clamp">{firstLine || 'Thought'}</span></>}
+      icon={<Brain size={14} />}
+      label={item.streaming ? 'Thinking…' : <span className="clamp">{firstLine || 'Thought'}</span>}
+      autoOpen={item.streaming}
     >
-      <div className="thinking-text"><Markdown text={item.text} /></div>
-    </Collapsible>
+      {item.streaming
+        ? <div className="thinking-live-text">{item.text.slice(-600)}</div>
+        : <div className="thinking-text"><Markdown text={item.text} /></div>}
+    </Step>
   )
 })
 
-export const ToolCall = memo(function ToolCall({ item, live }: { item: ItemOf<'tool'>; live: boolean }) {
-  const status = item.result === null
-    ? (live ? <Spinner size={13} /> : <Wrench size={13} />)
-    : item.result.success
-      ? <CircleCheck size={13} className="ok" />
-      : <CircleX size={13} className="fail" />
-  const head = (
+export const ToolCall = memo(function ToolCall({
+  item,
+  live,
+  onOpenFile,
+}: {
+  item: ItemOf<'tool'>
+  live: boolean
+  onOpenFile?: (path: string) => void
+}) {
+  const running = item.result === null && live
+  const failed = item.result?.success === false
+  const icon = item.result === null
+    ? (live ? <Spinner size={14} /> : <Wrench size={14} />)
+    : failed
+      ? <CircleX size={14} className="fail" />
+      : <CircleCheck size={14} className="ok" />
+  const label = (
     <span className="tool-head">
-      <span className="tool-status">{status}</span>
       <span className="tool-name">{item.name || 'tool'}</span>
       {item.primary ? <span className="tool-primary">{item.primary}</span> : null}
       {!item.name && item.text ? <span className="tool-primary">{item.text}</span> : null}
       {item.qualifiers.map((qualifier) => <span className="tool-qual" key={qualifier}>{qualifier}</span>)}
     </span>
   )
-  const body = item.result?.text?.trim()
-  if (!body) return <div className={`tool ${item.result?.success === false ? 'failed' : ''}`}><div className="collapsible-head static">{head}</div></div>
+  const output = item.output?.text.trim() ? item.output : null
+  const result = item.result?.text.trim() ?? ''
+  const empty = !output && !result && item.diffs.length === 0
+  // Diffs fold themselves past a screenful; text folds past a few lines.
+  const lines = lineCount(output?.text ?? '') + lineCount(result)
+  const autoOpen = failed || running || item.diffs.length > 0 || lines <= AUTO_FOLD_LINES
   return (
-    <Collapsible className={`tool ${item.result?.success === false ? 'failed' : ''}`} summary={head} defaultOpen={item.result?.success === false}>
-      <pre className="tool-output">{body}</pre>
-    </Collapsible>
+    <Step className={`tool ${failed ? 'failed' : ''}`} icon={icon} label={label} autoOpen={autoOpen}>
+      {empty ? null : (
+        <>
+          {output ? <OutputBlock text={output.text} ansi={output.ansi} follow={running} /> : null}
+          {item.diffs.map((diff, index) => <DiffCard diff={diff} key={index} onOpenFile={onOpenFile} />)}
+          {/* With output shown, the result is only its summary line. */}
+          {result && output && !result.includes('\n') ? <div className="step-note">{result}</div>
+            : result ? <OutputBlock text={result} /> : null}
+        </>
+      )}
+    </Step>
   )
 })
 
@@ -165,7 +214,7 @@ function diffRows(oldText: string, newText: string, start: number): DiffRow[] {
   return rows
 }
 
-export const DiffView = memo(function DiffView({ item, onOpenFile }: { item: ItemOf<'diff'>; onOpenFile?: (path: string) => void }) {
+export const DiffCard = memo(function DiffCard({ diff: item, onOpenFile }: { diff: DiffData; onOpenFile?: (path: string) => void }) {
   const rows = useMemo(() => diffRows(item.oldText, item.newText, item.line ?? 1), [item.oldText, item.newText, item.line])
   const language = languageForPath(item.path)
   const added = rows.filter((row) => row.sign === '+').length
@@ -239,18 +288,16 @@ function AnsiText({ text }: { text: string }) {
 }
 
 export const Output = memo(function Output({ item }: { item: ItemOf<'output'> }) {
-  const lines = item.text.split('\n').length
-  const body = <pre className="output ansi">{item.ansi !== null ? <AnsiText text={item.ansi} /> : item.text}</pre>
-  if (lines <= LONG_LINES) {
-    return <div className="output-wrap">{body}<CopyButton text={item.text} label="Copy output" /></div>
-  }
+  const lines = lineCount(item.text)
   return (
-    <Collapsible
-      className="output-fold"
-      summary={<><Terminal size={13} /><span className="muted">{lines} lines of output</span></>}
+    <Step
+      className="output-step"
+      icon={<Terminal size={14} />}
+      label={<span className="muted">{lines === 1 ? 'Output' : `Output · ${lines} lines`}</span>}
+      autoOpen={lines <= AUTO_FOLD_LINES}
     >
-      <div className="output-wrap">{body}<CopyButton text={item.text} label="Copy output" /></div>
-    </Collapsible>
+      <OutputBlock text={item.text} ansi={item.ansi} />
+    </Step>
   )
 })
 
@@ -298,25 +345,30 @@ const sameGroup = (a: GroupProps, b: GroupProps) =>
 export const ActivityGroup = memo(function ActivityGroup({ items, live, render }: GroupProps) {
   const [open, setOpen] = useState(false)
   const summary = useMemo(() => summarize(items), [items])
-  const tail = live ? items.slice(-2) : []
+  const tail = live && !open ? items.slice(-2) : []
+  const shown = open ? items : tail
   return (
-    <div className={`activity ${open ? 'open' : ''} ${live ? 'live' : ''}`}>
-      <button type="button" className="activity-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <ChevronRight size={14} className="chev" />
-        {live ? <Spinner size={13} /> : <Layers size={14} />}
-        <span className="activity-count">{summary.tools} tool calls</span>
-        <span className="activity-names">
-          {summary.names.slice(0, 4).map(([name, count]) => (
-            <span key={name} className="pill-mini">{name}{count > 1 ? ` ×${count}` : ''}</span>
-          ))}
+    <div className={`step activity ${open ? 'open' : ''} ${live ? 'live' : ''}`}>
+      <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="step-chev"><ChevronRight size={14} className="chev" /></span>
+        <span className="step-icon">{live ? <Spinner size={14} /> : <Layers size={14} />}</span>
+        <span className="step-label activity-label">
+          <span className="activity-count">{summary.tools} tool calls</span>
+          <span className="activity-names">
+            {summary.names.slice(0, 4).map(([name, count]) => (
+              <span key={name} className="pill-mini">{name}{count > 1 ? ` ×${count}` : ''}</span>
+            ))}
+          </span>
+          {summary.failed ? <span className="fail pill-mini">{summary.failed} failed</span> : null}
         </span>
-        {summary.failed ? <span className="fail pill-mini">{summary.failed} failed</span> : null}
       </button>
-      {open
-        ? <div className="activity-body">{items.map((item) => <div key={item.key} data-key={item.key}>{render(item, live)}</div>)}</div>
-        : tail.length
-          ? <div className="activity-body tail">{tail.map((item) => <div key={item.key} data-key={item.key}>{render(item, live)}</div>)}</div>
-          : null}
+      {shown.length
+        ? (
+          <div className={`step-body activity-body ${open ? '' : 'tail'}`}>
+            {shown.map((item) => <div key={item.key} data-key={item.key}>{render(item, live)}</div>)}
+          </div>
+        )
+        : null}
     </div>
   )
 }, sameGroup)

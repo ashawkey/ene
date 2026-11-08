@@ -8,7 +8,7 @@ import { groupItems, itemText } from '../lib/timeline'
 import {
   ActivityGroup,
   AssistantMessage,
-  DiffView,
+  DiffCard,
   Notice,
   Output,
   RoundChip,
@@ -158,8 +158,8 @@ export function Timeline({
       case 'user': return <UserMessage item={item} />
       case 'assistant': return <AssistantMessage item={item} round={round} onOpenStats={onOpenStats} />
       case 'thinking': return <Thinking item={item} />
-      case 'tool': return <ToolCall item={item} live={isLive} />
-      case 'diff': return <DiffView item={item} onOpenFile={onOpenFile} />
+      case 'tool': return <ToolCall item={item} live={isLive} onOpenFile={onOpenFile} />
+      case 'diff': return <DiffCard diff={item} onOpenFile={onOpenFile} />
       case 'output': return <Output item={item} />
       case 'notice': return <Notice item={item} />
       case 'round': return <div className="reply-foot"><RoundChip round={item.round} onOpen={onOpenStats} /></div>
