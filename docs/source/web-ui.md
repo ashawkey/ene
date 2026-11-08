@@ -54,6 +54,7 @@ The sidebar groups every live session on the machine:
 | **In a terminal** | Owned by a terminal | Run `/detach` or Ctrl+D there first |
 
 - **Detach:** the unlink icon in the session header. The worker keeps running.
+- **Git branch:** in a Git workspace, a header chip shows the current branch (or short commit when detached); it refreshes after each round.
 - **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
 - **State icon:** spinner = working (model call or command); hourglass = idle in the foreground while background processes run or queued input remains; check = waiting for your input. A blue dot marks sessions that finished while you were elsewhere.
 - **Collapse:** the panel icon in the sidebar header (or Ctrl/Cmd+B) shrinks the sidebar to an icon rail; click a session there to switch or attach. The choice is remembered.
@@ -76,7 +77,7 @@ The sidebar groups every live session on the machine:
 
 ## Inspector
 
-Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics) or the folder chip (Files):
+Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics), the folder or Git branch chip (Files), or the "N running" chip shown while background processes run (Tasks):
 
 | Panel | Contents |
 | --- | --- |

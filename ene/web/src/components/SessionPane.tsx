@@ -1,8 +1,9 @@
-import { ChevronDown, ChevronUp, Cpu, Folder, PanelLeft, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Cpu, Folder, GitBranch, PanelLeft, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { gitBranch } from '../lib/api'
 import { basename, compactNumber, percent } from '../lib/format'
-import type { RoundStats, SessionSummary } from '../lib/protocol'
+import type { GitBranch as GitBranchInfo, RoundStats, SessionSummary } from '../lib/protocol'
 import { contextFraction } from '../lib/session'
 import { useSession } from '../lib/useSession'
 import { Composer } from './Composer'
@@ -67,6 +68,18 @@ export function SessionPane({
   // written files).
   const filesRefresh = view.rounds.length
 
+  // The agent may switch branches, so re-check after each round as well.
+  const [branch, setBranch] = useState<GitBranchInfo | null>(null)
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    gitBranch(summary.id).then(
+      (info) => { if (!cancelled) setBranch(info.git && info.branch ? info : null) },
+      () => { if (!cancelled) setBranch(null) },
+    )
+    return () => { cancelled = true }
+  }, [active, summary.id, summary.cwd, filesRefresh])
+
   const openStats = useCallback(() => onInspector('stats'), [onInspector])
   const jumpRound = useCallback((round: RoundStats) => {
     timeline.current?.scrollToRound(round)
@@ -110,7 +123,17 @@ export function SessionPane({
               <button type="button" className="chip" onClick={() => onInspector('files')} data-tip={summary.cwd}>
                 <Folder size={12} />{basename(summary.cwd)}
               </button>
-              {model ? <span className="chip" data-tip="Model">{view.context?.model_icon ? <span>{view.context.model_icon}</span> : <Cpu size={12} />}{model}</span> : null}
+              {branch ? (
+                <button type="button" className="chip chip-branch" onClick={() => onInspector('files')} data-tip={branch.detached ? 'Detached HEAD' : 'Git branch'}>
+                  <GitBranch size={12} /><span className="clamp">{branch.branch}</span>
+                </button>
+              ) : null}
+              {view.processes.running ? (
+                <button type="button" className="chip chip-procs" onClick={() => onInspector('tasks')} data-tip="Background processes">
+                  <span className="proc-dot" />{view.processes.running} running
+                </button>
+              ) : null}
+              {model ? <span className="chip chip-model" data-tip="Model">{view.context?.model_icon ? <span>{view.context.model_icon}</span> : <Cpu size={12} />}{model}</span> : null}
             </div>
           </div>
           <span className="grow" />
@@ -125,7 +148,6 @@ export function SessionPane({
               icon={inspector ? PanelRightClose : PanelRightOpen}
               label={inspector ? 'Close panel' : 'Files, statistics, tasks, info'}
               active={inspector !== null}
-              badge={view.processes.running || null}
               onClick={() => onInspector(inspector ? null : lastInspectorTab())}
             />
             <IconButton icon={Unlink} label="Detach (keeps running)" busy={detaching} onClick={onDetach} />
@@ -190,8 +212,6 @@ export function SessionPane({
             withdrawing={session.withdrawing}
             indicator={view.indicator}
             operationSince={view.operationSince}
-            processes={view.processes}
-            onOpenTasks={() => onInspector('tasks')}
             focusSignal={focusSignal}
           />
         </div>

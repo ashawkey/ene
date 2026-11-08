@@ -1180,6 +1180,7 @@ def test_workspace_browsing_endpoints(tmp_path):
             assert client.get("/api/sessions/s1/raw", params={"path": "src/app.py"}).status_code == 415
 
             assert client.get("/api/sessions/s1/changes").json()["git"] in {True, False}
+            assert client.get("/api/sessions/s1/branch").json()["git"] in {True, False}
     finally:
         outside.unlink()
 
@@ -1213,6 +1214,28 @@ def test_git_changes_reports_workspace_relative_paths(tmp_path):
     changes = hubfiles.git_changes(sub)
     assert changes["git"] is True
     assert changes["changes"] == [{"path": "new.py", "status": "untracked", "staged": False}]
+
+
+def test_git_branch_reports_branch_unborn_and_detached(tmp_path):
+    import shutil
+    import subprocess
+
+    from ene.hub import files as hubfiles
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    assert hubfiles.git_branch(tmp_path)["git"] is False
+    subprocess.run(["git", "init", "-q", "-b", "trunk", str(tmp_path)], check=True)
+    sub = tmp_path / "pkg"
+    sub.mkdir()
+    assert hubfiles.git_branch(sub) == {"git": True, "branch": "trunk", "detached": False}
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    subprocess.run([*git, "checkout", "-q", "-b", "feature"], check=True)
+    assert hubfiles.git_branch(sub)["branch"] == "feature"
+    subprocess.run([*git, "checkout", "-q", "--detach"], check=True)
+    detached = hubfiles.git_branch(sub)
+    assert detached["detached"] is True and detached["branch"]
 
 
 def test_end_endpoint_stops_a_session_but_not_a_terminal_owned_one(monkeypatch):

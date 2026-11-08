@@ -478,7 +478,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 14px;
   height: 100%;
   min-width: 0;
   padding: 24px;
@@ -486,23 +486,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
   text-align: center;
 }
 .welcome-logo { width: 64px; height: 64px; opacity: 0.9; }
-.welcome h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; color: var(--text-2); }
-.welcome-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: min(440px, 100%); margin-top: 8px; }
-.welcome-card {
-  /* Long names and previews must truncate, not widen the card. */
-  min-width: 0;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  text-align: left;
-  color: var(--text-2);
-}
-.welcome-card:hover { color: var(--text); transform: translateY(-1px); }
-.welcome-card .session-title { display: block; }
-.welcome p { display: flex; gap: 6px; align-items: center; }
+.welcome-hint { margin: 0; font-size: 15px; color: var(--text-2); }
 .menu-btn { display: none; }
 .menu-btn.floating { position: absolute; top: 4px; left: 4px; }
 
@@ -531,6 +515,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .pane-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .pane-name { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; letter-spacing: -0.01em; min-width: 0; }
 .pane-chips { display: flex; gap: 6px; min-width: 0; overflow: hidden; }
+.chip-procs { flex: none; }
 .header-actions { display: flex; align-items: center; gap: 2px; }
 .context-btn {
   display: inline-flex;
@@ -809,7 +794,6 @@ button.collapsible-head:hover { background: var(--hover); }
 .status-live { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .status-label { font-weight: 600; color: var(--text); }
 .pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-.status-procs { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--glass); color: var(--text-2); font-size: 12px; }
 .proc-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .proc-dot.watching { background: var(--accent); }
 
@@ -1154,7 +1138,7 @@ button.collapsible-head:hover { background: var(--hover); }
   .hide-narrow { display: none; }
   .menu-btn { display: inline-grid; }
   .pane-header { left: 8px; right: 8px; top: max(8px, env(safe-area-inset-top)); padding-left: 6px; border-radius: 18px; }
-  .pane-chips .chip:nth-child(2) { display: none; }
+  .pane-chips .chip-branch, .pane-chips .chip-model { display: none; }
   .context-btn span { display: none; }
   .context-btn { padding: 0 5px; }
   .timeline { padding: 82px 12px 16px; }

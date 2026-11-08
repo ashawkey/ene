@@ -15,7 +15,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { pathCompletions } from '../lib/api'
 import { compactNumber, duration } from '../lib/format'
-import type { LiveIndicator, LiveProcesses } from '../lib/session'
+import type { LiveIndicator } from '../lib/session'
 import type { PendingMessage } from '../lib/protocol'
 import type { OutboxEntry } from '../lib/useSession'
 import { IconButton, Spinner, useNow } from './ui'
@@ -41,8 +41,6 @@ export function Composer({
   withdrawing,
   indicator,
   operationSince,
-  processes,
-  onOpenTasks,
   focusSignal,
 }: {
   sessionId: string
@@ -60,8 +58,6 @@ export function Composer({
   withdrawing: boolean
   indicator: LiveIndicator | null
   operationSince: number | null
-  processes: LiveProcesses
-  onOpenTasks: () => void
   focusSignal: number
 }) {
   const field = useRef<HTMLTextAreaElement>(null)
@@ -240,8 +236,6 @@ export function Composer({
         indicator={indicator}
         busy={busy}
         since={operationSince}
-        processes={processes}
-        onOpenTasks={onOpenTasks}
       />
       {outbox.length || pending ? (
         <div className="queue">
@@ -335,18 +329,13 @@ function StatusStrip({
   indicator,
   busy,
   since,
-  processes,
-  onOpenTasks,
 }: {
   indicator: LiveIndicator | null
   busy: boolean
   since: number | null
-  processes: LiveProcesses
-  onOpenTasks: () => void
 }) {
-  const now = useNow(busy || processes.running > 0)
-  const running = processes.running
-  if (!busy && !running) return null
+  const now = useNow(busy)
+  if (!busy) return null
   const started = indicator?.started_at ?? since
   const elapsed = started ? now / 1000 - started : 0
   const countdown = indicator?.countdown
@@ -365,12 +354,6 @@ function StatusStrip({
           ) : indicator?.suffix ? <span className="muted clamp">{indicator.suffix}</span> : null}
           <span className="muted kbd">esc</span>
         </span>
-      ) : null}
-      {running ? (
-        <button type="button" className="status-procs" onClick={onOpenTasks} data-tip="Background processes">
-          <span className="proc-dot" />
-          {running} running
-        </button>
       ) : null}
     </div>
   )

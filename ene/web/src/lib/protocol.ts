@@ -170,6 +170,12 @@ export type GitChange = {
   staged: boolean
 }
 
+export type GitBranch = {
+  git: boolean
+  branch: string
+  detached: boolean
+}
+
 export type GitChanges = {
   git: boolean
   branch: string

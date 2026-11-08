@@ -1,4 +1,4 @@
-import { Link2, PanelLeft, Plus, Terminal } from 'lucide-react'
+import { PanelLeft } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Login } from './components/Login'
@@ -7,7 +7,7 @@ import type { InspectorTab } from './components/Inspector'
 import { rememberInspectorTab } from './components/Inspector'
 import { SessionPane } from './components/SessionPane'
 import { Sidebar } from './components/Sidebar'
-import { IconButton, LinkBanner, Spinner, StateIcon, Toasts, useMedia } from './components/ui'
+import { IconButton, LinkBanner, Spinner, Toasts, useMedia } from './components/ui'
 import { attachSession, detachSession, endSession, errorMessage, logout, setCsrf } from './lib/api'
 import { basename } from './lib/format'
 import type { SessionSummary } from './lib/protocol'
@@ -206,8 +206,6 @@ export default function App() {
     )
   }
 
-  const available = sessions.filter((session) => !session.attached_by)
-
   return (
     <div className={`app ${inspector ? 'with-inspector' : ''} ${rail ? 'rail-mode' : ''}`}>
       <Sidebar
@@ -252,27 +250,7 @@ export default function App() {
           <div className="welcome">
             <IconButton icon={PanelLeft} label="Sessions" className="menu-btn floating" onClick={() => setSidebarOpen(true)} />
             <img src="/favicon.svg" alt="" className="welcome-logo" />
-            <h1>No session open</h1>
-            <button type="button" className="btn primary large" onClick={() => setCreating(true)}>
-              <Plus size={17} />New session
-            </button>
-            {available.length ? (
-              <div className="welcome-list">
-                {available.slice(0, 6).map((session) => (
-                  <button type="button" key={session.id} className="welcome-card glass" disabled={busyId !== null} onClick={() => attach(session.id)}>
-                    <StateIcon state={session.state} />
-                    <span className="session-text">
-                      <span className="session-title clamp">{session.name || basename(session.cwd)}</span>
-                      <span className="session-sub clamp">{session.preview || session.cwd}</span>
-                    </span>
-                    {busyId === session.id ? <Spinner size={14} /> : <Link2 size={15} />}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {sessions.some((session) => session.attached_by === 'terminal') ? (
-              <p className="muted small"><Terminal size={12} /> Sessions open in a terminal can be attached after <code>/detach</code> there.</p>
-            ) : null}
+            <p className="welcome-hint">Start or attach a session from the sidebar.</p>
           </div>
         ) : null}
       </main>

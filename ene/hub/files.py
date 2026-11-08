@@ -175,6 +175,35 @@ _GIT_CODES = {
 }
 
 
+def git_branch(root: str | Path) -> dict:
+    """Current branch (or short commit when detached); ``git: False`` outside a repo."""
+    base, _ = resolve_in_workspace(root, "")
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+        if head.returncode != 0:
+            # An unborn branch has no HEAD commit yet but still has a name.
+            unborn = subprocess.run(
+                ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+                cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+            )
+            if unborn.returncode != 0:
+                return {"git": False, "branch": "", "detached": False}
+            return {"git": True, "branch": unborn.stdout.strip(), "detached": False}
+        branch = head.stdout.strip()
+        if branch != "HEAD":
+            return {"git": True, "branch": branch, "detached": False}
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        ).stdout.strip()
+        return {"git": True, "branch": commit, "detached": True}
+    except (OSError, subprocess.SubprocessError):
+        return {"git": False, "branch": "", "detached": False}
+
+
 def git_changes(root: str | Path) -> dict:
     """Summarize ``git status`` for the workspace; ``git: False`` outside a repo."""
     base, _ = resolve_in_workspace(root, "")

@@ -1333,6 +1333,11 @@ class Hub:
             require_login(request)
             return await browse_call(hubfiles.git_changes, session_workspace(session_id))
 
+        @app.get("/api/sessions/{session_id}/branch")
+        async def workspace_branch(request: Request, session_id: str):
+            require_login(request)
+            return await browse_call(hubfiles.git_branch, session_workspace(session_id))
+
         # -- browser websocket: control channel or per-session stream -------
 
         @app.websocket("/api/ws")
