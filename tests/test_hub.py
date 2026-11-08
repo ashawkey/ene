@@ -230,7 +230,8 @@ def test_browser_websockets_answer_heartbeats():
         client.post("/api/login", json={"token": "correct-token"})
         headers = {"origin": "http://testserver"}
         with client.websocket_connect("/api/ws", headers=headers) as control:
-            assert receive_type(control, "sessions")["type"] == "sessions"
+            listing = receive_type(control, "sessions")
+            assert listing["host"] == hub.hostname
             control.send_json({"type": "ping"})
             assert receive_type(control, "pong")["type"] == "pong"
             # A malformed frame must not tear down the control channel.

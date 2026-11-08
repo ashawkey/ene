@@ -29,6 +29,9 @@ export default function App() {
   // null: unknown (connecting), false: needs login, true: signed in.
   const [auth, setAuth] = useState<boolean | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  // The hub's machine name, used to tell several hubs apart; falls back to
+  // the address in the URL until the hub reports it.
+  const [host, setHost] = useState(() => location.hostname || 'ene')
   const [activeId, setActiveId] = useState<string | null>(() => store.get('ene.active'))
   const [busyId, setBusyId] = useState<string | null>(null)
   const [unread, setUnread] = useState<Set<string>>(new Set())
@@ -83,6 +86,7 @@ export default function App() {
     onMessage: (message) => {
       if (message.type !== 'sessions') return
       if (typeof message.csrf === 'string') setCsrf(message.csrf)
+      if (typeof message.host === 'string' && message.host) setHost(message.host)
       setAuth(true)
       const list = Array.isArray(message.sessions) ? (message.sessions as SessionSummary[]) : []
       // A session that finishes while not in view gets an unread marker.
@@ -193,8 +197,8 @@ export default function App() {
   const activeSession = attached.find((session) => session.id === activeId)
   useEffect(() => {
     const name = activeSession ? activeSession.name || basename(activeSession.cwd) : ''
-    document.title = `${reviewCount ? `(${reviewCount}) ` : ''}${name ? `${name} · ` : ''}ene`
-  }, [reviewCount, activeSession])
+    document.title = `${reviewCount ? `(${reviewCount}) ` : ''}${name ? `${name} · ` : ''}${host}`
+  }, [reviewCount, activeSession, host])
 
   if (auth === false) return <><Login onSuccess={() => setAuth(null)} /><Toasts /></>
   if (auth === null) {
@@ -210,6 +214,7 @@ export default function App() {
     <div className={`app ${inspector ? 'with-inspector' : ''} ${rail ? 'rail-mode' : ''}`}>
       <Sidebar
         sessions={sessions}
+        host={host}
         activeId={activeId}
         unread={unread}
         busyId={busyId}

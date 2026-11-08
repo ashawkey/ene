@@ -88,6 +88,7 @@ function SessionRow({
 
 export function Sidebar({
   sessions,
+  host,
   activeId,
   unread,
   busyId,
@@ -106,6 +107,8 @@ export function Sidebar({
   onLogout,
 }: {
   sessions: SessionSummary[]
+  /** Hub machine name shown in place of the product name. */
+  host: string
   activeId: string | null
   unread: Set<string>
   busyId: string | null
@@ -193,7 +196,7 @@ export function Sidebar({
       <nav className={`sidebar glass ${open ? 'open' : ''}`} aria-label="Sessions">
         <div className="sidebar-head">
           <img src="/favicon.svg" alt="" className="logo" />
-          <span className="brand">ene</span>
+          <span className="brand" title={host}>{host}</span>
           <span className="grow" />
           <IconButton icon={Plus} label="New session" tone="accent" onClick={onNew} />
           <IconButton icon={PanelLeftClose} label="Collapse sidebar (Ctrl+B)" className="hide-narrow" onClick={onToggleRail} />

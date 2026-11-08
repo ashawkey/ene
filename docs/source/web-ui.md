@@ -58,6 +58,7 @@ The sidebar groups every live session on the machine:
 - **Git branch:** in a Git workspace, a header chip shows the current branch (or short commit when detached); it refreshes after each round.
 - **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
 - **State icon:** spinner = working (model call or command); hourglass = idle in the foreground while background processes run or queued input remains; check = waiting for your input. A blue dot marks sessions that finished while you were elsewhere.
+- **Hub name:** the sidebar header and browser tab title show the hub machine's hostname, so tabs from different hubs stay distinguishable.
 - **Collapse:** the panel icon in the sidebar header (or Ctrl/Cmd+B) shrinks the sidebar to an icon rail; click a session there to switch or attach. The choice is remembered.
 
 ## Conversation

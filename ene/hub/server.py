@@ -516,6 +516,8 @@ class Hub:
         self.host = HUB_BIND_HOST
         self.local_ipv4 = _local_ipv4()
         self.fqdn = socket.getfqdn()
+        # Shown in the browser header and tab title to tell hubs apart.
+        self.hostname = socket.gethostname() or self.local_ipv4
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.console = console
@@ -1414,6 +1416,7 @@ class Hub:
         await websocket.send_json({
             "type": "sessions",
             "csrf": csrf,
+            "host": self.hostname,
             "sessions": self._session_list(),
         })
         seq = self._control.latest_seq

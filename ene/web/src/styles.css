@@ -390,7 +390,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .sidebar { display: flex; flex-direction: column; min-height: 0; border-radius: var(--radius); overflow: hidden; }
 .sidebar-head { display: flex; align-items: center; gap: 8px; padding: 12px 10px 8px 14px; }
 .sidebar-head .logo { width: 24px; height: 24px; }
-.brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+.brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .filter {
   display: flex;
   align-items: center;
