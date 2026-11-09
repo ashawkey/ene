@@ -1,13 +1,16 @@
 import { Check, Copy } from 'lucide-react'
-import { memo, useMemo, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { createContext, memo, useContext, useMemo, useState } from 'react'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { highlight } from '../lib/highlight'
+import { fileTarget, isExternalHref, isWebUrl, remarkLinks } from '../lib/links'
 import { copyText } from './ui'
 
-export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+export function CopyButton({ text, label = 'Copy', icon: Icon = Copy }: { text: string; label?: string; icon?: LucideIcon }) {
   const [done, setDone] = useState(false)
   return (
     <button
@@ -23,7 +26,7 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
         }
       }}
     >
-      {done ? <Check size={14} /> : <Copy size={14} />}
+      {done ? <Check size={14} /> : <Icon size={14} />}
     </button>
   )
 }
@@ -45,6 +48,36 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: { code: str
   )
 })
 
+/** Opens a workspace file in the viewer; absent outside a session timeline. */
+export const OpenFileContext = createContext<((path: string) => void) | null>(null)
+
+function SmartLink({ href, children }: { href: string; children: ReactNode }) {
+  const openFile = useContext(OpenFileContext)
+  if (isWebUrl(href) || href.startsWith('#')) {
+    return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+  }
+  const target = !isExternalHref(href) || /^file:/i.test(href) ? fileTarget(decode(href)) : null
+  if (target && openFile) {
+    return (
+      <button type="button" className="file-link" data-tip={`Open ${target.path}`} onClick={() => openFile(target.path)}>
+        {children}
+      </button>
+    )
+  }
+  return <>{children}</>
+}
+
+function decode(href: string) {
+  try {
+    return decodeURI(href)
+  } catch {
+    return href
+  }
+}
+
+// Keep file: links for the viewer; every other scheme uses the safe default.
+const urlTransform = (url: string) => (/^file:/i.test(url) ? url : defaultUrlTransform(url))
+
 const components: Components = {
   code({ className, children, ...props }) {
     const match = /language-([\w+-]+)/.exec(className || '')
@@ -53,14 +86,16 @@ const components: Components = {
     if (match || text.includes('\n')) {
       return <CodeBlock code={text.replace(/\n$/, '')} language={match?.[1] ?? null} />
     }
-    return <code className="inline-code" {...props}>{children}</code>
+    const inline = <code className="inline-code" {...props}>{children}</code>
+    // Code naming a file or URL gets a link around it; the text is unchanged.
+    if (isWebUrl(text) && !/\s/.test(text)) return <SmartLink href={text}>{inline}</SmartLink>
+    return fileTarget(text) ? <SmartLink href={text}>{inline}</SmartLink> : inline
   },
   pre({ children }) {
     return <>{children}</>
   },
   a({ href, children }) {
-    const safe = href && /^(https?:|mailto:|#)/i.test(href) ? href : undefined
-    return <a href={safe} target="_blank" rel="noopener noreferrer">{children}</a>
+    return <SmartLink href={href ?? ''}>{children}</SmartLink>
   },
   table({ children }) {
     return <div className="table-wrap"><table>{children}</table></div>
@@ -101,9 +136,11 @@ export function splitBlocks(text: string): string[] {
   return blocks
 }
 
+const REMARK_PLUGINS = [remarkGfm, remarkLinks]
+
 const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} skipHtml>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform} skipHtml>
       {text}
     </ReactMarkdown>
   )

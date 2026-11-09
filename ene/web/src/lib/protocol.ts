@@ -95,6 +95,15 @@ export type RoundStats = {
   tool_failures: number
   edits: number
   cancelled: boolean
+  model_calls: number
+  /** Seconds spent waiting on model requests. */
+  model_time: number
+  /** Seconds spent running tool calls. */
+  tool_time: number
+  /** Mean time to first token over the round's streamed requests. */
+  ttft: number | null
+  /** Output tokens per second while generating. */
+  tps: number | null
 }
 
 export type StateFrame = {

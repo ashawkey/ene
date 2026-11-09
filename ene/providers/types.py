@@ -87,8 +87,10 @@ class CompletionStream(ABC):
         on_content: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        on_first_token: Callable[[], None] | None = None,
     ) -> CompletionResult:
-        pass
+        """Fold the stream into a result. *on_first_token* fires once, when
+        the first generated output (text, reasoning, or tool call) arrives."""
 
     @abstractmethod
     def close(self) -> None:

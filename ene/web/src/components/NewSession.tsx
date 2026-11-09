@@ -6,6 +6,7 @@ import { basename } from '../lib/format'
 import type { ConversationSummary, FsListing, SessionOptions, SessionSummary } from '../lib/protocol'
 import { store } from '../lib/storage'
 import { IconButton, Modal, Spinner } from './ui'
+import { NO_AUTOFILL } from '../lib/noAutofill'
 
 const LAST = 'ene.new.last'
 
@@ -144,6 +145,7 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
           <span className="field-label"><FolderOpen size={14} />Working directory</span>
           <div className="input-row">
             <input
+              {...NO_AUTOFILL}
               value={cwd}
               onChange={(event) => setCwd(event.target.value)}
               placeholder="/path/to/project"
@@ -168,7 +170,7 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
         <div className="field-grid">
           <label className="field">
             <span className="field-label"><Tag size={14} />Name</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="optional" />
+            <input {...NO_AUTOFILL} value={name} onChange={(event) => setName(event.target.value)} placeholder="optional" />
           </label>
           <label className="field">
             <span className="field-label"><Cpu size={14} />Model</span>

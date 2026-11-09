@@ -108,6 +108,8 @@ export function initialView(): SessionView {
 }
 
 const str = (value: unknown, fallback = '') => (typeof value === 'string' ? value : fallback)
+const optionalNum = (value: unknown) =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 const num = (value: unknown, fallback = 0) =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback
 
@@ -168,6 +170,11 @@ function parseRound(data: Record<string, unknown>, startSeq = 0): RoundStats | n
     tool_failures: num(data.tool_failures),
     edits: num(data.edits),
     cancelled: data.cancelled === true,
+    model_calls: num(data.model_calls),
+    model_time: num(data.model_time),
+    tool_time: num(data.tool_time),
+    ttft: optionalNum(data.ttft),
+    tps: optionalNum(data.tps),
   }
 }
 
@@ -559,19 +566,31 @@ export function contextFraction(context: ContextSnapshot | null): number | null 
 export type Totals = {
   rounds: number
   duration: number
+  modelTime: number
+  toolTime: number
   input: number
   output: number
   cached: number
   tools: number
   failures: number
   edits: number
+  /** Mean of the per-round figures, over rounds that measured them. */
+  ttft: number | null
+  tps: number | null
+}
+
+const mean = (values: Array<number | null>) => {
+  const known = values.filter((value): value is number => value !== null)
+  return known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : null
 }
 
 export function totals(rounds: RoundStats[]): Totals {
-  return rounds.reduce<Totals>(
+  const sum = rounds.reduce(
     (acc, round) => ({
       rounds: acc.rounds + 1,
       duration: acc.duration + round.duration,
+      modelTime: acc.modelTime + round.model_time,
+      toolTime: acc.toolTime + round.tool_time,
       input: acc.input + round.input_tokens,
       output: acc.output + round.output_tokens,
       cached: acc.cached + round.cached_tokens,
@@ -579,6 +598,7 @@ export function totals(rounds: RoundStats[]): Totals {
       failures: acc.failures + round.tool_failures,
       edits: acc.edits + round.edits,
     }),
-    { rounds: 0, duration: 0, input: 0, output: 0, cached: 0, tools: 0, failures: 0, edits: 0 },
+    { rounds: 0, duration: 0, modelTime: 0, toolTime: 0, input: 0, output: 0, cached: 0, tools: 0, failures: 0, edits: 0 },
   )
+  return { ...sum, ttft: mean(rounds.map((round) => round.ttft)), tps: mean(rounds.map((round) => round.tps)) }
 }

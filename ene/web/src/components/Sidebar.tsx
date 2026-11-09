@@ -7,6 +7,7 @@ import type { SessionSummary } from '../lib/protocol'
 import type { LinkStatus } from '../lib/socket'
 import type { ThemeChoice } from '../lib/theme'
 import { IconButton, LinkDot, Spinner, STATE_LABEL, StateIcon } from './ui'
+import { NO_AUTOFILL } from '../lib/noAutofill'
 
 
 // The rail does not scroll (it would clip tooltips); the rest is a click away.
@@ -219,6 +220,7 @@ export function Sidebar({
         <label className="filter">
           <Search size={14} />
           <input
+            {...NO_AUTOFILL}
             ref={searchRef}
             value={filter}
             placeholder="Search sessions  ⌘K"

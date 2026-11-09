@@ -39,6 +39,18 @@ def _usage(**kw):
     return NS(**kw)
 
 
+def test_consume_stream_reports_first_token_once_on_real_output():
+    seen = []
+    stream = [
+        _chunk(_delta(role="assistant")),
+        _chunk(_delta(tool_calls=[_tc(0, id="c1", name="read_file", args="{")])),
+        _chunk(_delta(tool_calls=[_tc(0, args="}")])),
+    ]
+    consume_stream(stream, should_stop=lambda: seen.append("chunk") and False,
+                   on_first_token=lambda: seen.append("first"))
+    assert seen.count("first") == 1 and seen.index("first") == 2
+
+
 def test_consume_stream_accumulates_content_and_calls_back():
     parts = []
     stream = [

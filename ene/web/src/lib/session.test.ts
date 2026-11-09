@@ -81,10 +81,22 @@ describe('session reducer', () => {
     ])
     expect(view.items.filter((item) => item.kind === 'round')).toHaveLength(1)
     expect(view.rounds.map((item) => [item.id, item.start_seq])).toEqual([['saved', 0], ['r1', 1]])
-    expect(totals(view.rounds)).toMatchObject({ rounds: 2, input: 30, output: 1, tools: 1 })
+    expect(totals(view.rounds)).toMatchObject({ rounds: 2, input: 30, output: 1, tools: 1, ttft: null, tps: null })
     // A rewind replaces the list but keeps anchors learned from the stream.
     const rewound = run([ev(4, 'round_history', { rounds: [{ id: 'r1' }] })], view).view
     expect(rewound.rounds.map((item) => [item.id, item.start_seq])).toEqual([['r1', 1]])
+  })
+
+  it('parses model/tool time and streaming latency, averaging measured rounds', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'round_stats', { id: 'a', duration: 10, model_calls: 2, model_time: 6, tool_time: 3, ttft: 0.5, tps: 40 }),
+      ev(2, 'round_stats', { id: 'b', duration: 4, model_time: 4, ttft: 1.5, tps: 60 }),
+      ev(3, 'round_stats', { id: 'c', duration: 1, ttft: null }),
+    ])
+    expect(view.rounds[0]).toMatchObject({ model_calls: 2, model_time: 6, tool_time: 3, ttft: 0.5, tps: 40 })
+    expect(view.rounds[2]).toMatchObject({ model_time: 0, ttft: null, tps: null })
+    expect(totals(view.rounds)).toMatchObject({ modelTime: 10, toolTime: 3, ttft: 1, tps: 50 })
   })
 
   it('reports acknowledgements, rejections and withdrawals as signals', () => {

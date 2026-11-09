@@ -21,6 +21,7 @@ import type { PendingMessage } from '../lib/protocol'
 import { store } from '../lib/storage'
 import type { OutboxEntry } from '../lib/useSession'
 import { IconButton, Spinner, useNow } from './ui'
+import { NO_AUTOFILL } from '../lib/noAutofill'
 
 type Suggestion = { value: string; label: string; detail: string; kind: 'command' | 'path' }
 
@@ -310,6 +311,7 @@ export function Composer({
           </div>
         ) : null}
         <textarea
+          {...NO_AUTOFILL}
           ref={field}
           rows={1}
           value={draft}

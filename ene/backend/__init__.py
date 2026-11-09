@@ -198,6 +198,24 @@ def _strip_at_marks(query: str) -> str:
     return _AT_PATH_RE.sub(r"\1", query)
 
 
+def _note_call_timing(agent: Any, started: float, result: Any) -> None:
+    """Record one model request's timing (and TTFT when streamed) for round stats."""
+    note = getattr(agent, "_note_model_call", None)
+    if note is None:
+        return
+    elapsed = time.monotonic() - started
+    if result is None:
+        note(elapsed)
+        return
+    first = getattr(agent, "_first_token_at", None)
+    usage = getattr(result, "usage", None)
+    note(
+        elapsed,
+        ttft=first - started if first is not None else None,
+        output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+    )
+
+
 def _repair_tool_call_arguments(message: Message) -> Message:
     """Return a copy of *message* with any unparseable tool-call arguments fixed.
 
@@ -694,11 +712,17 @@ class LLMAgent(
         wait_time = self.INITIAL_BACKOFF
         while True:
             try:
-                result = (
-                    self._stream_completion(request)
-                    if self.stream
-                    else self._blocking_completion(request)
-                )
+                self._first_token_at = None
+                t_call = time.monotonic()
+                result = None
+                try:
+                    result = (
+                        self._stream_completion(request)
+                        if self.stream
+                        else self._blocking_completion(request)
+                    )
+                finally:
+                    _note_call_timing(self, t_call, result)
                 break
             except RequestInterrupted:
                 raise  # user cancelled — never retry, let get_response roll back
@@ -975,6 +999,10 @@ class LLMAgent(
             raise RuntimeError("Compaction summary was truncated by the output token limit")
         return summary
 
+    def _mark_first_token(self) -> None:
+        if getattr(self, "_first_token_at", None) is None:
+            self._first_token_at = time.monotonic()
+
     def _blocking_completion(self, request: CompletionRequest):
         """Execute a non-streaming provider request with cancellation."""
         with self.console.thinking(status_suffix=self._status_suffix()):
@@ -994,6 +1022,7 @@ class LLMAgent(
                     return stream.consume(
                         on_content=sink.on_content,
                         on_thinking=sink.on_thinking,
+                        on_first_token=getattr(self, "_mark_first_token", None),
                         should_stop=lambda: (
                             self.cancellation is not None
                             and self.cancellation.cancelled
@@ -1433,7 +1462,13 @@ class LLMAgent(
                     self.console.debug(f"Turn complete: {iteration} iteration(s) in {turn_elapsed:.1f}s")
                 return content or None
 
-            outcome = self.execute_tool_calls(message.tool_calls)
+            t_tools = time.monotonic()
+            try:
+                outcome = self.execute_tool_calls(message.tool_calls)
+            finally:
+                note_tool_time = getattr(self, "_note_tool_time", None)
+                if note_tool_time is not None:
+                    note_tool_time(time.monotonic() - t_tools)
             # A skill loaded this round may contribute tools; `self.tools` is a
             # live registry view, so the next loop iteration advertises them
             # automatically with no manual rebuild.

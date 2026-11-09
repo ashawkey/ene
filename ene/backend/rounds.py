@@ -1,8 +1,9 @@
 """Per-round usage statistics, recorded by the agent and saved with the session.
 
 A round is one agent turn (a user message, a queued notification, or
-``/continue``). Its record holds wall time, the token deltas of the session
-counters, and tool activity. Every terminal or web session records rounds the
+``/continue``). Its record holds wall time split into model and tool time, the
+token deltas of the session counters, streaming latency (mean time to first
+token and output tokens per second), and tool activity. Every terminal or web session records rounds the
 same way, because this runs inside the agent rather than in a client.
 
 Persistence: each session revision stores only the *latest* round in its state
@@ -24,6 +25,8 @@ from ene.messages import ORIGIN_INBOX, ROLE_USER
 
 MAX_ROUND_HISTORY = 500
 PROMPT_PREVIEW = 120
+# Generation shorter than this is too short to time (a buffered response).
+MIN_DECODE_SECONDS = 0.05
 _TOKEN_KEYS = (
     ("input_tokens", "prompt"),
     ("cached_tokens", "cached_prompt"),
@@ -95,6 +98,13 @@ class RoundStatsMixin:
             "tool_calls": 0,
             "tool_failures": 0,
             "edits": 0,
+            "model_calls": 0,
+            "model_time": 0.0,
+            "tool_time": 0.0,
+            "ttft_total": 0.0,
+            "ttft_count": 0,
+            "decode_time": 0.0,
+            "decode_tokens": 0,
         }
         try:
             yield
@@ -116,6 +126,36 @@ class RoundStatsMixin:
             current["tool_failures"] += 1
         current["edits"] += edits
 
+    def _note_model_call(
+        self,
+        elapsed: float,
+        *,
+        ttft: float | None = None,
+        output_tokens: int = 0,
+    ) -> None:
+        """Record one model request: wall time, time to first token, and the
+        output tokens generated after it (for tokens per second)."""
+        current = self._round_state()["current"]
+        if current is None:
+            return
+        current["model_calls"] += 1
+        current["model_time"] += max(0.0, elapsed)
+        if ttft is None:
+            return
+        ttft = max(0.0, min(ttft, elapsed))
+        current["ttft_total"] += ttft
+        current["ttft_count"] += 1
+        decode = elapsed - ttft
+        # A response delivered in one burst has no measurable generation time.
+        if decode >= MIN_DECODE_SECONDS and output_tokens > 0:
+            current["decode_time"] += decode
+            current["decode_tokens"] += output_tokens
+
+    def _note_tool_time(self, elapsed: float) -> None:
+        current = self._round_state()["current"]
+        if current is not None:
+            current["tool_time"] += max(0.0, elapsed)
+
     def _finish_round(self, current: dict[str, Any] | None) -> None:
         if current is None:
             return
@@ -134,6 +174,17 @@ class RoundStatsMixin:
             "tool_failures": current["tool_failures"],
             "edits": current["edits"],
             "cancelled": bool(getattr(self, "_last_interrupted", False)),
+            "model_calls": current["model_calls"],
+            "model_time": round(current["model_time"], 3),
+            "tool_time": round(current["tool_time"], 3),
+            "ttft": (
+                round(current["ttft_total"] / current["ttft_count"], 3)
+                if current["ttft_count"] else None
+            ),
+            "tps": (
+                round(current["decode_tokens"] / current["decode_time"], 1)
+                if current["decode_time"] > 0 else None
+            ),
         }
         outcome = getattr(self, "_last_turn_outcome", None)
         record["outcome"] = str(getattr(outcome, "value", outcome or ""))
@@ -193,9 +244,12 @@ class RoundStatsMixin:
         if not history:
             return []
         total_time = sum(item.get("duration", 0) for item in history)
+        model_time = sum(item.get("model_time", 0) for item in history)
+        tool_time = sum(item.get("tool_time", 0) for item in history)
         tools = sum(item.get("tool_calls", 0) for item in history)
         lines = [
-            f"  Rounds         : {len(history)} · {format_duration(total_time)} agent time · {tools} tool calls",
+            f"  Rounds         : {len(history)} · {format_duration(total_time)} agent time "
+            f"(model {format_duration(model_time)}, tools {format_duration(tool_time)}) · {tools} tool calls",
         ]
         for item in history[-limit:]:
             hit = (
@@ -203,12 +257,13 @@ class RoundStatsMixin:
                 if item.get("input_tokens") else 0.0
             )
             flags = " (stopped)" if item.get("cancelled") else ""
+            speed = f" · {item['tps']:.0f} tok/s" if item.get("tps") else ""
             prompt = item.get("prompt") or f"[{item.get('kind', 'round')}]"
             if len(prompt) > 28:
                 prompt = prompt[:27] + "…"
             lines.append(
                 f"    #{item.get('index', 0):<4} {format_duration(item.get('duration', 0)):>7} "
                 f"↑{compact_tokens(item.get('input_tokens', 0)):>6} ↓{compact_tokens(item.get('output_tokens', 0)):>6} "
-                f"{hit:>4.0%} cached · {item.get('tool_calls', 0)} tools{flags}  {prompt}"
+                f"{hit:>4.0%} cached · {item.get('tool_calls', 0)} tools{speed}{flags}  {prompt}"
             )
         return lines

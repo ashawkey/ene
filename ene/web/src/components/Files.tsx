@@ -12,6 +12,7 @@ import {
   FolderGit2,
   GitBranch,
   House,
+  Link,
   RefreshCw,
   Search,
   X,
@@ -27,6 +28,7 @@ import { store } from '../lib/storage'
 import { CopyButton, Markdown } from './Markdown'
 import { SplitDiff } from './SplitDiff'
 import { Empty, IconButton, Modal, Spinner } from './ui'
+import { NO_AUTOFILL } from '../lib/noAutofill'
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i
 const CODE_EXT = /\.(py|pyi|js|jsx|ts|tsx|mjs|cjs|json|ya?ml|toml|ini|cfg|sh|bash|zsh|rs|go|java|c|h|cc|cpp|hpp|cu|css|scss|html|xml|sql|lua|rb|php|swift|kt)$/i
@@ -166,7 +168,7 @@ export const FileBrowser = memo(function FileBrowser({
       {!changesOnly ? (
         <label className="filter">
           <Search size={14} />
-          <input value={filter} placeholder="Filter this folder" onChange={(event) => setFilter(event.target.value)} />
+          <input {...NO_AUTOFILL} value={filter} placeholder="Filter this folder" onChange={(event) => setFilter(event.target.value)} />
           {filter ? <button type="button" aria-label="Clear filter" onClick={() => setFilter('')}><X size={13} /></button> : null}
         </label>
       ) : null}
@@ -342,7 +344,7 @@ export const FileViewer = memo(function FileViewer({
           <IconButton icon={rendered ? FileCode : FileText} size="sm" label={rendered ? 'Show source' : 'Render markdown'} onClick={() => setRendered(!rendered)} />
         ) : null}
         <IconButton icon={AtSign} size="sm" label="Mention in message" onClick={() => onMention(path)} />
-        <CopyButton text={path} label="Copy path" />
+        <CopyButton text={path} label="Copy path" icon={Link} />
         {file?.kind === 'text' ? <CopyButton text={text} label="Copy contents" /> : null}
         <IconButton icon={RefreshCw} size="sm" label="Reload" onClick={() => setTick(tick + 1)} />
         <IconButton icon={X} size="sm" label="Close (Esc)" onClick={onClose} />

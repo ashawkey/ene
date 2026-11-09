@@ -150,3 +150,44 @@ def test_shell_commands_are_not_rounds(monkeypatch, tmp_path):
         assert agent.round_history == []
     finally:
         agent.close()
+
+
+def test_rounds_split_model_and_tool_time_with_latency(monkeypatch, tmp_path):
+    agent = make_agent(monkeypatch, tmp_path, [])
+    try:
+        with agent._track_round():
+            agent._note_model_call(2.0, ttft=0.5, output_tokens=300)
+            agent._note_tool_time(1.25)
+            agent._note_model_call(1.0, ttft=0.3, output_tokens=100)
+            agent._note_model_call(0.4)  # not streamed: no latency figures
+        record = agent.round_history[-1]
+        assert record["model_calls"] == 3
+        assert record["model_time"] == 3.4 and record["tool_time"] == 1.25
+        assert record["ttft"] == 0.4
+        assert record["tps"] == round(400 / 2.2, 1)
+
+        with agent._track_round():
+            agent._note_model_call(0.4)
+        assert agent.round_history[-1]["ttft"] is None
+        assert agent.round_history[-1]["tps"] is None
+    finally:
+        agent.close()
+
+
+def test_rounds_time_real_model_calls_and_tools(monkeypatch, tmp_path):
+    (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
+    read = ToolCall(id="c1", name="read_file", arguments=json.dumps({"file": "notes.txt"}))
+    agent = make_agent(monkeypatch, tmp_path, [
+        (Message.assistant(None, tool_calls=[read]), usage(10, 5)),
+        (Message.assistant("Done."), usage(20, 5)),
+    ])
+    try:
+        agent._initialize_chat_session()
+        run(agent, "read")
+        record = agent.round_history[-1]
+        assert record["model_calls"] == 2
+        assert record["model_time"] >= 0 and record["tool_time"] >= 0
+        assert record["model_time"] + record["tool_time"] <= record["duration"] + 0.01
+        assert record["ttft"] is None  # blocking requests have no first-token time
+    finally:
+        agent.close()

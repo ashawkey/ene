@@ -16,6 +16,7 @@ import {
   ToolCall,
   UserMessage,
 } from './TimelineItems'
+import { OpenFileContext } from './Markdown'
 import { Empty } from './ui'
 
 export type TimelineHandle = {
@@ -172,34 +173,36 @@ export const Timeline = memo(function Timeline({
     `${highlightKeys.has(key) ? 'hit' : ''} ${currentKey === key ? 'current' : ''}`
 
   return (
-    <div className="timeline-scroller" ref={scroller} onScroll={onScroll}>
-      <div className="timeline" aria-live="polite">
-        {view.truncatedAt !== null ? (
-          <div className="notice debug"><History size={14} /><span>Earlier history is no longer available in this view.</span></div>
+    <OpenFileContext.Provider value={onOpenFile}>
+      <div className="timeline-scroller" ref={scroller} onScroll={onScroll}>
+        <div className="timeline" aria-live="polite">
+          {view.truncatedAt !== null ? (
+            <div className="notice debug"><History size={14} /><span>Earlier history is no longer available in this view.</span></div>
+          ) : null}
+          {nodes.length === 0 ? (
+            <Empty icon={MessagesSquare}>Send a message to start.</Empty>
+          ) : null}
+          {nodes.map((node) => node.kind === 'item' ? (
+            <div className={`t-item k-${node.item.kind} ${mark(node.item.key)}`} key={node.item.key} data-key={node.item.key} data-seq={node.item.seq || undefined}>
+              {renderItem(node.item, live, node.round?.round)}
+            </div>
+          ) : (
+            <div
+              className={`t-item k-group ${mark(node.key)}`}
+              key={node.key}
+              data-key={node.key}
+              data-seq={node.items[0].seq || undefined}
+            >
+              <ActivityGroup items={node.items} live={node.live} render={renderItem} />
+            </div>
+          ))}
+        </div>
+        {away ? (
+          <button type="button" className="jump-latest glass" onClick={() => toBottom(true)} aria-label="Jump to latest">
+            <ArrowDown size={16} />
+          </button>
         ) : null}
-        {nodes.length === 0 ? (
-          <Empty icon={MessagesSquare}>Send a message to start.</Empty>
-        ) : null}
-        {nodes.map((node) => node.kind === 'item' ? (
-          <div className={`t-item k-${node.item.kind} ${mark(node.item.key)}`} key={node.item.key} data-key={node.item.key} data-seq={node.item.seq || undefined}>
-            {renderItem(node.item, live, node.round?.round)}
-          </div>
-        ) : (
-          <div
-            className={`t-item k-group ${mark(node.key)}`}
-            key={node.key}
-            data-key={node.key}
-            data-seq={node.items[0].seq || undefined}
-          >
-            <ActivityGroup items={node.items} live={node.live} render={renderItem} />
-          </div>
-        ))}
       </div>
-      {away ? (
-        <button type="button" className="jump-latest glass" onClick={() => toBottom(true)} aria-label="Jump to latest">
-          <ArrowDown size={16} />
-        </button>
-      ) : null}
-    </div>
+    </OpenFileContext.Provider>
   )
 })

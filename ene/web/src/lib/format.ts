@@ -47,3 +47,13 @@ export function basename(path: string): string {
 export function percent(fraction: number): string {
   return `${Math.round(fraction * 100)}%`
 }
+
+/** Short latency: milliseconds under a second, else a duration. */
+export function latency(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0ms'
+  return seconds < 1 ? `${Math.round(seconds * 1000)}ms` : duration(seconds)
+}
+
+export function tokenRate(perSecond: number): string {
+  return `${perSecond >= 100 ? Math.round(perSecond) : perSecond.toFixed(1).replace(/\.0$/, '')} tok/s`
+}

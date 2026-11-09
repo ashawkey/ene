@@ -65,7 +65,9 @@ The sidebar groups every live session on the machine:
 
 - **Timeline:** messages, reasoning, and tool calls. A tool call holds its command output, diffs, and result.
 - **Folding:** every step folds by its chevron. Results longer than 12 lines start folded; failures and running calls start open. Three or more consecutive tool calls fold into one row.
-- **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time, tokens, cache hit rate, and tool calls; click it for statistics.
+- **Reasoning:** folded; while streaming it previews the newest lines. Unfold it at any time to read the whole thought so far.
+- **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
+- **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time split into model and tool time, mean time to first token (TTFT), output speed (tokens/s), tokens, cache hit rate, and tool calls; click it for statistics.
 - **Diffs:** click the file name to open the file.
 - **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.
 - **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
@@ -86,12 +88,13 @@ Open the side panel with the panel icon in the session header (it reopens the la
 | Panel | Contents |
 | --- | --- |
 | **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. A changed file opens as a side-by-side diff against `HEAD` (unified on narrow screens); toggle to the file preview (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
-| **Statistics** | Rounds, agent time, tokens (input / cached / output), tool calls, context usage, and per-round charts. Click a round to jump to it. |
+| **Statistics** | Rounds, agent time, model and tool time, tokens (input / cached / output), speed (tokens/s and TTFT), context usage, and per-round charts. Click a round to jump to it. |
 | **Tasks** | Background processes with runtime and latest output; show a log (`/ps <id>`) or stop one (click twice). |
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
 - File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
+- TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
 
 ## Keyboard
 

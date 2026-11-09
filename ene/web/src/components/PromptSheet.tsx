@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Prompt } from '../lib/protocol'
 import { Markdown } from './Markdown'
 import { IconButton } from './ui'
+import { NO_AUTOFILL } from '../lib/noAutofill'
 
 /** An agent question. Answers are idempotent per prompt id on the worker. */
 export function PromptSheet({
@@ -90,6 +91,7 @@ export function PromptSheet({
           }}
         >
           <textarea
+            {...NO_AUTOFILL}
             ref={input}
             value={text}
             rows={2}

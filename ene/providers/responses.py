@@ -268,7 +268,9 @@ class ResponsesCompletionStream(CompletionStream):
         self._state_key = state_key
         self._closed = False
 
-    def consume(self, *, on_content=None, on_thinking=None, should_stop=None) -> CompletionResult:
+    def consume(
+        self, *, on_content=None, on_thinking=None, should_stop=None, on_first_token=None,
+    ) -> CompletionResult:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         output_items: dict[int, dict[str, Any]] = {}
@@ -283,6 +285,9 @@ class ResponsesCompletionStream(CompletionStream):
 
                 raise RequestInterrupted()
             kind = event.get("type")
+            if on_first_token is not None and isinstance(kind, str) and kind.endswith(".delta"):
+                on_first_token()
+                on_first_token = None
             if kind == "response.output_item.added":
                 item = event.get("item")
                 if isinstance(item, dict):

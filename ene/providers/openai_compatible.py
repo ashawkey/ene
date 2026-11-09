@@ -50,12 +50,15 @@ class _OpenAICompletionStream(CompletionStream):
         self._release = release
         self._closed = False
 
-    def consume(self, *, on_content=None, on_thinking=None, should_stop=None) -> CompletionResult:
+    def consume(
+        self, *, on_content=None, on_thinking=None, should_stop=None, on_first_token=None,
+    ) -> CompletionResult:
         message, usage, finish_reason = consume_stream(
             self._raw_stream,
             on_content=on_content,
             on_thinking=on_thinking,
             should_stop=should_stop,
+            on_first_token=on_first_token,
         )
         return CompletionResult(message, normalize_usage(usage), finish_reason)
 

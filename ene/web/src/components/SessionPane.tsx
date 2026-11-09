@@ -14,6 +14,7 @@ import { PromptSheet } from './PromptSheet'
 import type { TimelineHandle } from './Timeline'
 import { Timeline } from './Timeline'
 import { ContextRing, IconButton, LinkBanner, LinkDot, StateIcon } from './ui'
+import { NO_AUTOFILL } from '../lib/noAutofill'
 
 export function SessionPane({
   summary,
@@ -164,6 +165,7 @@ export function SessionPane({
           <div className="find-bar glass">
             <Search size={14} />
             <input
+              {...NO_AUTOFILL}
               ref={findInput}
               value={query}
               placeholder="Find in conversation"
@@ -289,6 +291,7 @@ function SessionName({
   if (editing) {
     return (
       <input
+        {...NO_AUTOFILL}
         ref={input}
         className="name-input"
         value={value}

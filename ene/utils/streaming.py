@@ -96,11 +96,13 @@ def consume_stream(
     on_content: Callable[[str], None] | None = None,
     on_thinking: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_first_token: Callable[[], None] | None = None,
 ) -> tuple[Message, Any, str | None]:
     """Fold a stream into ``(message, usage, finish_reason)``.
 
     Callbacks fire synchronously as chunks arrive. If *should_stop* returns
     true, cancellation is raised so a partial response cannot enter context.
+    *on_first_token* fires once, on the first text, reasoning, or tool-call delta.
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -134,6 +136,9 @@ def consume_stream(
             role = delta.role
 
         thinking = _extract_reasoning(delta)
+        if on_first_token is not None and (thinking or delta.content or delta.tool_calls):
+            on_first_token()
+            on_first_token = None
         if thinking:
             reasoning_parts.append(thinking)
             if on_thinking is not None:

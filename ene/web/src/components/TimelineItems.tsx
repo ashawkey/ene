@@ -7,7 +7,10 @@ import {
   CircleCheck,
   CircleX,
   Coins,
+  Cpu,
   FileDiff,
+  Gauge,
+  Hourglass,
   Info,
   Layers,
   Monitor,
@@ -20,7 +23,7 @@ import type { ReactNode } from 'react'
 import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { parseAnsi } from '../lib/ansi'
-import { clockTime, compactNumber, duration } from '../lib/format'
+import { clockTime, compactNumber, duration, latency, tokenRate } from '../lib/format'
 import { highlight, languageForPath } from '../lib/highlight'
 import type { DiffData, TimelineItem } from '../lib/session'
 import { summarize } from '../lib/timeline'
@@ -45,12 +48,15 @@ function Step({
   label,
   children,
   autoOpen,
+  preview,
   className = '',
 }: {
   icon: ReactNode
   label: ReactNode
   children?: ReactNode
   autoOpen: boolean
+  /** Shown in place of the body while folded. */
+  preview?: ReactNode
   className?: string
 }) {
   const [manual, setManual] = useState<boolean | null>(null)
@@ -68,7 +74,7 @@ function Step({
       {foldable
         ? <button type="button" className="step-head" aria-expanded={open} onClick={() => setManual(!open)}>{head}</button>
         : <div className="step-head">{head}</div>}
-      {open ? <div className="step-body">{children}</div> : null}
+      {open ? <div className="step-body">{children}</div> : preview ? <div className="step-body">{preview}</div> : null}
     </div>
   )
 }
@@ -103,12 +109,13 @@ export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<'u
     <div className="user-row">
       <div className="user-bubble">
         <div className="user-text">{item.text}</div>
-        <div className="bubble-meta">
-          {sourceIcon(item.source)}
-          {item.steer ? <span className="pill-mini">steer</span> : null}
-          <span>{clockTime(item.ts)}</span>
-          <CopyButton text={item.text} label="Copy message" />
-        </div>
+      </div>
+      {/* Outside the bubble, so the hover background is never clipped by its corner. */}
+      <div className="bubble-meta">
+        {sourceIcon(item.source)}
+        {item.steer ? <span className="pill-mini">steer</span> : null}
+        <span>{clockTime(item.ts)}</span>
+        <CopyButton text={item.text} label="Copy message" />
       </div>
     </div>
   )
@@ -129,6 +136,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {!item.streaming && (item.text || round) ? (
         <div className="reply-foot">
           {item.text ? <CopyButton text={item.text} label="Copy reply" /> : null}
+          {item.text ? <span className="reply-time">{clockTime(item.ts)}</span> : null}
           {round ? <RoundChip round={round} onOpen={onOpenStats} /> : null}
         </div>
       ) : null}
@@ -136,18 +144,34 @@ export const AssistantMessage = memo(function AssistantMessage({
   )
 })
 
+/** The newest lines of a streaming thought, anchored to the bottom. */
+function ThinkingTail({ text }: { text: string }) {
+  return (
+    <div className="thinking-live" aria-hidden="true">
+      <div className="thinking-live-text">{text.slice(-THINKING_TAIL_CHARS)}</div>
+    </div>
+  )
+}
+
+const THINKING_TAIL_CHARS = 800
+
 export const Thinking = memo(function Thinking({ item }: { item: ItemOf<'thinking'> }) {
   const firstLine = item.text.trim().split('\n', 1)[0] ?? ''
+  // Folded by default; while streaming the folded row previews the newest
+  // lines, and unfolding shows the whole thought so far.
   return (
     <Step
-      className="thinking"
+      className={`thinking ${item.streaming ? 'live' : ''}`}
       icon={<Brain size={14} />}
-      label={item.streaming ? 'Thinking…' : <span className="clamp">{firstLine || 'Thought'}</span>}
-      autoOpen={item.streaming}
+      label={item.streaming
+        ? <span className="thinking-label">Thinking<span className="dots" aria-hidden="true" /></span>
+        : <span className="clamp">{firstLine || 'Thought'}</span>}
+      autoOpen={false}
+      preview={item.streaming && item.text.trim() ? <ThinkingTail text={item.text} /> : null}
     >
-      {item.streaming
-        ? <div className="thinking-live-text">{item.text.slice(-600)}</div>
-        : <div className="thinking-text"><Markdown text={item.text} /></div>}
+      {item.text.trim()
+        ? <div className="thinking-text"><Markdown text={item.text} streaming={item.streaming} /></div>
+        : null}
     </Step>
   )
 })
@@ -320,9 +344,17 @@ export const RoundChip = memo(function RoundChip({ round, onOpen }: { round: Rou
   return (
     <button type="button" className={`round-chip ${round.cancelled ? 'cancelled' : ''}`} onClick={onOpen} data-tip="Round statistics">
         <span><Timer size={12} />{duration(round.duration)}</span>
+        {round.model_calls ? <span><Cpu size={12} />model {duration(round.model_time)}</span> : null}
+        {round.tool_calls ? (
+          <span>
+            <Wrench size={12} />{round.tool_calls} tools {duration(round.tool_time)}
+            {round.tool_failures ? <em className="fail"> ·{round.tool_failures}✕</em> : null}
+          </span>
+        ) : null}
+        {round.ttft !== null ? <span><Hourglass size={12} />TTFT {latency(round.ttft)}</span> : null}
+        {round.tps !== null ? <span><Gauge size={12} />{tokenRate(round.tps)}</span> : null}
         <span><Coins size={12} />↑{compactNumber(round.input_tokens)} ↓{compactNumber(round.output_tokens)}</span>
         {round.input_tokens > 0 ? <span className="muted">{Math.round(hit * 100)}% cached</span> : null}
-        {round.tool_calls ? <span><Wrench size={12} />{round.tool_calls}{round.tool_failures ? <em className="fail"> ·{round.tool_failures}✕</em> : null}</span> : null}
         {round.cancelled ? <span className="fail">stopped</span> : null}
     </button>
   )
