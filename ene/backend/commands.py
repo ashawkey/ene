@@ -445,6 +445,16 @@ class AgentCommandsMixin:
         except Exception as e:
             self.console.warn(f"Could not save continued round: {e}")
 
+    def stop_managed_process(self, process_id: str, label: str | None = None) -> bool:
+        """Stop one managed process by exact ID and report it in the console."""
+        result = self.tool_executor.execute("stop_process", {"process_id": process_id})
+        if not result["success"]:
+            self.console.warn(result["error"])
+            return False
+        suffix = f" ({label})" if label else ""
+        self.console.system(f"Stopped process {process_id}{suffix}.")
+        return True
+
     def _cmd_ps(self, raw: str) -> None:
         """List, inspect, or stop a managed process by ID or label."""
         parts = raw.split(maxsplit=1)
@@ -515,14 +525,7 @@ class AgentCommandsMixin:
             process = one_match(stop_parts[1])
             if process is None:
                 return
-            result = self.tool_executor.execute(
-                "stop_process", {"process_id": process["process_id"]}
-            )
-            if not result["success"]:
-                self.console.warn(result["error"])
-                return
-            label = f" ({process['label']})" if process.get("label") else ""
-            self.console.system(f"Stopped process {process['process_id']}{label}.")
+            self.stop_managed_process(process["process_id"], process.get("label"))
             return
 
         target = argument

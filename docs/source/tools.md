@@ -43,6 +43,7 @@ Built-in tools (availability depends on the model and persona):
 - Processes survive detach and session switching; explicit exit or `ene kill` terminates them.
 - Status shows each running process's session-local ID (`1`, `2`, …), label, runtime, and latest log line. The terminal also shows running/finished counts; the Web UI uses composer-dock rows.
 - Logs: `.ene/processes/<process-id>-<unique-suffix>.log`.
+- Each process receives `ENE_PROCESS_EVENTS`, the path of a sibling `.events.jsonl` file. The subagent runner records its agent events there, which the Web UI shows as a [conversation](web-ui.md#process-output).
 
 | Command | Action |
 |---|---|

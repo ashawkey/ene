@@ -72,6 +72,7 @@ def test_subagent_runner_streams_output_and_emits_completed_result(
         "reasoning_effort": "low",
         "stream": True,
         "quiet": False,
+        "console": None,
     })]
 
 
@@ -130,6 +131,7 @@ def test_subagent_runner_inherits_model_and_effort_from_env(
         "reasoning_effort": "medium",
         "stream": True,
         "quiet": False,
+        "console": None,
     })]
 
 
@@ -166,6 +168,7 @@ def test_subagent_runner_explicit_flags_override_env(monkeypatch, capsys, tmp_pa
         "reasoning_effort": "high",
         "stream": True,
         "quiet": False,
+        "console": None,
     })]
 
 
@@ -190,3 +193,55 @@ def test_subagent_runner_cli_help():
     with pytest.raises(SystemExit) as exc:
         runner["parse_args"](["--help"])
     assert exc.value.code == 0
+
+
+def test_subagent_runner_mirrors_events_to_the_process_event_file(
+    monkeypatch, capsys, tmp_path
+):
+    runner = _load_runner()
+    events_path = tmp_path / "1-abc.events.jsonl"
+    monkeypatch.setenv("ENE_PROCESS_EVENTS", str(events_path))
+    seen_env = []
+
+    def fake_run_agent(task, **kwargs):
+        import os
+
+        seen_env.append(os.environ.get("ENE_PROCESS_EVENTS"))
+        console = kwargs["console"]
+        console.system(f"Executing query: {task}")
+        console.events.publish("assistant_message", text="found it")
+        return SimpleNamespace(
+            success=True,
+            outcome=TurnOutcome.COMPLETED,
+            response="found it",
+            error=None,
+            token_usage={"total": 3},
+        )
+
+    monkeypatch.setitem(runner["main"].__globals__, "run_agent", fake_run_agent)
+
+    assert runner["main"](["--task", "find the bug"]) == 0
+    capsys.readouterr()
+
+    # Commands the child runs must not append to this process's file.
+    assert seen_env == [None]
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [(event["type"], event["data"].get("text")) for event in events[:2]] == [
+        ("user_message", "find the bug"),
+        ("assistant_message", "found it"),
+    ]
+    assert events[-1]["type"] == "subagent_result"
+    assert "response" not in events[-1]["data"]
+    assert events[-1]["data"]["success"] is True
+    assert [event["seq"] for event in events] == sorted(event["seq"] for event in events)
+
+
+def test_subagent_runner_event_log_replaces_oversized_events(tmp_path):
+    runner = _load_runner()
+    log = runner["EventLog"](str(tmp_path / "events.jsonl"))
+    from ene.utils.io import AgentEvent
+
+    log(AgentEvent(1, "tool_result", {"text": "x" * (runner["MAX_EVENT_LINE_BYTES"] + 1)}, 0.0))
+    log.close()
+    event = json.loads((tmp_path / "events.jsonl").read_text())
+    assert event["type"] == "debug" and "too large" in event["data"]["text"]

@@ -1,14 +1,13 @@
 ---
 name: subagent
-description: Delegate substantial independent work to fresh Ene agents, including in parallel.
+description: Delegate substantial independent work to fresh Ene agents running as managed background processes, in parallel when tasks are independent.
 ---
 
 # Subagent Delegation
 
-Run a fresh ene agent through `scripts/run_subagent.py`. The child has its own
-conversation and token usage, but shares the selected working directory and
-writes directly to it. Its assistant responses, tool activity, command output,
-and status messages stream through the runner. It does not inherit this
+Run a fresh ene agent through `scripts/run_subagent.py` as a managed background
+process. The child has its own conversation and token usage, but shares the
+selected working directory and writes directly to it. It does not inherit this
 conversation, loaded skills, or session/rewind history.
 
 Use a subagent when a task is substantial and can be specified independently.
@@ -34,20 +33,43 @@ Subagents share the live filesystem. Their edits are already present when they
 return; do not ask them for patches to reapply. Do not run parallel writers
 against the same files or otherwise coupled state.
 
-## Run one subagent
+## Launch subagents in the background
 
-Resolve `scripts/run_subagent.py` against the absolute skill directory shown when
-this skill was loaded. Run it as a foreground command with `exec_command`:
+Always start the runner with `start_process`, never as a foreground
+`exec_command`. A foreground run blocks this session for the child's whole
+lifetime: you cannot launch siblings, answer the user, or react to other
+notifications until it returns. A managed child runs alongside you, and the user
+can follow its conversation live from `/ps` or the Web UI's background tasks.
 
-```bash
-python <skill-dir>/scripts/run_subagent.py --task 'Inspect the parser and report the root cause. Do not edit files.'
-```
+1. Load the `monitor` skill.
+2. For each child, write its complete prompt to a unique, descriptively named
+   file under `.ene/scratch/subagents/` and pass it with `--task-file`, even when
+   the prompt is short. Never place credentials in a delegated prompt.
+3. Resolve `scripts/run_subagent.py` against the absolute skill directory shown
+   when this skill was loaded, and start it with `start_process` in the intended
+   project `cwd`:
 
-Set `cwd` on `exec_command` to the intended project directory and choose an
-explicit timeout appropriate to the task. The command output shows the child’s
-live log while it runs. Let `exec_command` own waiting, timeout, and
-interruption; do not add an internal timeout or launch the command in the shell
-background. Its timeout or user interruption terminates the child process tree.
+   ```bash
+   python <skill-dir>/scripts/run_subagent.py --task-file .ene/scratch/subagents/parser-root-cause.md
+   ```
+
+   Give each child a concise, distinct `label` describing the delegated task, so
+   it is identifiable in `/ps` and the status bar. Keep the default
+   `notify=exit`. Retain each process ID, log path, and task-file path. If
+   `start_process` itself fails, do not count that child as active.
+4. Start every independent child before waiting, then end your turn with a short
+   status. Each child's exit arrives as an inbox notification that starts your
+   next round, and you stay responsive to the user meanwhile.
+5. When a child exits, inspect that process with a bounded log tail and parse its
+   final `ENE_SUBAGENT_RESULT=` line. Read the log file directly only if needed.
+   Remove its task file once the result is read, and end your turn again while
+   other children are still running.
+6. If abandoning a child because of a deadline, failure, or user request, call
+   `stop_process` for it, confirm it stopped, then remove its task file.
+
+Do not poll with `inspect_processes`, do not start children with `notify=none`,
+and do not start routine timer processes. An immediate inspection requested by
+the user is fine.
 
 Useful runner options:
 
@@ -60,14 +82,12 @@ Useful runner options:
 The child automatically runs with the same model and reasoning effort as you
 (inherited through `ENE_MODEL_ALIAS` / `ENE_REASONING_EFFORT`), so no model
 flags are needed. Omitting `--persona` uses the default `coder` persona.
-Normally set the command's `cwd` and omit `--work-dir`; use `--work-dir` only
-when it should differ.
+Normally set the process `cwd` and omit `--work-dir`; use `--work-dir` only
+when it should differ. Shell-quote every argument.
 
-Shell-quote every argument. For a multiline or quote-heavy foreground prompt,
-write a unique temporary task file under `.ene/scratch/`, pass `--task-file`, and
-remove it after the run. Never place credentials in a delegated prompt.
+## Read the result
 
-After the live log, the runner prints one final machine-readable line beginning
+After its live log, the runner prints one final machine-readable line beginning
 with `ENE_SUBAGENT_RESULT=`. Parse the JSON after that prefix; it contains:
 
 - `success`, `outcome`, `response`, and `error`;
@@ -75,43 +95,8 @@ with `ENE_SUBAGENT_RESULT=`. Parse the JSON after that prefix; it contains:
 
 Exit code `0` means completed, `1` means failed or could not start, and `130`
 means interrupted. Read the marked result even after a nonzero exit because it
-contains the child error when one was available. A forced `exec_command` timeout
-or interruption may terminate the runner before it emits the result; in that
-case use the tool's `timed_out` or `interrupted` status. If command output is
-compacted, recover the full capture using the artifact guidance returned by
-`exec_command`.
-
-## Run independent subagents in parallel
-
-Only parallelize tasks that can safely operate on shared state concurrently.
-For read-only investigations, disjoint files, or separate worktrees:
-
-1. Load the `monitor` skill.
-2. For each child, write its complete prompt to a unique, descriptively named
-   file under `.ene/scratch/subagents/`. Use `--task-file` for every background
-   run, even when its prompt is short.
-3. Give each `start_process` call a concise, distinct `label` describing the
-   delegated task, so it is identifiable in `/ps` and the live status bar.
-   Start the runner in the intended project `cwd`, retaining its process ID,
-   log path, and task-file path. The managed process log receives the child’s
-   output as it runs, so `inspect_processes` and `/ps <label|process-id>` can
-   show current progress. If `start_process` itself fails, do not add that child
-   to the active set.
-4. End your turn with a short status. Each child's exit arrives as an inbox
-   notification (`notify=exit`, the default). When one arrives, inspect that
-   process with a bounded log tail and parse its final `ENE_SUBAGENT_RESULT=`
-   line. Read the log file directly only if needed. An immediate inspection
-   requested by the user is fine; do not poll logs for routine progress.
-5. Remove an exited child's task file after its result has been read. End your
-   turn again while other children are still running.
-6. If abandoning the group because of a deadline, failure, or user request,
-   call `stop_process` for every child still running, then remove their task
-   files after confirming they stopped.
-
-Managed background processes use the monitor skill's lifecycle rather than an
-`exec_command` timeout. Do not poll with `inspect_processes`, do not start
-children with `notify=none`, and do not start routine timer processes. Prefer one
-foreground child unless parallel execution is materially useful.
+contains the child error when one was available. A stopped child may exit before
+emitting the result; report it as stopped.
 
 ## Validate and integrate
 

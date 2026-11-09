@@ -124,7 +124,7 @@ ene models
 ```
 
 - Without `--model`, Ene uses the first configured entry.
-- Subagents launched through `exec_command` or `start_process` inherit the configured model alias and effort via `ENE_MODEL_ALIAS` and `ENE_REASONING_EFFORT`, unless overridden.
+- Subagents (launched as managed processes with `start_process`) inherit the configured model alias and effort via `ENE_MODEL_ALIAS` and `ENE_REASONING_EFFORT`, unless overridden.
 - For a backend without a YAML entry, see [temporary endpoints and model profiles](commands.md#temporary-endpoints-and-model-profiles).
 
 ## CLI

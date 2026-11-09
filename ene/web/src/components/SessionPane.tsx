@@ -3,16 +3,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { gitBranch } from '../lib/api'
 import { basename, compactNumber, percent } from '../lib/format'
-import type { GitBranch as GitBranchInfo, RoundStats, SessionSummary } from '../lib/protocol'
+import type { GitBranch as GitBranchInfo, ProcessActivity, RoundStats, SessionSummary } from '../lib/protocol'
 import { contextFraction } from '../lib/session'
 import { useSession } from '../lib/useSession'
 import { Composer } from './Composer'
 import { FileViewer } from './Files'
 import type { InspectorTab } from './Inspector'
 import { Inspector, lastInspectorTab } from './Inspector'
+import { ProcessViewer } from './ProcessViewer'
 import { PromptSheet } from './PromptSheet'
 import type { TimelineHandle } from './Timeline'
 import { Timeline } from './Timeline'
+import { OpenProcessContext } from './TimelineItems'
 import { ContextRing, IconButton, LinkBanner, LinkDot, StateIcon } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 
@@ -46,6 +48,25 @@ export function SessionPane({
   const [viewing, setViewing] = useState<{ path: string; changed?: boolean } | null>(null)
   const openFile = useCallback((path: string, changed?: boolean) => setViewing({ path, changed }), [])
   const closeFile = useCallback(() => setViewing(null), [])
+  const [processId, setProcessId] = useState<string | null>(null)
+  const closeProcess = useCallback(() => setProcessId(null), [])
+  // Timeline tool cards link to a process only while this session lists it.
+  // Read through a ref: snapshots arrive every half second while processes
+  // run, and must not re-render every tool card.
+  const knownProcesses = useRef(view.processes.processes)
+  knownProcesses.current = view.processes.processes
+  const openProcess = useMemo(() => ({
+    find: (id: string) => knownProcesses.current.find((item) => item.process_id === id) ?? null,
+    open: setProcessId,
+  }), [])
+  // Keep showing the last pushed state of a process that ages out of the
+  // snapshot, so an open viewer does not vanish.
+  const lastProcess = useRef<ProcessActivity | null>(null)
+  const viewedProcess = processId === null
+    ? null
+    : view.processes.processes.find((item) => item.process_id === processId)
+      ?? (lastProcess.current?.process_id === processId ? lastProcess.current : null)
+  lastProcess.current = viewedProcess
   const [query, setQuery] = useState('')
   const [matchIndex, setMatchIndex] = useState(0)
   const [matchCount, setMatchCount] = useState(0)
@@ -187,6 +208,7 @@ export function SessionPane({
           </div>
         ) : null}
 
+        <OpenProcessContext.Provider value={openProcess}>
         <Timeline
           view={view}
           active={active}
@@ -197,6 +219,7 @@ export function SessionPane({
           onOpenFile={openFile}
           onOpenStats={openStats}
         />
+        </OpenProcessContext.Provider>
 
         <div className="dock">
           {active ? <LinkBanner status={session.status} onRetry={() => session.retry()} /> : null}
@@ -243,9 +266,21 @@ export function SessionPane({
             filesRefresh={filesRefresh}
             onOpenFile={openFile}
             onJumpRound={jumpRound}
-            onCommand={(text) => session.command(text)}
+            onOpenProcess={setProcessId}
           />
         </>
+      ) : null}
+
+      {active && viewedProcess ? (
+        <ProcessViewer
+          key={viewedProcess.process_id}
+          sessionId={summary.id}
+          process={viewedProcess}
+          receivedAt={view.processes.receivedAt}
+          connected={connected}
+          onClose={closeProcess}
+          onOpenFile={openFile}
+        />
       ) : null}
 
       {active && viewing ? (

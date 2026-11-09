@@ -205,9 +205,16 @@ def _process_snapshot(value: object) -> dict:
             {
                 "process_id": item.get("process_id", ""),
                 "label": item.get("label", ""),
+                "command": item.get("command") if isinstance(item.get("command"), str) else "",
                 "elapsed_seconds": item.get("elapsed_seconds", 0),
                 "last_line": item.get("last_line", ""),
                 "watching": item.get("watching") is True,
+                "status": "exited" if item.get("status") == "exited" else "running",
+                "exit_code": item.get("exit_code")
+                if isinstance(item.get("exit_code"), int) else None,
+                "log_bytes": _count(item.get("log_bytes")),
+                "events_bytes": _count(item.get("events_bytes")),
+                "kind": "agent" if item.get("kind") == "agent" else "shell",
             }
             for item in items or []
             if isinstance(item, dict)
@@ -1281,6 +1288,69 @@ class Hub:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except LiveError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return {"ok": True}
+
+        # -- managed processes of an attached session -----------------------
+
+        def attached_link(session_id: str) -> WorkerLink:
+            session = self.get_session(session_id)
+            link = session.link if session is not None else None
+            if link is None:
+                raise HTTPException(status_code=409, detail="The session is not attached.")
+            return link
+
+        @app.get("/api/sessions/{session_id}/processes/{process_id}/output")
+        async def process_output(
+            request: Request,
+            session_id: str,
+            process_id: str,
+            stream: str = "log",
+            offset: int | None = None,
+            before: int | None = None,
+            limit: int | None = None,
+        ):
+            require_login(request)
+            if stream not in {"log", "events"}:
+                raise HTTPException(status_code=400, detail="Unknown stream.")
+            if any(value is not None and value < 0 for value in (offset, before, limit)):
+                raise HTTPException(status_code=400, detail="Invalid range.")
+            link = attached_link(session_id)
+            message = {
+                "type": "process_read", "process_id": process_id[:64], "stream": stream,
+                **{
+                    name: value
+                    for name, value in (("offset", offset), ("before", before), ("limit", limit))
+                    if value is not None
+                },
+            }
+            loop = asyncio.get_running_loop()
+            try:
+                response = await loop.run_in_executor(None, link.request, message)
+            except LiveError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if not response.get("ok"):
+                raise HTTPException(
+                    status_code=404, detail=str(response.get("error") or "Read failed.")
+                )
+            for key in ("type", "request_id", "ok"):
+                response.pop(key, None)
+            return response
+
+        @app.post("/api/sessions/{session_id}/processes/{process_id}/stop")
+        async def process_stop(request: Request, session_id: str, process_id: str):
+            require_csrf(request)
+            link = attached_link(session_id)
+            loop = asyncio.get_running_loop()
+            try:
+                response = await loop.run_in_executor(
+                    None, link.request, {"type": "process_stop", "process_id": process_id[:64]}
+                )
+            except LiveError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if not response.get("ok"):
+                raise HTTPException(
+                    status_code=409, detail=str(response.get("error") or "Stop failed.")
+                )
             return {"ok": True}
 
         # -- workspace browsing (read-only, confined to the workspace) ------

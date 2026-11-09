@@ -89,12 +89,22 @@ Open the side panel with the panel icon in the session header (it reopens the la
 | --- | --- |
 | **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. A changed file opens as a side-by-side diff against `HEAD` (unified on narrow screens); toggle to the file preview (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
 | **Statistics** | Rounds, agent time, model and tool time, tokens (input / cached / output), speed (tokens/s and TTFT), context usage, and per-round charts. Click a round to jump to it. |
-| **Tasks** | Background processes with runtime and latest output; show a log (`/ps <id>`) or stop one (click twice). |
+| **Tasks** | Running and recently exited background processes with runtime, exit code, and latest output. Open one to view its output, or stop it (click twice). |
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
 - File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
+- See [process output](#process-output) for the viewer opened from **Tasks**.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
 - TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
+
+## Process output
+
+Open a process from **Tasks** or from the link under its `start_process` call in the conversation.
+
+- **Log:** the full log, tail first, following live output (including a progress line still being redrawn). Load earlier output from the top, filter lines, toggle wrapping, or copy the loaded text.
+- **Conversation:** a [subagent](bundled-skills.md) opens as a read-only conversation: its task, replies, tool calls, and final result. Switch to **Log** for the raw output.
+- Output follows live while scrolled to the bottom. The viewer fetches only new bytes, when the pushed process status reports growth; there is no polling.
+- The last 20 exited processes stay listed. Reading requires the session to be attached here.
 
 ## Keyboard
 

@@ -643,6 +643,57 @@ class Worker:
             except OSError:
                 pass
 
+    def _read_process(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Read a bounded range of a managed process's log or event file."""
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return {"ok": False, "error": "The session is not ready."}
+
+        def position(name: str) -> int | None:
+            value = action.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None
+            return value
+
+        limit = position("limit")
+        try:
+            result = agent.tool_executor.read_process_output(
+                str(action.get("process_id", "")),
+                stream=str(action.get("stream", "log")),
+                offset=position("offset"),
+                before=position("before"),
+                **({"limit": limit} if limit else {}),
+            )
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not read process output: {exc}"}
+        if not result.pop("success", False):
+            return {"ok": False, "error": str(result.get("error", "Read failed."))}
+        return {"ok": True, **result}
+
+    def _stop_process(self, process_id: str) -> dict[str, Any]:
+        """Validate a stop request by exact process ID, then stop it off the
+        attachment thread: stopping can take seconds, and the outcome reaches
+        clients through the timeline and the process snapshot."""
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return {"ok": False, "error": "The session is not ready."}
+        match = next(
+            (
+                item for item in agent.tool_executor.process_activity()
+                if item["process_id"] == process_id
+            ),
+            None,
+        )
+        if match is None:
+            return {"ok": False, "error": f"Unknown managed process: {process_id}"}
+        if match["status"] != "running":
+            return {"ok": False, "error": f"Process {process_id} has already exited."}
+        threading.Thread(
+            target=agent.stop_managed_process, args=(process_id, match.get("label")),
+            name="ene-process-stop", daemon=True,
+        ).start()
+        return {"ok": True}
+
     def _submit_attached(
         self, text: str, source: str = "terminal", action_id: str | None = None
     ) -> None:
@@ -817,6 +868,18 @@ class Worker:
                     self.prompts.cancel(str(action.get("id", "")), source=source)
                 elif kind == "cancel":
                     self.cancellation.cancel(action.get("operation_id"))
+                elif kind == "process_read":
+                    send({
+                        "type": "action_result",
+                        "request_id": action.get("request_id"),
+                        **self._read_process(action),
+                    })
+                elif kind == "process_stop":
+                    send({
+                        "type": "action_result",
+                        "request_id": action.get("request_id"),
+                        **self._stop_process(str(action.get("process_id", ""))),
+                    })
                 elif kind == "ping":
                     # Heartbeat from the attached terminal; receiving it just
                     # proves the attachment is still alive.

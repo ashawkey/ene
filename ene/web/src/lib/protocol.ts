@@ -37,9 +37,28 @@ export type PendingMessage = {
 export type ProcessActivity = {
   process_id: string
   label: string
+  /** Shell command, whitespace-collapsed and clipped. */
+  command?: string
   elapsed_seconds: number
   last_line: string
   watching?: boolean
+  status?: 'running' | 'exited'
+  exit_code?: number | null
+  /** Bytes captured in the log so far; viewers fetch only what they lack. */
+  log_bytes?: number
+  /** Bytes of structured agent events; non-zero for a subagent. */
+  events_bytes?: number
+  kind?: 'shell' | 'agent'
+}
+
+/** One byte range of a process log (exact) or event file (whole lines). */
+export type ProcessOutput = {
+  start: number
+  end: number
+  size: number
+  status: 'running' | 'exited'
+  text?: string
+  events?: ServerEvent[]
 }
 
 export type ProcessSnapshot = {

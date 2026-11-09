@@ -180,6 +180,141 @@ def test_start_process_injects_model_identity_env(tmp_path):
         te.shutdown_processes()
 
 
+def test_start_process_exports_event_file_and_reads_output_in_line_ranges(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    script = tmp_path / "emit.py"
+    script.write_text(
+        "import json, os\n"
+        "path = os.environ['ENE_PROCESS_EVENTS']\n"
+        "with open(path, 'a') as handle:\n"
+        "    handle.write(json.dumps({'seq': 1, 'type': 'assistant_message', 'data': {'text': 'hi'}}) + '\\n')\n"
+        "    handle.write('not json\\n')\n"
+        "    handle.write('{\"seq\": 2')\n"
+        "for index in range(200):\n"
+        "    print(f'line {index:03d}')\n",
+        encoding="utf-8",
+    )
+    started = te.execute("start_process", {"command": f"python {script.name}"})
+    try:
+        process_id = started["process_id"]
+        _wait_for_exit(te, process_id)
+        assert started["events_path"].endswith(".events.jsonl")
+
+        snapshot = process_status_snapshot(*te.process_counts(), te.process_activity())
+        item = snapshot["processes"][0]
+        assert item["status"] == "exited" and item["exit_code"] == 0
+        assert item["kind"] == "agent" and item["events_bytes"] > 0
+        assert item["log_bytes"] == (tmp_path / started["log_path"]).stat().st_size
+
+        # The events stream returns only complete, valid JSON objects.
+        events = te.read_process_output(process_id, stream="events")
+        assert [event["seq"] for event in events["events"]] == [1]
+        assert events["end"] < events["size"]
+
+        # A tail page starts at a line boundary, and an earlier page ends
+        # exactly where it begins, so pages concatenate without a seam.
+        tail = te.read_process_output(process_id, before=10_000_000, limit=100)
+        assert tail["end"] == tail["size"]
+        assert tail["text"].replace("\r\n", "\n").startswith("line ")
+        earlier = te.read_process_output(process_id, before=tail["start"], limit=100)
+        assert earlier["end"] == tail["start"]
+        forward = te.read_process_output(process_id, offset=0, limit=50)
+        assert forward["start"] == 0 and forward["end"] == 50
+        resumed = te.read_process_output(process_id, offset=forward["end"])
+        assert resumed["start"] == forward["end"]
+        assert (forward["text"] + resumed["text"]).replace("\r\n", "\n") == "".join(
+            f"line {i:03d}\n" for i in range(200)
+        )
+
+        assert not te.read_process_output("missing")["success"]
+        assert not te.read_process_output(process_id, stream="other")["success"]
+    finally:
+        te.shutdown_processes()
+
+
+def test_process_output_pages_stay_contiguous_across_long_lines(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    text = "hello\n" + "x" * 600_000 + "\nshort é\n"
+    (tmp_path / "emit.py").write_text(
+        f"import sys\nsys.stdout.buffer.write({text.encode()!r})\n", encoding="utf-8"
+    )
+    started = te.execute("start_process", {"command": "python emit.py"})
+    try:
+        process_id = started["process_id"]
+        _wait_for_exit(te, process_id)
+        page = te.read_process_output(process_id, before=10**9)
+        pages = [page]
+        while page["start"] > 0:
+            page = te.read_process_output(process_id, before=page["start"])
+            # Each earlier page ends exactly where the later one starts.
+            assert page["end"] == pages[-1]["start"]
+            pages.append(page)
+        assert "".join(item["text"] for item in reversed(pages)) == text
+        # Forward pages split mid-character never decode a broken character.
+        cut = text.encode().index("é".encode()) + 1
+        head = te.read_process_output(process_id, offset=cut - 4, limit=4)
+        assert head["end"] == cut - 1 and head["text"] == "rt "
+        tail = te.read_process_output(process_id, offset=head["end"])
+        assert tail["text"] == "é\n"
+    finally:
+        te.shutdown_processes()
+
+
+def test_process_output_includes_the_unfinished_line_of_a_running_process(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    (tmp_path / "progress.py").write_text(
+        "import sys, time\n"
+        "sys.stdout.write('10%\\r50%')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    started = te.execute("start_process", {"command": "python progress.py"})
+    try:
+        process_id = started["process_id"]
+        deadline = time.time() + 15
+        page = {}
+        while time.time() < deadline:
+            page = te.read_process_output(process_id, before=10**9)
+            if page["text"]:
+                break
+            time.sleep(0.05)
+        assert page["status"] == "running"
+        assert page["text"].replace("\r\n", "\n") == "10%\r50%"
+        assert page["end"] == page["size"]
+    finally:
+        te.shutdown_processes()
+
+
+def test_process_events_skip_a_line_longer_than_the_read_limit(tmp_path):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    (tmp_path / "emit.py").write_text(
+        "import json, os\n"
+        "with open(os.environ['ENE_PROCESS_EVENTS'], 'a') as handle:\n"
+        "    handle.write(json.dumps({'seq': 1, 'type': 'debug', 'data': {'text': 'x' * 5000}}) + '\\n')\n"
+        "    handle.write(json.dumps({'seq': 2, 'type': 'debug', 'data': {}}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    started = te.execute("start_process", {"command": "python emit.py"})
+    try:
+        process_id = started["process_id"]
+        _wait_for_exit(te, process_id)
+        skipped = te.read_process_output(process_id, stream="events", limit=1000)
+        assert skipped["events"] == [] and skipped["end"] > 1000
+        rest = te.read_process_output(process_id, stream="events", offset=skipped["end"])
+        assert [event["seq"] for event in rest["events"]] == [2]
+        assert rest["end"] == rest["size"]
+    finally:
+        te.shutdown_processes()
+
+
+def test_agent_process_env_drops_an_inherited_event_file(monkeypatch):
+    monkeypatch.setenv("ENE_PROCESS_EVENTS", "/tmp/outer.events.jsonl")
+    from ene.utils.process import agent_process_env
+
+    assert "ENE_PROCESS_EVENTS" not in agent_process_env()
+
+
 def test_windows_hidden_process_kwargs():
     kwargs = windows_hidden_process_kwargs(
         subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
@@ -289,16 +424,41 @@ def test_format_process_status_shows_one_line_per_running_process():
             {
                 "process_id": "1",
                 "label": "review parser",
+                "command": "",
                 "elapsed_seconds": 12.9,
                 "last_line": "reading src/parse.py",
                 "watching": True,
+                "status": "running",
+                "exit_code": None,
+                "log_bytes": 0,
+                "events_bytes": 0,
+                "kind": "shell",
             },
             {
                 "process_id": "2",
                 "label": "plan refactor",
+                "command": "",
                 "elapsed_seconds": 3.0,
                 "last_line": "",
                 "watching": False,
+                "status": "running",
+                "exit_code": None,
+                "log_bytes": 0,
+                "events_bytes": 0,
+                "kind": "shell",
+            },
+            {
+                "process_id": "3",
+                "label": "done child",
+                "command": "",
+                "elapsed_seconds": 0.0,
+                "last_line": "stale line",
+                "watching": False,
+                "status": "exited",
+                "exit_code": None,
+                "log_bytes": 0,
+                "events_bytes": 0,
+                "kind": "shell",
             },
         ],
     }

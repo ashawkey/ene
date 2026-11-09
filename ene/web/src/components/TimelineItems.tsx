@@ -1,6 +1,7 @@
 import { diffLines } from 'diff'
 import {
   Bell,
+  Bot,
   Brain,
   ChevronRight,
   CircleAlert,
@@ -14,20 +15,21 @@ import {
   Info,
   Layers,
   Monitor,
+  ScrollText,
   Terminal,
   Timer,
   TriangleAlert,
   Wrench,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { parseAnsi } from '../lib/ansi'
 import { clockTime, compactNumber, duration, latency, tokenRate } from '../lib/format'
 import { highlight, languageForPath } from '../lib/highlight'
 import type { DiffData, TimelineItem } from '../lib/session'
 import { summarize } from '../lib/timeline'
-import type { RoundStats } from '../lib/protocol'
+import type { ProcessActivity, RoundStats } from '../lib/protocol'
 import { CopyButton, Markdown } from './Markdown'
 import { Spinner } from './ui'
 
@@ -176,6 +178,24 @@ export const Thinking = memo(function Thinking({ item }: { item: ItemOf<'thinkin
   )
 })
 
+export type ProcessLinks = {
+  find: (processId: string) => ProcessActivity | null
+  open: (processId: string) => void
+}
+/** Lets a `start_process` card open that process's output viewer. */
+export const OpenProcessContext = createContext<ProcessLinks | null>(null)
+
+/** The process a `start_process` card launched, if it is still listed. */
+function useLaunchedProcess(item: ItemOf<'tool'>): ProcessActivity | null {
+  const links = useContext(OpenProcessContext)
+  if (!links || item.name !== 'start_process' || !item.result?.success) return null
+  // The result summary starts with "<id> · <status> · pid …".
+  const match = /^(\S+) · (?:running|exited)/.exec(item.result.text)
+  const process = match ? links.find(match[1]) : null
+  // IDs restart with each worker; require the label to match too.
+  return process && item.primary.includes(process.label.slice(0, 24)) ? process : null
+}
+
 export const ToolCall = memo(function ToolCall({
   item,
   live,
@@ -202,6 +222,8 @@ export const ToolCall = memo(function ToolCall({
   )
   const output = item.output?.text.trim() ? item.output : null
   const result = item.result?.text.trim() ?? ''
+  const launched = useLaunchedProcess(item)
+  const links = useContext(OpenProcessContext)
   const empty = !output && !result && item.diffs.length === 0
   // Diffs fold themselves past a screenful; text folds past a few lines.
   const lines = lineCount(output?.text ?? '') + lineCount(result)
@@ -215,6 +237,11 @@ export const ToolCall = memo(function ToolCall({
           {/* With output shown, the result is only its summary line. */}
           {result && output && !result.includes('\n') ? <div className="step-note">{result}</div>
             : result ? <OutputBlock text={result} /> : null}
+          {launched && links ? (
+            <button type="button" className="link proc-link" onClick={() => links.open(launched.process_id)}>
+              {launched.kind === 'agent' ? <><Bot size={14} />Open subagent conversation</> : <><ScrollText size={14} />View full output</>}
+            </button>
+          ) : null}
         </>
       )}
     </Step>
@@ -292,7 +319,7 @@ export const DiffCard = memo(function DiffCard({ diff: item, onOpenFile }: { dif
 
 const ANSI_CLASSES = ['k', 'r', 'g', 'y', 'b', 'm', 'c', 'w', 'K', 'R', 'G', 'Y', 'B', 'M', 'C', 'W']
 
-function AnsiText({ text }: { text: string }) {
+export function AnsiText({ text }: { text: string }) {
   const spans = useMemo(() => parseAnsi(text), [text])
   return (
     <>

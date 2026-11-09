@@ -832,9 +832,15 @@ def test_process_status_text_includes_running_process_activity(tmp_path):
         assert statuses[-1].data["processes"] == [{
             "process_id": started["process_id"],
             "label": "review parser",
+            "command": started["command"],
             "elapsed_seconds": statuses[-1].data["processes"][0]["elapsed_seconds"],
             "last_line": "world",
             "watching": False,
+            "status": "running",
+            "exit_code": None,
+            "log_bytes": statuses[-1].data["processes"][0]["log_bytes"],
+            "events_bytes": 0,
+            "kind": "shell",
         }]
     finally:
         agent.tool_executor.shutdown_processes()

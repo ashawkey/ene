@@ -17,7 +17,7 @@
 | `project-info` | Create or refine concise repository instructions in `AGENTS.md`. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/project-info/SKILL.md) |
 | `reflection` | Save verified conversation lessons as project skills. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/reflection/SKILL.md) |
 | `skill-creator` | Create, revise, or validate Agent Skills packages. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/skill-creator/SKILL.md) |
-| `subagent` | Delegate substantial independent tasks to fresh Ene agents. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/subagent/SKILL.md) |
+| `subagent` | Delegate substantial independent tasks to fresh Ene agents running as background processes. | [source](https://github.com/ashawkey/ene/blob/main/ene/bundled_skills/subagent/SKILL.md) |
 
 ## Invoke a skill
 

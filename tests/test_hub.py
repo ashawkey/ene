@@ -4,6 +4,7 @@ import os
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -1327,3 +1328,61 @@ def test_session_state_counts_background_processes_and_notifies_lists():
     session.ingest({"type": "background_status", "data": {"watchers": 0, "background": 0}})
     session.ingest({"type": "assistant_delta", "data": {"text": "x"}})
     assert changes == ["working", "done", "waiting", "done"]
+
+
+def test_process_endpoints_relay_reads_and_stops_to_the_attached_worker():
+    worker = FakeWorker()
+    reads, stops = [], []
+
+    def read_process_output(process_id, **kwargs):
+        reads.append((process_id, kwargs))
+        if process_id != "1":
+            return {"error": f"Unknown managed process: {process_id}", "success": False}
+        return {"start": 0, "end": 3, "size": 3, "status": "running", "text": "ok\n", "success": True}
+
+    activity = [
+        {"process_id": "1", "label": "dev", "status": "running"},
+        {"process_id": "2", "label": "", "status": "exited"},
+    ]
+    worker.worker.agent = SimpleNamespace(
+        tool_executor=SimpleNamespace(
+            read_process_output=read_process_output, process_activity=lambda: activity
+        ),
+        stop_managed_process=lambda process_id, label: stops.append((process_id, label)),
+    )
+    hub = make_hub()
+    hub._records = [worker.record]
+    try:
+        with TestClient(hub.app) as client:
+            csrf = login(client)
+            url = "/api/sessions/runtime-1/processes/1"
+            # Reads require an attached session.
+            assert client.get(f"{url}/output").status_code == 409
+            hub.attach_session("runtime-1")
+
+            response = client.get(f"{url}/output", params={"before": 100, "limit": 10})
+            assert response.status_code == 200
+            assert response.json() == {
+                "start": 0, "end": 3, "size": 3, "status": "running", "text": "ok\n",
+            }
+            assert reads[-1] == ("1", {"stream": "log", "offset": None, "before": 100, "limit": 10})
+            assert client.get(
+                "/api/sessions/runtime-1/processes/9/output", params={"stream": "events"}
+            ).status_code == 404
+            assert client.get(f"{url}/output", params={"stream": "secrets"}).status_code == 400
+            assert client.get(f"{url}/output", params={"offset": -1}).status_code == 400
+
+            assert client.post(f"{url}/stop").status_code == 403
+            assert client.post(f"{url}/stop", headers={"x-csrf-token": csrf}).status_code == 200
+            assert wait_until(lambda: stops == [("1", "dev")])
+            # Unknown and exited processes are reported, not silently accepted.
+            for missing in ("9", "2", "dev"):
+                response = client.post(
+                    f"/api/sessions/runtime-1/processes/{missing}/stop",
+                    headers={"x-csrf-token": csrf},
+                )
+                assert response.status_code == 409
+            assert stops == [("1", "dev")]
+    finally:
+        hub.stop()
+        worker.close()

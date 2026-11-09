@@ -7,6 +7,7 @@ import type {
   GitChanges,
   GitDiff,
   NewSessionRequest,
+  ProcessOutput,
   SessionOptions,
   SessionSummary,
 } from './protocol'
@@ -103,6 +104,17 @@ export const gitBranch = (id: string) => get<GitBranch>(`${sid(id)}/branch`)
 export const listChanges = (id: string) => get<GitChanges>(`${sid(id)}/changes`)
 export const pathCompletions = (id: string, query: string) =>
   get<{ completions: string[] }>(`${sid(id)}/path-completions`, { query }).then((data) => data.completions)
+
+export type OutputRange = { stream: 'log' | 'events'; offset?: number; before?: number; limit?: number }
+export const readProcessOutput = (id: string, processId: string, range: OutputRange) =>
+  get<ProcessOutput>(
+    `${sid(id)}/processes/${encodeURIComponent(processId)}/output`,
+    Object.fromEntries(
+      Object.entries(range).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]),
+    ),
+  )
+export const stopProcess = (id: string, processId: string) =>
+  post<{ ok: boolean }>(`${sid(id)}/processes/${encodeURIComponent(processId)}/stop`)
 
 export const browseDirectories = (path: string) => get<FsListing>('/api/fs', path ? { path } : {})
 export const recentWorkspaces = () =>

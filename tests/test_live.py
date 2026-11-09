@@ -548,9 +548,15 @@ def test_live_worker_status_includes_current_process_activity():
         "processes": [{
             "process_id": "1",
             "label": "review parser",
+            "command": "python review.py",
             "elapsed_seconds": 12.0,
             "last_line": "reading src/parse.py",
             "watching": False,
+            "status": "running",
+            "exit_code": None,
+            "log_bytes": 0,
+            "events_bytes": 0,
+            "kind": "shell",
         }],
     }
 
@@ -2239,3 +2245,43 @@ def test_notify_session_sends_text_and_source(monkeypatch):
     monkeypatch.setattr(live, "connect", connect)
     live.notify_session({"runtime_id": "r1"}, "build done", "ci")
     assert sent == [("r1", "notify", {"text": "build done", "source": "ci"})]
+
+
+def test_live_worker_web_stop_terminates_the_managed_process(tmp_path):
+    from ene.backend import LLMAgent, ToolExecutor
+
+    events = EventHub()
+    agent = LLMAgent.__new__(LLMAgent)
+    agent.tool_executor = ToolExecutor(work_dir=str(tmp_path))
+    agent.console = SimpleNamespace(
+        system=lambda text: events.publish("system", text=text),
+        warn=lambda text: events.publish("warning", text=text),
+        print=lambda *args, **kwargs: None,
+    )
+    worker = Worker.__new__(Worker)
+    worker.agent = agent
+    worker.events = events
+    started = agent.tool_executor.execute(
+        "start_process", {"command": "python -c \"import time; time.sleep(60)\"", "label": "sleeper"}
+    )
+    try:
+        worker._stop_process(started["process_id"])
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            status = agent.tool_executor.inspect_processes(started["process_id"])
+            if status["processes"][0]["status"] == "exited":
+                break
+            time.sleep(0.05)
+        assert status["processes"][0]["status"] == "exited"
+        deadline = time.time() + 5
+        while time.time() < deadline and not any(
+            event.type == "system" and "Stopped process" in event.data["text"]
+            for event in events.after(0)
+        ):
+            time.sleep(0.05)
+        assert any(
+            event.type == "system" and "Stopped process" in event.data["text"]
+            for event in events.after(0)
+        )
+    finally:
+        agent.tool_executor.shutdown_processes()

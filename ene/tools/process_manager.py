@@ -21,6 +21,7 @@ from .constants import (
     MAX_TOOL_OUTPUT_CHARS,
 )
 from ene.utils.process import (
+    PROCESS_EVENTS_ENV,
     agent_process_env,
     decode_output_text,
     windows_hidden_process_kwargs,
@@ -69,18 +70,32 @@ def process_status_snapshot(
     finished: int,
     activity: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Return structured process activity suitable for browser clients."""
+    """Return structured process activity suitable for browser clients.
+
+    Running processes come first, followed by the most recently started exited
+    ones. Output sizes let a viewer fetch only bytes it has not seen yet.
+    """
+    items = list(activity or [])
+    live = [item for item in items if item["status"] == "running"]
+    exited = [item for item in items if item["status"] != "running"]
+    exited = exited[-_SNAPSHOT_EXITED_LIMIT:][::-1]
     processes = []
-    for item in activity or []:
-        if item["status"] != "running":
-            continue
-        label = item.get("label") or " ".join(item["command"].split())
+    for item in [*live, *exited]:
+        command = " ".join(str(item.get("command", "")).split())
+        label = item.get("label") or command
+        events_bytes = int(item.get("events_bytes") or 0)
         processes.append({
             "process_id": str(item["process_id"]),
             "label": _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS],
-            "elapsed_seconds": max(0, float(item["elapsed_seconds"])),
+            "command": command[:_SNAPSHOT_COMMAND_MAX_CHARS],
+            "elapsed_seconds": max(0, float(item.get("elapsed_seconds") or 0)),
             "last_line": _clean_process_line(item.get("last_line", "")),
             "watching": bool(item.get("watching")),
+            "status": item["status"],
+            "exit_code": item.get("exit_code"),
+            "log_bytes": int(item.get("log_bytes") or 0),
+            "events_bytes": events_bytes,
+            "kind": "agent" if events_bytes else "shell",
         })
     return {"running": running, "finished": finished, "processes": processes}
 
@@ -93,7 +108,10 @@ def format_process_status(
     """Return the multiline process summary used by the terminal UI."""
     if running <= 0:
         return ""
-    active = process_status_snapshot(running, finished, activity)["processes"]
+    active = [
+        item for item in process_status_snapshot(running, finished, activity)["processes"]
+        if item["status"] == "running"
+    ]
     watchers = sum(item["watching"] for item in active)
     counts = format_background_counts(watchers, len(active) - watchers)
     lines = [f"{running} running" + (f" ({counts})" if counts else "") + f" · {finished} finished"]
@@ -108,7 +126,47 @@ def format_process_status(
     return "\n".join(lines)
 
 
+def _utf8_continuation_prefix(raw: bytes) -> int:
+    """Count leading UTF-8 continuation bytes (at most three)."""
+    count = 0
+    while count < min(3, len(raw)) and raw[count] & 0xC0 == 0x80:
+        count += 1
+    return count
+
+
+def _utf8_incomplete_suffix(raw: bytes) -> int:
+    """Count trailing bytes of a UTF-8 character cut short at the end."""
+    for back in range(1, min(4, len(raw)) + 1):
+        byte = raw[-back]
+        if byte & 0xC0 == 0x80:
+            continue
+        if byte < 0xC0:
+            return 0
+        need = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+        return back if back < need else 0
+    return 0
+
+
+def _next_line_start(handle: Any, position: int) -> int | None:
+    """Return the offset after the next newline at or past *position*."""
+    handle.seek(position)
+    while True:
+        block = handle.read(64 * 1024)
+        if not block:
+            return None
+        newline = block.find(b"\n")
+        if newline >= 0:
+            return position + newline + 1
+        position += len(block)
+
+
 _PROCESS_LABEL_MAX_CHARS = 40
+_SNAPSHOT_COMMAND_MAX_CHARS = 300
+# Exited processes stay listed (newest first) so their output remains viewable.
+_SNAPSHOT_EXITED_LIMIT = 20
+# One output read stays well inside a live-session frame even after JSON
+# escaping of control characters.
+PROCESS_READ_MAX_BYTES = 256 * 1024
 _PROCESS_LINE_MAX_CHARS = 80
 # Log bytes still reach the file and output notifications immediately; only
 # live status refreshes are coalesced.
@@ -193,18 +251,40 @@ class ProcessManagerMixin:
                     record["started_at"],
                     record.get("last_line") or "",
                     self._is_watcher(record),
+                    record,
                 )
                 for record in records
             ]
         return [
             {
                 **info,
-                "elapsed_seconds": time.time() - started_at,
+                "elapsed_seconds": (info["ended_at"] or time.time()) - started_at,
                 "last_line": _clean_process_line(last_line),
                 "watching": watching,
+                "events_bytes": self._events_size(record, info),
             }
-            for info, started_at, last_line, watching in snapshots
+            for info, started_at, last_line, watching, record in snapshots
         ]
+
+    def _events_size(self, record: dict[str, Any], info: dict[str, Any]) -> int:
+        """Size of a process's structured event file; 0 when it has none.
+
+        The size is final, and cached, once the process has exited: nothing
+        else is given the file's path.
+        """
+        cached = record.get("events_bytes_final")
+        if cached is not None:
+            return cached
+        events_path = info.get("events_path")
+        size = 0
+        if events_path:
+            try:
+                size = self._resolve_path(events_path).stat().st_size
+            except OSError:
+                pass
+        if info["status"] == "exited":
+            record["events_bytes_final"] = size
+        return size
 
     def _notify_background_changed(self) -> None:
         callback = self.background_callback
@@ -272,6 +352,10 @@ class ProcessManagerMixin:
                 polled = proc.poll()
                 if polled is not None:
                     record["exit_code"] = exit_code = polled
+                    # The capture thread may still be draining output; the
+                    # run ended when its exit was first observed.
+                    if record.get("ended_at") is None:
+                        record["ended_at"] = time.time()
         if record["job_handle"] is not None:
             self._release_completed_windows_job(record)
             if record["job_handle"] is not None:
@@ -286,6 +370,9 @@ class ProcessManagerMixin:
             "cwd": record["cwd"],
             "notify": record["notify"],
             "log_path": record["log_path"],
+            "events_path": record.get("events_path"),
+            "log_bytes": record.get("log_bytes", 0),
+            "ended_at": record.get("ended_at"),
             "log_truncated": record["log_truncated"],
             "log_error": record.get("log_error"),
             "capture_error": record.get("capture_error"),
@@ -345,6 +432,11 @@ class ProcessManagerMixin:
         # log suffix so concurrent sessions in one workspace cannot collide.
         log_path = log_dir / f"{process_id}-{uuid.uuid4().hex[:8]}.log"
         log_file = log_path.open("xb", buffering=0)
+        # An ene agent run inside the process (the subagent runner) appends its
+        # structured events here so the Web UI can render a conversation.
+        events_path = log_dir / f"{log_path.stem}.events.jsonl"
+        env = agent_process_env(self.model_alias, self.reasoning_effort)
+        env[PROCESS_EVENTS_ENV] = str(events_path)
         try:
             log_path.chmod(0o600)
             if sys.platform == "win32":
@@ -358,7 +450,7 @@ class ProcessManagerMixin:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
-                    env=agent_process_env(self.model_alias, self.reasoning_effort),
+                    env=env,
                     **windows_hidden_process_kwargs(
                         subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004
                     ),
@@ -392,7 +484,7 @@ class ProcessManagerMixin:
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
                     start_new_session=True,
-                    env=agent_process_env(self.model_alias, self.reasoning_effort),
+                    env=env,
                 )
                 process_backend = "linux_supervisor"
             else:
@@ -405,7 +497,7 @@ class ProcessManagerMixin:
                     stderr=subprocess.STDOUT,
                     cwd=cwd,
                     start_new_session=True,
-                    env=agent_process_env(self.model_alias, self.reasoning_effort),
+                    env=env,
                 )
                 process_backend = "process_group"
         except Exception:
@@ -428,7 +520,9 @@ class ProcessManagerMixin:
             "notify_lock": threading.Lock(),
             "exit_handled": False,
             "log_path": str(log_path.relative_to(self._resolve_path("."))),
+            "events_path": str(events_path.relative_to(self._resolve_path("."))),
             "started_at": time.time(),
+            "ended_at": None,
             "log_truncated": False,
             "log_bytes": 0,
             "last_line": "",
@@ -599,6 +693,8 @@ class ProcessManagerMixin:
                     proc.wait()
                     with record["state_lock"]:
                         record["exit_code"] = proc.returncode
+                        if record.get("ended_at") is None:
+                            record["ended_at"] = time.time()
                     if record["process_backend"] == "windows_job":
                         while record["job_handle"] is not None:
                             self._release_completed_windows_job(record)
@@ -706,6 +802,115 @@ class ProcessManagerMixin:
             while processes and len(json.dumps(result, indent=2)) > MAX_TOOL_OUTPUT_CHARS:
                 processes.pop()
             result["count"] = len(processes)
+        return result
+
+    def read_process_output(
+        self,
+        process_id: str,
+        *,
+        stream: str = "log",
+        offset: int | None = None,
+        before: int | None = None,
+        limit: int = PROCESS_READ_MAX_BYTES,
+    ) -> dict[str, Any]:
+        """Read one bounded byte range of a process log or event file.
+
+        ``offset`` reads forward from a byte position (an incremental follow);
+        ``before`` reads the range ending at a byte position (a tail, or an
+        earlier page). Log ranges end exactly where requested (or at the end of
+        the file), never inside a UTF-8 character, so consecutive pages
+        concatenate into the exact file text, an unfinished line included. A
+        page that starts mid-file drops its partial first line; the page before
+        it supplies that line. The ``events`` stream returns parsed JSON objects
+        from complete lines only, and skips a line longer than the limit.
+        """
+        if stream not in {"log", "events"}:
+            return {"error": f"Unknown stream: {stream}", "success": False}
+        with self._process_lock:
+            record = self._find_process_record_locked(str(process_id))
+        if record is None:
+            return {"error": f"Unknown managed process: {process_id}", "success": False}
+        info = self._process_info(record)
+        relative = info["log_path"] if stream == "log" else info.get("events_path")
+        limit = max(1, min(int(limit), PROCESS_READ_MAX_BYTES))
+        # Output may still arrive after exit is observed, until capture drains.
+        capture = record.get("capture_thread")
+        growing = info["status"] == "running" or (
+            capture is not None and capture.is_alive()
+        )
+        empty = {
+            "start": 0, "end": 0, "size": 0, "status": info["status"], "success": True,
+            **({"text": ""} if stream == "log" else {"events": []}),
+        }
+        if not relative:
+            return empty
+        try:
+            handle = self._resolve_path(relative).open("rb")
+        except FileNotFoundError:
+            return empty
+        with handle:
+            size = os.fstat(handle.fileno()).st_size
+            if before is not None:
+                end = max(0, min(int(before), size))
+                start = max(0, end - limit)
+                handle.seek(start)
+                raw = handle.read(end - start)
+                if start > 0:
+                    # Drop the partial first line; the next page includes it.
+                    newline = raw.find(b"\n")
+                    if 0 <= newline < len(raw) - 1:
+                        cut = newline + 1
+                    else:
+                        # One line spans the whole page: start on a character.
+                        cut = _utf8_continuation_prefix(raw)
+                    start += cut
+                    raw = raw[cut:]
+            else:
+                start = max(0, min(int(offset or 0), size))
+                handle.seek(start)
+                raw = handle.read(min(limit, size - start))
+            end = start + len(raw)
+            if stream == "log":
+                # Hold back a character still being written, or split by the
+                # limit; the next page starts with it.
+                if end < size or growing:
+                    held = _utf8_incomplete_suffix(raw)
+                    if held:
+                        raw = raw[:-held]
+                        end -= held
+            elif raw and not raw.endswith(b"\n"):
+                newline = raw.rfind(b"\n")
+                if newline >= 0:
+                    raw = raw[:newline + 1]
+                    end = start + len(raw)
+                elif len(raw) >= limit:
+                    # A line longer than the limit: skip past it so a reader
+                    # never stalls, or wait while it may still be written.
+                    raw = b""
+                    end = _next_line_start(handle, start + limit)
+                    if end is None:
+                        end = start if growing else size
+                else:
+                    raw = b""
+                    end = start
+        result: dict[str, Any] = {
+            "start": start, "end": end, "size": size,
+            "status": info["status"], "success": True,
+        }
+        if stream == "log":
+            result["text"] = decode_output_text(raw)
+            return result
+        events = []
+        for line in raw.split(b"\n"):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        result["events"] = events
         return result
 
     def _inspect_processes(

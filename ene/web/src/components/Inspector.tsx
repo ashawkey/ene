@@ -1,10 +1,12 @@
-import { Activity, ChartColumn, Eye, FolderOpen, Info, ListTree, Square, X } from 'lucide-react'
+import { Activity, Bot, ChartColumn, CircleCheck, CircleX, Eye, FolderOpen, Info, MessagesSquare, Square, X } from 'lucide-react'
 import { useState } from 'react'
 
+import { errorMessage, stopProcess } from '../lib/api'
 import { duration } from '../lib/format'
 import { store } from '../lib/storage'
 import type { ContextSnapshot, RoundStats, SessionSummary } from '../lib/protocol'
 import type { LiveProcesses } from '../lib/session'
+import { toast } from '../lib/toast'
 import { CopyButton } from './Markdown'
 import { FileBrowser } from './Files'
 import { StatsPanel } from './Stats'
@@ -32,57 +34,81 @@ export const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string; icon: type
 ]
 
 function TasksPanel({
+  sessionId,
   processes,
   connected,
-  onCommand,
+  onOpenProcess,
 }: {
+  sessionId: string
   processes: LiveProcesses
   connected: boolean
-  onCommand: (text: string) => void
+  onOpenProcess: (processId: string) => void
 }) {
-  const now = useNow(processes.processes.length > 0)
+  const now = useNow(processes.running > 0)
   const [armed, setArmed] = useState<string | null>(null)
-  const drift = (now - processes.receivedAt) / 1000
+  const drift = Math.max(0, (now - processes.receivedAt) / 1000)
+  const stop = (processId: string) => {
+    setArmed(null)
+    stopProcess(sessionId, processId).catch((exc) => toast(errorMessage(exc, 'Could not stop the process.')))
+  }
   return (
     <div className="tasks">
       <div className="panel-toolbar">
         <span className="muted small">{processes.running} running · {processes.finished} finished</span>
-        <span className="grow" />
-        <IconButton icon={ListTree} size="sm" label="List all (/ps)" disabled={!connected} onClick={() => onCommand('/ps')} />
       </div>
       {processes.processes.length === 0 ? <Empty icon={Activity}>No background processes.</Empty> : null}
-      {processes.processes.map((process) => (
-        <div className="task glass-soft" key={process.process_id}>
-          <div className="task-head">
-            <span className={`proc-dot ${process.watching ? 'watching' : ''}`} data-tip={process.watching ? 'Wakes the agent on output' : 'Runs in background'} />
-            <span className="task-label clamp">{process.label}</span>
-            <span className="muted small">{duration(process.elapsed_seconds + Math.max(0, drift))}</span>
+      {processes.processes.map((process) => {
+        const running = process.status !== 'exited'
+        const failed = !running && typeof process.exit_code === 'number' && process.exit_code !== 0
+        const elapsed = process.elapsed_seconds + (running ? drift : 0)
+        return (
+          <div className={`task glass-soft ${running ? '' : 'exited'}`} key={process.process_id}>
+            <div className="task-head">
+              {running ? (
+                <span className={`proc-dot ${process.watching ? 'watching' : ''}`} data-tip={process.watching ? 'Wakes the agent on output' : 'Runs in background'} />
+              ) : failed ? (
+                <CircleX size={13} className="fail" data-tip={`Exited with code ${process.exit_code}`} />
+              ) : (
+                <CircleCheck size={13} className="ok" data-tip={`Exited with code ${process.exit_code ?? '?'}`} />
+              )}
+              {process.kind === 'agent' ? <Bot size={14} className="task-kind" data-tip="Subagent" /> : null}
+              <button type="button" className="task-label clamp" onClick={() => onOpenProcess(process.process_id)}>
+                {process.label}
+              </button>
+              <span className="muted small">{duration(elapsed)}</span>
+            </div>
+            {process.last_line ? <pre className="task-line">{process.last_line}</pre> : null}
+            <div className="task-actions">
+              <span className="mono muted small">#{process.process_id}{running ? '' : ` · exit ${process.exit_code ?? '?'}`}</span>
+              <span className="grow" />
+              <IconButton
+                icon={process.kind === 'agent' ? MessagesSquare : Eye}
+                size="sm"
+                label={process.kind === 'agent' ? 'Open conversation' : 'Show full log'}
+                onClick={() => onOpenProcess(process.process_id)}
+              />
+              {running ? (
+                <IconButton
+                  icon={Square}
+                  size="sm"
+                  tone="danger"
+                  active={armed === process.process_id}
+                  label={armed === process.process_id ? 'Click again to stop' : 'Stop'}
+                  disabled={!connected}
+                  onClick={() => {
+                    if (armed === process.process_id) {
+                      stop(process.process_id)
+                    } else {
+                      setArmed(process.process_id)
+                      window.setTimeout(() => setArmed((current) => (current === process.process_id ? null : current)), 3000)
+                    }
+                  }}
+                />
+              ) : null}
+            </div>
           </div>
-          {process.last_line ? <pre className="task-line">{process.last_line}</pre> : null}
-          <div className="task-actions">
-            <span className="mono muted small">#{process.process_id}</span>
-            <span className="grow" />
-            <IconButton icon={Eye} size="sm" label="Show log" disabled={!connected} onClick={() => onCommand(`/ps ${process.process_id}`)} />
-            <IconButton
-              icon={Square}
-              size="sm"
-              tone="danger"
-              active={armed === process.process_id}
-              label={armed === process.process_id ? 'Click again to stop' : 'Stop'}
-              disabled={!connected}
-              onClick={() => {
-                if (armed === process.process_id) {
-                  setArmed(null)
-                  onCommand(`/ps stop ${process.process_id}`)
-                } else {
-                  setArmed(process.process_id)
-                  window.setTimeout(() => setArmed((current) => (current === process.process_id ? null : current)), 3000)
-                }
-              }}
-            />
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -125,7 +151,7 @@ export function Inspector({
   filesRefresh,
   onOpenFile,
   onJumpRound,
-  onCommand,
+  onOpenProcess,
 }: {
   tab: InspectorTab
   onTab: (tab: InspectorTab) => void
@@ -142,7 +168,7 @@ export function Inspector({
   filesRefresh: number
   onOpenFile: (path: string, changed?: boolean) => void
   onJumpRound: (round: RoundStats) => void
-  onCommand: (text: string) => void
+  onOpenProcess: (processId: string) => void
 }) {
   const current = INSPECTOR_TABS.find((item) => item.id === tab)!
   return (
@@ -169,7 +195,7 @@ export function Inspector({
         {tab === 'stats' ? (
           <StatsPanel rounds={rounds} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
         ) : null}
-        {tab === 'tasks' ? <TasksPanel processes={processes} connected={connected} onCommand={onCommand} /> : null}
+        {tab === 'tasks' ? <TasksPanel sessionId={sessionId} processes={processes} connected={connected} onOpenProcess={onOpenProcess} /> : null}
         {tab === 'info' ? <InfoPanel summary={summary} info={info} /> : null}
       </div>
     </aside>

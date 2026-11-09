@@ -84,6 +84,11 @@ def windows_utf8_process_env() -> dict[str, str]:
     return env
 
 
+# Path where an agent run inside a managed process may append its structured
+# events (JSON lines), so the Web UI can show it as a conversation.
+PROCESS_EVENTS_ENV = "ENE_PROCESS_EVENTS"
+
+
 def agent_process_env(
     model_alias: str | None = None,
     reasoning_effort: str | None = None,
@@ -102,6 +107,9 @@ def agent_process_env(
     # has no owning model (or intentionally uses a different partial identity).
     env.pop("ENE_MODEL_ALIAS", None)
     env.pop("ENE_REASONING_EFFORT", None)
+    # The structured event file belongs to one managed process; nested
+    # launches must never append to an outer process's file.
+    env.pop(PROCESS_EVENTS_ENV, None)
     if model_alias:
         env["ENE_MODEL_ALIAS"] = model_alias
     if reasoning_effort:

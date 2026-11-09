@@ -137,6 +137,10 @@ export function LinkBanner({ status, onRetry }: { status: LinkStatus; onRetry: (
   )
 }
 
+// Open dialogs, innermost last: Escape closes only the top one (a file can
+// open over the process viewer).
+const openModals: object[] = []
+
 export function Modal({
   children,
   onClose,
@@ -156,8 +160,10 @@ export function Modal({
   close.current = onClose
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
+    const token = {}
+    openModals.push(token)
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
+      if (event.key === 'Escape' && !event.defaultPrevented && openModals.at(-1) === token) {
         event.preventDefault()
         close.current()
       }
@@ -166,6 +172,7 @@ export function Modal({
     panel.current?.focus()
     return () => {
       window.removeEventListener('keydown', onKey)
+      openModals.splice(openModals.indexOf(token), 1)
       previous?.focus?.({ preventScroll: true })
     }
   }, [])

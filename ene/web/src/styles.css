@@ -1057,7 +1057,11 @@ button.step-head:hover { background: var(--hover); }
 .tasks { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
 .task { margin: 0 10px; padding: 10px 10px 6px 12px; }
 .task-head { display: flex; align-items: center; gap: 8px; }
-.task-label { flex: 1; font-weight: 600; font-size: 13px; }
+.task-label { flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text); font-weight: 600; font-size: 13px; text-align: left; cursor: pointer; }
+.task-label:hover { color: var(--accent); }
+.task-kind { flex: none; color: var(--accent); }
+.task.exited { opacity: 0.78; }
+.task.exited:hover { opacity: 1; }
 .task-line { margin-top: 8px; max-height: 80px; }
 .task-actions { display: flex; align-items: center; gap: 2px; margin-top: 4px; }
 
@@ -1119,6 +1123,29 @@ button.step-head:hover { background: var(--hover); }
 .viewer-image { display: grid; place-items: center; padding: 20px; min-height: 100%; background: repeating-conic-gradient(var(--hover) 0% 25%, transparent 0% 50%) 50% / 20px 20px; }
 .viewer-image img { max-width: 100%; max-height: 75dvh; border-radius: 8px; box-shadow: var(--shadow); }
 .viewer-markdown { padding: 20px 28px; max-width: 860px; }
+
+/* process viewer */
+.proc-viewer { position: relative; }
+.proc-command { padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.proc-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.proc-body .timeline { padding-top: 18px; }
+.proc-body .timeline-scroller { border-radius: 0; }
+.proc-loading { flex: 1; display: grid; place-items: center; color: var(--text-3); }
+.proc-result { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 8px 16px; border-top: 1px solid var(--line); font-size: 13px; }
+.proc-result.ok > svg { color: var(--green); }
+.proc-result.fail > svg, .proc-result.fail > span:first-of-type { color: var(--red); }
+.proc-error { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--line); color: var(--red); font-size: 12.5px; }
+.proc-error span { flex: 1; }
+.proc-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--accent); }
+.log-filter { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-3); }
+.log-filter input { width: 120px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12.5px; }
+.log-filter:focus-within { border-color: var(--accent); }
+.log-scroller { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 0; background: var(--code-bg); }
+.log-block { margin: 0; padding: 0 16px; font: 12px/1.55 var(--mono); white-space: pre; content-visibility: auto; contain-intrinsic-size: auto 2400px; }
+.log-scroller.wrap .log-block { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-earlier { display: flex; align-items: center; justify-content: center; gap: 6px; width: calc(100% - 32px); margin: 0 16px 10px; padding: 6px; border: 1px dashed var(--line); border-radius: 9px; background: transparent; color: var(--text-2); font-size: 12.5px; }
+.log-earlier:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.proc-body > .jump-latest { position: absolute; right: 18px; bottom: 14px; margin: 0; }
 .code-view { padding: 12px 0; font: 12.5px/1.6 var(--mono); }
 .code-chunk { content-visibility: auto; contain-intrinsic-size: auto 4000px; }
 .code-line { display: grid; grid-template-columns: 4.2em minmax(0, 1fr); }
@@ -1215,6 +1242,7 @@ button.step-head:hover { background: var(--hover); }
   .viewer { height: 92dvh; }
   .viewer-head { gap: 4px; padding-left: 12px; }
   .viewer-head .copy-btn, .viewer-head > svg { display: none; }
+  .log-filter input { width: 70px; }
   .viewer-title .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .modal-backdrop { padding: 8px; }
   .field-grid { grid-template-columns: 1fr; }

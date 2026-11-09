@@ -132,16 +132,23 @@ export function parseProcesses(data: Record<string, unknown> | null | undefined)
     if (!item || typeof item !== 'object') return []
     const p = item as Record<string, unknown>
     if (typeof p.process_id !== 'string' || typeof p.label !== 'string') return []
+    const eventsBytes = num(p.events_bytes)
     return [{
       process_id: p.process_id,
       label: p.label,
+      command: str(p.command),
       elapsed_seconds: num(p.elapsed_seconds),
       last_line: str(p.last_line),
       watching: p.watching === true,
+      status: p.status === 'exited' ? 'exited' as const : 'running' as const,
+      exit_code: typeof p.exit_code === 'number' ? p.exit_code : null,
+      log_bytes: num(p.log_bytes),
+      events_bytes: eventsBytes,
+      kind: p.kind === 'agent' || eventsBytes > 0 ? 'agent' as const : 'shell' as const,
     }]
   })
   return {
-    running: num(data?.running, processes.length),
+    running: num(data?.running, processes.filter((item) => item.status === 'running').length),
     finished: num(data?.finished),
     processes,
     receivedAt: Date.now(),
