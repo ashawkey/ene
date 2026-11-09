@@ -835,6 +835,28 @@ button.step-head:hover { background: var(--hover); }
   color: var(--text);
 }
 
+.jump-stack {
+  position: sticky;
+  z-index: 15;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: max-content;
+  height: 0;
+  margin: 0 18px 0 auto;
+  justify-content: flex-end;
+}
+.jump-btn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  color: var(--text);
+}
+
 /* ansi */
 .ansi .b { font-weight: 700; }
 .ansi .d { opacity: 0.6; }

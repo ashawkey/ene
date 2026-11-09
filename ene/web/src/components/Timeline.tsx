@@ -1,4 +1,4 @@
-import { ArrowDown, History, MessagesSquare } from 'lucide-react'
+import { ArrowDown, ArrowUp, History, MessagesSquare } from 'lucide-react'
 import type { RefObject } from 'react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
@@ -27,6 +27,8 @@ export type TimelineHandle = {
 }
 
 const PIN_DISTANCE = 160
+// Jump buttons appear once the view is this far from the respective edge.
+const EDGE_DISTANCE = 24
 
 // Memoized: parent re-renders (session list updates, composer typing) must
 // not walk the whole transcript.
@@ -52,7 +54,8 @@ export const Timeline = memo(function Timeline({
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const savedTop = useRef<number | null>(null)
-  const [away, setAway] = useState(false)
+  const [canUp, setCanUp] = useState(false)
+  const [canDown, setCanDown] = useState(false)
   const live = view.operationId !== null
   const nodes = useMemo(() => groupItems(view.items, live), [view.items, live])
   const matches = useMemo(() => {
@@ -67,6 +70,22 @@ export const Timeline = memo(function Timeline({
   const highlightKeys = useMemo(() => new Set(matches), [matches])
   const currentKey = matches.length ? matches[((matchIndex % matches.length) + matches.length) % matches.length] : null
   useEffect(() => onMatches(matches.length), [matches.length, onMatches])
+
+  // Show each jump button only while the view is away from that edge.
+  const measure = useCallback(() => {
+    const element = scroller.current
+    if (!element) return
+    const distance = element.scrollHeight - element.clientHeight - element.scrollTop
+    setCanUp(element.scrollTop > EDGE_DISTANCE)
+    setCanDown(distance > EDGE_DISTANCE)
+  }, [])
+
+  const toTop = useCallback(() => {
+    const element = scroller.current
+    if (!element) return
+    pinned.current = false
+    element.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
 
   const toBottom = useCallback((smooth = false) => {
     const element = scroller.current
@@ -112,7 +131,8 @@ export const Timeline = memo(function Timeline({
   // Follow new output while pinned to the tail.
   useLayoutEffect(() => {
     if (active && pinned.current) toBottom()
-  }, [view.items, view.indicator, active, toBottom])
+    measure()
+  }, [view.items, view.indicator, active, toBottom, measure])
 
   // Hidden panes keep their position; restore it when shown again.
   useLayoutEffect(() => {
@@ -128,24 +148,27 @@ export const Timeline = memo(function Timeline({
   }, [active, toBottom])
 
   // Keep the bottom in view when the composer grows or the viewport shrinks
-  // (mobile keyboards).
+  // (mobile keyboards); content resizes (expanding cards) can change which
+  // jump buttons apply without any scroll event.
   useEffect(() => {
     const element = scroller.current
     if (!element || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
       if (pinned.current) element.scrollTop = element.scrollHeight
+      measure()
     })
     observer.observe(element)
+    if (element.firstElementChild) observer.observe(element.firstElementChild)
     return () => observer.disconnect()
-  }, [])
+  }, [measure])
 
   const onScroll = useCallback(() => {
     const element = scroller.current
     if (!element) return
     const distance = element.scrollHeight - element.clientHeight - element.scrollTop
     pinned.current = distance < PIN_DISTANCE
-    setAway(distance > 500)
-  }, [])
+    measure()
+  }, [measure])
 
   useEffect(() => {
     if (!currentKey) return
@@ -197,10 +220,19 @@ export const Timeline = memo(function Timeline({
             </div>
           ))}
         </div>
-        {away ? (
-          <button type="button" className="jump-latest glass" onClick={() => toBottom(true)} aria-label="Jump to latest">
-            <ArrowDown size={16} />
-          </button>
+        {canUp || canDown ? (
+          <div className="jump-stack">
+            {canUp ? (
+              <button type="button" className="jump-btn glass" onClick={toTop} aria-label="Jump to top">
+                <ArrowUp size={16} />
+              </button>
+            ) : null}
+            {canDown ? (
+              <button type="button" className="jump-btn glass" onClick={() => toBottom(true)} aria-label="Jump to latest">
+                <ArrowDown size={16} />
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </OpenFileContext.Provider>
