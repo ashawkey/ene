@@ -418,3 +418,15 @@ def test_three_large_images_fit_under_32mb_after_request_projection(tmp_path):
     assert len(_images(requests[0].messages)) == 2
     assert agent.context.image_count == 3
     assert 5000 <= LLMAgent._context_tokens(agent) < 5100
+
+
+def test_image_result_event_carries_preview_path_not_bytes(tmp_path):
+    agent = _agent(tmp_path)
+    events = []
+    agent.console.events = NS(publish=lambda kind, **data: events.append((kind, data)))
+    _read_batch(agent)
+
+    results = [data for kind, data in events if kind == 'tool_result']
+    assert results[0]['image'] == {'path': str(tmp_path / 'image.png'), 'mime': 'image/png'}
+    assert 'image' not in results[1]
+    assert all('base64' not in json.dumps(data) for data in results)

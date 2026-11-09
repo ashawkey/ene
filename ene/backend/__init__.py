@@ -1115,7 +1115,13 @@ class LLMAgent(
                 with self.console.thinking(label="Executing", status_suffix=function_name):
                     result = self.tool_executor.execute(function_name, function_args)
             image_url = result.pop("image_url", None)
+            image_preview = None
             if image_url and result.get("success"):
+                if result.get("path"):
+                    image_preview = {
+                        "path": str(result["path"]),
+                        "mime": str(result.get("mime_type") or ""),
+                    }
                 image_content.extend((
                     TextPart(f"Image returned by read_image: {function_args['file']}"),
                     ImagePart({"url": image_url}),
@@ -1148,6 +1154,8 @@ class LLMAgent(
                         self.console.diff_edit(**d, success=success)
                 else:
                     self.console.tool_result(output_description, success=success)
+            elif image_preview is not None:
+                self.console.tool_result(output_description, success=success, image=image_preview)
             else:
                 self.console.tool_result(output_description, success=success)
 

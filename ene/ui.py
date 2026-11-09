@@ -1258,7 +1258,7 @@ class AgentConsole:
             qualifiers=qualifiers,
         )
 
-    def tool_result(self, msg: str, success: bool = True):
+    def tool_result(self, msg: str, success: bool = True, image: dict[str, str] | None = None):
         style = "tool_ok" if success else "tool_fail"
         icon = _CHECK if success else _CROSS
         prefix = f"{_DOT} {icon} "
@@ -1268,7 +1268,12 @@ class AgentConsole:
         rest = "\n".join(indent + line for line in lines[1:])
         output = first + ("\n" + rest if rest else "")
         self._console.print(output, style=style, markup=False)
-        self._emit("tool_result", text=msg, success=success)
+        # Web clients render *image* (a local path and media type) as a
+        # preview; the bytes themselves stay out of the event stream.
+        if image:
+            self._emit("tool_result", text=msg, success=success, image=image)
+        else:
+            self._emit("tool_result", text=msg, success=success)
 
     def _highlight_line(self, code: str, language: str) -> "Text":
         """Return a ``rich.text.Text`` with syntax-highlighted *code*.

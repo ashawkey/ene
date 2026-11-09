@@ -334,6 +334,7 @@ class FileToolsMixin:
         return {
             "message": f"Image loaded: {file} ({mime_type}, {_human_size(len(data))})",
             "image_url": f"data:{mime_type};base64,{encoded}",
+            "path": str(file_path),
             "mime_type": mime_type,
             "size": len(data),
             "success": True,

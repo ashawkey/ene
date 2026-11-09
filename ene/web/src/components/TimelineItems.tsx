@@ -25,9 +25,10 @@ import type { ReactNode } from 'react'
 import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { parseAnsi } from '../lib/ansi'
+import { rawFileUrl } from '../lib/api'
 import { clockTime, compactNumber, duration, latency, tokenRate } from '../lib/format'
 import { highlight, languageForPath } from '../lib/highlight'
-import type { DiffData, TimelineItem } from '../lib/session'
+import type { DiffData, TimelineItem, ToolImage } from '../lib/session'
 import { summarize } from '../lib/timeline'
 import type { ProcessActivity, RoundStats } from '../lib/protocol'
 import { CopyButton, Markdown } from './Markdown'
@@ -178,6 +179,21 @@ export const Thinking = memo(function Thinking({ item }: { item: ItemOf<'thinkin
   )
 })
 
+/** The session whose workspace serves tool images; null disables previews. */
+export const SessionIdContext = createContext<string | null>(null)
+
+/** Preview of an image a tool loaded, served read-only from the workspace. */
+function ToolImagePreview({ image, onOpenFile }: { image: ToolImage; onOpenFile?: (path: string) => void }) {
+  const sessionId = useContext(SessionIdContext)
+  const [failed, setFailed] = useState(false)
+  if (!sessionId) return null
+  if (failed) return <div className="step-note muted">Image preview unavailable (outside the workspace or unsupported).</div>
+  const img = <img src={rawFileUrl(sessionId, image.path)} alt={image.path} loading="lazy" onError={() => setFailed(true)} />
+  return onOpenFile ? (
+    <button type="button" className="tool-image" onClick={() => onOpenFile(image.path)} data-tip="Open image">{img}</button>
+  ) : <div className="tool-image">{img}</div>
+}
+
 export type ProcessLinks = {
   find: (processId: string) => ProcessActivity | null
   open: (processId: string) => void
@@ -224,7 +240,8 @@ export const ToolCall = memo(function ToolCall({
   const result = item.result?.text.trim() ?? ''
   const launched = useLaunchedProcess(item)
   const links = useContext(OpenProcessContext)
-  const empty = !output && !result && item.diffs.length === 0
+  const image = item.result?.image ?? null
+  const empty = !output && !result && !image && item.diffs.length === 0
   // Diffs fold themselves past a screenful; text folds past a few lines.
   const lines = lineCount(output?.text ?? '') + lineCount(result)
   const autoOpen = failed || running || item.diffs.length > 0 || lines <= AUTO_FOLD_LINES
@@ -237,6 +254,7 @@ export const ToolCall = memo(function ToolCall({
           {/* With output shown, the result is only its summary line. */}
           {result && output && !result.includes('\n') ? <div className="step-note">{result}</div>
             : result ? <OutputBlock text={result} /> : null}
+          {image ? <ToolImagePreview image={image} onOpenFile={onOpenFile} /> : null}
           {launched && links ? (
             <button type="button" className="link proc-link" onClick={() => links.open(launched.process_id)}>
               {launched.kind === 'agent' ? <><Bot size={14} />Open subagent conversation</> : <><ScrollText size={14} />View full output</>}

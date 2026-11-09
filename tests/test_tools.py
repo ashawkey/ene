@@ -774,6 +774,7 @@ def test_read_image_returns_data_url(tmp_path):
 
     assert result["success"]
     assert result["mime_type"] == "image/png"
+    assert result["path"] == str(image)
     assert result["image_url"] == (
         "data:image/png;base64," + base64.b64encode(data).decode("ascii")
     )

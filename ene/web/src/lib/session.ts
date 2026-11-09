@@ -12,7 +12,9 @@ import { isPrompt } from './protocol'
 
 type Base = { key: string; seq: number; ts: number }
 
-export type ToolResult = { text: string; success: boolean }
+/** An image a tool loaded (`read_image`); `path` is the agent's local path. */
+export type ToolImage = { path: string; mime: string }
+export type ToolResult = { text: string; success: boolean; image?: ToolImage }
 export type OutputBlock = { text: string; ansi: string | null }
 export type DiffData = {
   path: string
@@ -229,6 +231,12 @@ function append(items: TimelineItem[], item: TimelineItem): TimelineItem[] {
   return [...items, item]
 }
 
+function toolImage(value: unknown): ToolImage | null {
+  if (!value || typeof value !== 'object') return null
+  const { path, mime } = value as Record<string, unknown>
+  return typeof path === 'string' && path ? { path, mime: typeof mime === 'string' ? mime : '' } : null
+}
+
 type ToolItem = Extract<TimelineItem, { kind: 'tool' }>
 
 /** Index of the oldest unanswered call in the current run, or -1. */
@@ -421,7 +429,9 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
       }]
       break
     case 'tool_result': {
-      const result = { text: str(data.text), success: data.success !== false }
+      const result: ToolResult = { text: str(data.text), success: data.success !== false }
+      const image = toolImage(data.image)
+      if (image) result.image = image
       next.items = attachResult(items, result) ?? [...items, {
         kind: 'tool', key, seq, ts, name: '', primary: '', qualifiers: [], text: '', result, output: null, diffs: [],
       }]

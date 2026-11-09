@@ -14,7 +14,7 @@ import { ProcessViewer } from './ProcessViewer'
 import { PromptSheet } from './PromptSheet'
 import type { TimelineHandle } from './Timeline'
 import { Timeline } from './Timeline'
-import { OpenProcessContext } from './TimelineItems'
+import { OpenProcessContext, SessionIdContext } from './TimelineItems'
 import { ContextRing, IconButton, LinkBanner, LinkDot, StateIcon } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 
@@ -132,6 +132,7 @@ export function SessionPane({
   const model = view.context?.model || summary.model
 
   return (
+    <SessionIdContext.Provider value={summary.id}>
     <section className={`pane ${active ? 'active' : ''}`} hidden={!active} aria-label={title}>
       <div className="pane-main">
         <header className="pane-header glass">
@@ -294,6 +295,7 @@ export function SessionPane({
         />
       ) : null}
     </section>
+    </SessionIdContext.Provider>
   )
 }
 

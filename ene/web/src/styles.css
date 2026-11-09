@@ -744,6 +744,8 @@ button.step-head:hover { background: var(--hover); }
 }
 .output-wrap { position: relative; min-width: 0; }
 .step-note { font: 12px var(--mono); color: var(--text-3); }
+.tool-image { display: block; width: fit-content; max-width: 100%; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: repeating-conic-gradient(var(--hover) 0% 25%, transparent 0% 50%) 50% / 16px 16px; cursor: zoom-in; }
+.tool-image img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; }
 .output-wrap > .copy-btn { position: absolute; top: 4px; right: 4px; opacity: 0; }
 .output-wrap:hover > .copy-btn { opacity: 1; }
 

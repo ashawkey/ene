@@ -71,6 +71,21 @@ describe('session reducer', () => {
     ])
   })
 
+  it('keeps an image a tool loaded on its result', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'tool_start', { name: 'read_image', primary: 'a.png' }),
+      ev(2, 'tool_result', { text: 'Image loaded', success: true, image: { path: '/w/a.png', mime: 'image/png' } }),
+      ev(3, 'tool_start', { name: 'read_image', primary: 'b.png' }),
+      ev(4, 'tool_result', { text: 'Image loaded', success: true, image: { mime: 'image/png' } }),
+    ])
+    const tools = view.items.filter((item) => item.kind === 'tool')
+    expect(tools.map((tool) => tool.kind === 'tool' && tool.result?.image)).toEqual([
+      { path: '/w/a.png', mime: 'image/png' },
+      undefined,
+    ])
+  })
+
   it('upserts round statistics by id', () => {
     const round = { id: 'r1', index: 1, input_tokens: 10, output_tokens: 1, cached_tokens: 5, duration: 2, tool_calls: 1 }
     const { view } = run([

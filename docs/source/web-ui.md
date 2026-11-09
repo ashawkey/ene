@@ -69,6 +69,7 @@ The sidebar groups every live session on the machine:
 - **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
 - **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time split into model and tool time, mean time to first token (TTFT), output speed (tokens/s), tokens, cache hit rate, and tool calls; click it for statistics.
 - **Diffs:** click the file name to open the file.
+- **Images:** a `read_image` call shows a thumbnail; click it to open the image in the file viewer. Images outside the session workspace show only the text result.
 - **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.
 - **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
 
