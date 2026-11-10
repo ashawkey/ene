@@ -6,6 +6,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+import { rawFileUrl } from '../lib/api'
 import { highlight } from '../lib/highlight'
 import { fileTarget, isExternalHref, isWebUrl, remarkLinks } from '../lib/links'
 import { copyText } from './ui'
@@ -50,6 +51,31 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: { code: str
 
 /** Opens a workspace file in the viewer; absent outside a session timeline. */
 export const OpenFileContext = createContext<((path: string) => void) | null>(null)
+
+/** The session whose workspace serves images; null disables previews. */
+export const SessionIdContext = createContext<string | null>(null)
+
+// Raster formats the hub's read-only `/raw` endpoint serves.
+const RASTER_IMAGE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i
+
+/**
+ * A Markdown image. Local raster paths render through the hub; remote URLs
+ * (which would leak the viewer's address) and failures show the alt text.
+ */
+function MarkdownImage({ src, alt }: { src: string; alt: string }) {
+  const sessionId = useContext(SessionIdContext)
+  const openFile = useContext(OpenFileContext)
+  const [failed, setFailed] = useState(false)
+  const local = !isExternalHref(src) || /^file:/i.test(src)
+  const target = local ? fileTarget(decode(src)) : null
+  if (!sessionId || !target || target.line !== null || !RASTER_IMAGE.test(target.path) || failed) {
+    return <span className="md-img">[{alt || 'image'}]</span>
+  }
+  const img = <img src={rawFileUrl(sessionId, target.path)} alt={alt} loading="lazy" onError={() => setFailed(true)} />
+  return openFile ? (
+    <button type="button" className="md-image" onClick={() => openFile(target.path)} data-tip={`Open ${target.path}`}>{img}</button>
+  ) : <span className="md-image">{img}</span>
+}
 
 function SmartLink({ href, children }: { href: string; children: ReactNode }) {
   const openFile = useContext(OpenFileContext)
@@ -100,9 +126,8 @@ const components: Components = {
   table({ children }) {
     return <div className="table-wrap"><table>{children}</table></div>
   },
-  img({ alt }) {
-    // Remote images would leak the viewer's address; show the alt text.
-    return <span className="md-img">[{alt || 'image'}]</span>
+  img({ src, alt }) {
+    return <MarkdownImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} />
   },
 }
 

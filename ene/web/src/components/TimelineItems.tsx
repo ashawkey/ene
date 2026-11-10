@@ -31,7 +31,7 @@ import { highlight, languageForPath } from '../lib/highlight'
 import type { DiffData, TimelineItem, ToolImage } from '../lib/session'
 import { summarize } from '../lib/timeline'
 import type { ProcessActivity, RoundStats } from '../lib/protocol'
-import { CopyButton, Markdown } from './Markdown'
+import { CopyButton, Markdown, SessionIdContext } from './Markdown'
 import { Spinner } from './ui'
 
 type ItemOf<K extends TimelineItem['kind']> = Extract<TimelineItem, { kind: K }>
@@ -179,15 +179,12 @@ export const Thinking = memo(function Thinking({ item }: { item: ItemOf<'thinkin
   )
 })
 
-/** The session whose workspace serves tool images; null disables previews. */
-export const SessionIdContext = createContext<string | null>(null)
-
-/** Preview of an image a tool loaded, served read-only from the workspace. */
+/** Preview of an image a tool loaded, served read-only by the hub. */
 function ToolImagePreview({ image, onOpenFile }: { image: ToolImage; onOpenFile?: (path: string) => void }) {
   const sessionId = useContext(SessionIdContext)
   const [failed, setFailed] = useState(false)
   if (!sessionId) return null
-  if (failed) return <div className="step-note muted">Image preview unavailable (outside the workspace or unsupported).</div>
+  if (failed) return <div className="step-note muted">Image preview unavailable (unreadable, too large, or unsupported).</div>
   const img = <img src={rawFileUrl(sessionId, image.path)} alt={image.path} loading="lazy" onError={() => setFailed(true)} />
   return onOpenFile ? (
     <button type="button" className="tool-image" onClick={() => onOpenFile(image.path)} data-tip="Open image">{img}</button>

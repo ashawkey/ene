@@ -1,8 +1,10 @@
 """Read-only workspace browsing for the web hub.
 
 Every path a browser supplies is relative to a live session's workspace and is
-resolved (following symlinks) before use; anything that lands outside the
-workspace root is refused. Nothing here writes to disk.
+resolved (following symlinks) before use. Listing, search, and diffs refuse
+anything that lands outside the workspace root; single-file previews may read
+any file the hub's user can read, since agents often point at paths elsewhere.
+Nothing here writes to disk.
 """
 
 from __future__ import annotations
@@ -61,8 +63,10 @@ class WorkspaceError(Exception):
         self.status = status
 
 
-def resolve_in_workspace(root: str | Path, relative: str) -> tuple[Path, Path]:
-    """Return ``(root, target)`` with *target* guaranteed inside *root*."""
+def resolve_in_workspace(
+    root: str | Path, relative: str, *, confined: bool = True
+) -> tuple[Path, Path]:
+    """Return ``(root, target)``; *target* is inside *root* unless not *confined*."""
     try:
         base = Path(root).expanduser().resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -80,13 +84,17 @@ def resolve_in_workspace(root: str | Path, relative: str) -> tuple[Path, Path]:
         raise WorkspaceError("Path not found.", 404) from exc
     except (OSError, RuntimeError) as exc:
         raise WorkspaceError("Path is not reachable.") from exc
-    if target != base and base not in target.parents:
+    if confined and target != base and base not in target.parents:
         raise WorkspaceError("Path is outside the workspace.", 403)
     return base, target
 
 
 def _relative(base: Path, path: Path) -> str:
-    rel = path.relative_to(base).as_posix()
+    """Workspace-relative path, or the absolute path for files outside it."""
+    try:
+        rel = path.relative_to(base).as_posix()
+    except ValueError:
+        return path.as_posix()
     return "" if rel == "." else rel
 
 
@@ -142,8 +150,12 @@ def _is_binary(sample: bytes) -> bool:
 
 
 def read_file(root: str | Path, relative: str) -> dict:
-    """Return a preview of one file: text (bounded), image, or binary marker."""
-    base, target = resolve_in_workspace(root, relative)
+    """Return a preview of one file: text (bounded), image, or binary marker.
+
+    The file may live outside the workspace; only regular files are read, and
+    never more than ``MAX_TEXT_BYTES`` of them.
+    """
+    base, target = resolve_in_workspace(root, relative, confined=False)
     if not target.is_file():
         raise WorkspaceError("Not a file.")
     try:
@@ -170,8 +182,11 @@ def read_file(root: str | Path, relative: str) -> dict:
 
 
 def raw_image(root: str | Path, relative: str) -> tuple[Path, str]:
-    """Return a raster image's path and media type for direct serving."""
-    _, target = resolve_in_workspace(root, relative)
+    """Return a raster image's path and media type for direct serving.
+
+    Like :func:`read_file`, the image may live outside the workspace.
+    """
+    _, target = resolve_in_workspace(root, relative, confined=False)
     mime = IMAGE_TYPES.get(target.suffix.lower())
     if mime is None or not target.is_file():
         raise WorkspaceError("Only raster images can be served.", 415)

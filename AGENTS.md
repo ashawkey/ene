@@ -31,7 +31,7 @@ Ene is a Python 3.10+ terminal-first AI coding agent.
 - Personas are declarative `PERSONA.md` files. Discovery uses the same bundled/project/personal precedence, with project personas under `.ene/personas/`. Preserve marker validation and persona tool/skill filtering.
 - Project instructions are loaded by `ene/personas.py` from root `AGENTS.md`, or from `.ene/AGENTS.md` when present; a line containing exactly `@AGENTS.md` includes the root file.
 - The frontend production assets are committed because Python package builds do not invoke Node.js. After changing `ene/web/src/`, run the frontend checks and `npm run build`, then commit the updated `ene/web/dist/` output.
-- Keep Markdown raw HTML disabled and preserve the hub's strict Content Security Policy. Web authentication relies on an httponly login cookie plus a CSRF token supplied in state frames and required for logout. Workspace browsing endpoints must stay read-only and confined to the session workspace.
+- Keep Markdown raw HTML disabled and preserve the hub's strict Content Security Policy. Web authentication relies on an httponly login cookie plus a CSRF token supplied in state frames and required for logout. Workspace browsing endpoints must stay read-only; listing, search, and diffs stay confined to the session workspace, while single-file previews (`/file`, `/raw`) may read any regular file the hub user can read, within their size caps.
 
 # Verification
 

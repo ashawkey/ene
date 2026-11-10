@@ -1170,8 +1170,13 @@ def test_workspace_browsing_endpoints(tmp_path):
             absolute = client.get("/api/sessions/s1/file", params={"path": str(tmp_path / "src/app.py")})
             assert absolute.json()["path"] == "src/app.py"
 
+            # Previews may read readable files outside the workspace; listing may not.
             for escape in ("../" + outside.name, str(outside)):
-                assert client.get("/api/sessions/s1/file", params={"path": escape}).status_code == 403
+                preview = client.get("/api/sessions/s1/file", params={"path": escape}).json()
+                assert preview["text"] == "secret"
+                assert preview["path"] == outside.resolve().as_posix()
+            listing = client.get("/api/sessions/s1/files", params={"path": str(tmp_path.parent)})
+            assert listing.status_code == 403
             assert client.get("/api/sessions/s1/file", params={"path": "missing"}).status_code == 404
             assert client.get("/api/sessions/unknown/files").status_code == 404
 
@@ -1187,7 +1192,7 @@ def test_workspace_browsing_endpoints(tmp_path):
         outside.unlink()
 
 
-def test_symlink_out_of_the_workspace_is_refused(tmp_path):
+def test_symlink_out_of_the_workspace_is_refused_for_listing(tmp_path):
     from ene.hub import files as hubfiles
 
     secret = tmp_path / "secret"
@@ -1197,8 +1202,26 @@ def test_symlink_out_of_the_workspace_is_refused(tmp_path):
     workspace.mkdir()
     (workspace / "link").symlink_to(secret)
     with pytest.raises(hubfiles.WorkspaceError) as exc:
-        hubfiles.read_file(workspace, "link/key")
+        hubfiles.list_directory(workspace, "link")
     assert exc.value.status == 403
+    # A single-file preview follows the link and reports the real path.
+    assert hubfiles.read_file(workspace, "link/key")["path"] == (secret / "key").as_posix()
+
+
+def test_preview_outside_the_workspace_stays_bounded(tmp_path):
+    from ene.hub import files as hubfiles
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    big = tmp_path / "big.log"
+    big.write_bytes(b"x" * (hubfiles.MAX_TEXT_BYTES + 10))
+    preview = hubfiles.read_file(workspace, str(big))
+    assert preview["truncated"] and len(preview["text"]) == hubfiles.MAX_TEXT_BYTES
+    with pytest.raises(hubfiles.WorkspaceError):
+        hubfiles.read_file(workspace, str(tmp_path))  # a directory is not a file
+    if os.path.exists("/dev/zero"):
+        with pytest.raises(hubfiles.WorkspaceError):
+            hubfiles.read_file(workspace, "/dev/zero")  # nor is a device
 
 
 def test_git_changes_reports_workspace_relative_paths(tmp_path):

@@ -1435,7 +1435,7 @@ class Hub:
                 raise HTTPException(status_code=404, detail="Terminal not found.")
             return {"ok": True}
 
-        # -- workspace browsing (read-only, confined to the workspace) ------
+        # -- workspace browsing (read-only; only previews leave the workspace)
 
         def session_workspace(session_id: str) -> str:
             workspace = self.workspace_of(session_id)

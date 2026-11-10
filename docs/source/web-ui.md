@@ -72,7 +72,8 @@ The sidebar groups every live session on the machine:
 - **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
 - **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time split into model and tool time, mean time to first token (TTFT), output speed (tokens/s), tokens, cache hit rate, and tool calls; click it for statistics.
 - **Diffs:** click the file name to open the file.
-- **Images:** a `read_image` call shows a thumbnail; click it to open the image in the file viewer. Images outside the session workspace show only the text result.
+- **Images:** a `read_image` call shows a thumbnail; click it to open the image in the file viewer. Unreadable or unsupported images show only the text result.
+- **Reply images:** Markdown images with a local raster path (for example `![plot](out/fig.png)`) render inline. Remote, SVG, or unreadable images show their alt text.
 - **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.
 - **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
 
@@ -97,7 +98,8 @@ Open the side panel with the panel icon in the session header (it reopens the la
 | **Processes** | Running and recently exited background processes with runtime, exit code, and latest output. Open one to view its output, or stop it (click twice). |
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
-- File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
+- File browsing is read-only. Listing, find, search, and diffs stay inside the workspace; opening a file link or image may preview any file the hub user can read.
+- Previews are capped: text shows the first 512 KB, highlighting stops above 200,000 characters, and images over 16 MB are not shown.
 - **Resize:** drag the panel's left edge, up to half the window; double-click it to reset. The conversation keeps a minimum readable width, and on narrow windows the panel floats over it instead.
 - **Mention:** hover a file or folder row and click `@` to insert its workspace-relative path into the message box.
 

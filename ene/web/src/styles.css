@@ -686,6 +686,9 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .markdown th, .markdown td { padding: 5px 10px; border: 1px solid var(--line); text-align: left; }
 .markdown th { background: var(--hover); }
 .md-img { color: var(--text-3); }
+.md-image { display: inline-block; vertical-align: top; max-width: 100%; padding: 0; margin: 2px 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: repeating-conic-gradient(var(--hover) 0% 25%, transparent 0% 50%) 50% / 16px 16px; }
+button.md-image { cursor: zoom-in; }
+.md-image img { display: block; max-width: 100%; max-height: 480px; object-fit: contain; }
 
 .code-block { margin: 0.6em 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--code-bg); }
 .code-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 2px 12px; border-bottom: 1px solid var(--line); color: var(--text-3); font: 11px var(--mono); }
