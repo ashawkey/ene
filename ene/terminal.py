@@ -109,8 +109,10 @@ class AtFileCompleter(Completer):
         ".ene",  # our own cache dir
     })
 
-    def __init__(self, work_dir: str | Path | None = None) -> None:
+    def __init__(self, work_dir: str | Path | None = None, *, confine: bool = False) -> None:
         self._work_dir = Path(work_dir or os.getcwd()).resolve()
+        # When set (the web hub), directory listing never leaves work_dir.
+        self._confine = confine
         # Cached candidate index: list of (rel_path, is_dir).
         self._index: list[tuple[str, bool]] = []
         self._index_built_at = 0.0
@@ -155,7 +157,7 @@ class AtFileCompleter(Completer):
                 search_dir = search_dir.resolve()
             except (OSError, RuntimeError):
                 return
-            if search_dir.is_dir():
+            if search_dir.is_dir() and self._may_list(search_dir):
                 yield from self._direct_completions(search_dir, base_dir, prefix, partial)
                 return
 
@@ -205,7 +207,12 @@ class AtFileCompleter(Completer):
             yield self._make_completion(name, "", partial, is_dir)
 
     def _fuzzy_completions(self, partial):
-        """Fuzzy-match *partial* against the cached repo-wide index.
+        """Fuzzy-match *partial* against the cached repo-wide index."""
+        for rel, is_dir in self.find(partial, self.MAX_COMPLETIONS):
+            yield self._make_completion(rel, "", partial, is_dir)
+
+    def find(self, query: str, limit: int | None = None) -> list[tuple[str, bool]]:
+        """Return ``(rel_path, is_dir)`` pairs ranked by fuzzy match.
 
         The index is built once and reused across keystrokes (see
         :meth:`_get_index`), so matching cost is independent of repo size.
@@ -213,7 +220,7 @@ class AtFileCompleter(Completer):
         basename first (falling back to the full path), so a short query
         finds a deeply-nested file.
         """
-        pl = partial.lower()
+        pl = query.lower()
         scored: list[tuple[int, str, bool]] = []  # (score, rel_path, is_dir)
 
         for rel, is_dir in self._get_index():
@@ -232,9 +239,10 @@ class AtFileCompleter(Completer):
 
         # Sort: higher score first, then dirs first, then shorter path, then alpha
         scored.sort(key=lambda x: (-x[0], not x[2], len(x[1]), x[1].lower()))
+        return [(rel, is_dir) for _score, rel, is_dir in scored[:limit]]
 
-        for _score, rel, is_dir in scored[: self.MAX_COMPLETIONS]:
-            yield self._make_completion(rel, "", partial, is_dir)
+    def _may_list(self, directory: Path) -> bool:
+        return not self._confine or directory == self._work_dir or self._work_dir in directory.parents
 
     # ------------------------------------------------------------------
     # Candidate index (built once, cached)

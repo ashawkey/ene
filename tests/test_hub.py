@@ -1386,3 +1386,133 @@ def test_process_endpoints_relay_reads_and_stops_to_the_attached_worker():
     finally:
         hub.stop()
         worker.close()
+
+
+def test_path_completion_endpoint_stays_inside_the_workspace(tmp_path):
+    workspace = tmp_path / "ws"
+    (workspace / "src").mkdir(parents=True)
+    (tmp_path / "secret-dir").mkdir()
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(workspace))
+    with TestClient(hub.app) as client:
+        login(client)
+        for query in ("../", "../sec", f"{tmp_path}/"):
+            completions = client.get(
+                "/api/sessions/s1/path-completions", params={"query": query}
+            ).json()["completions"]
+            assert not any("secret-dir" in item for item in completions)
+        inside = client.get(
+            "/api/sessions/s1/path-completions", params={"query": "src/"}
+        ).json()["completions"]
+        assert inside == [] or all(item.startswith("@src/") for item in inside)
+
+
+def test_workspace_find_endpoint_matches_recursively(tmp_path):
+    (tmp_path / "pkg" / "deep").mkdir(parents=True)
+    (tmp_path / "pkg" / "deep" / "widget_view.py").write_text("x", encoding="utf-8")
+    (tmp_path / "readme.md").write_text("x", encoding="utf-8")
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(tmp_path))
+    with TestClient(hub.app) as client:
+        assert client.get("/api/sessions/s1/files/find", params={"query": "wv"}).status_code == 403
+        login(client)
+        found = client.get("/api/sessions/s1/files/find", params={"query": "widview"}).json()
+        assert found["results"][0] == {"path": "pkg/deep/widget_view.py", "type": "file"}
+        dirs = client.get("/api/sessions/s1/files/find", params={"query": "deep"}).json()
+        assert {"path": "pkg/deep", "type": "dir"} in dirs["results"]
+        assert client.get("/api/sessions/s1/files/find", params={"query": ""}).status_code == 400
+        assert client.get("/api/sessions/missing/files/find", params={"query": "x"}).status_code == 404
+
+
+@pytest.mark.skipif(not __import__("shutil").which("rg"), reason="ripgrep not installed")
+def test_workspace_text_search(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("héllo Needle\nnone\nneedles\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("x" * 1000 + "needle\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "b.py").write_text("needle\n", encoding="utf-8")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "c.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "link").symlink_to(outside)
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(tmp_path))
+    url = "/api/sessions/s1/files/search"
+    try:
+        with TestClient(hub.app) as client:
+            assert client.get(url, params={"query": "needle"}).status_code == 403
+            login(client)
+            result = client.get(url, params={"query": "needle"}).json()
+            paths = {item["path"] for item in result["files"]}
+            # .gitignore is honored and symlinks out of the workspace are not followed.
+            assert paths == {"src/a.py", "notes.txt"}
+            assert result["truncated"] is False
+            first = next(item for item in result["files"] if item["path"] == "src/a.py")["matches"]
+            assert [m["line"] for m in first] == [1, 3]
+            # Ranges are character offsets, even after a multi-byte character.
+            text, (start, end) = first[0]["text"], first[0]["ranges"][0]
+            assert text[start:end] == "Needle"
+            long = next(item for item in result["files"] if item["path"] == "notes.txt")["matches"][0]
+            assert long["clipped"] and len(long["text"]) <= 240
+            assert long["text"][slice(*long["ranges"][0])] == "needle"
+
+            sensitive = client.get(url, params={"query": "Needle", "case": True}).json()
+            assert sensitive["match_count"] == 1
+            word = client.get(url, params={"query": "needle", "word": True}).json()
+            assert word["match_count"] == 1  # not "needles" or "xxx…needle"
+            regex = client.get(url, params={"query": "need.es", "regex": True}).json()
+            assert regex["match_count"] == 1
+            only_txt = client.get(url, params={"query": "needle", "include": "*.txt"}).json()
+            assert [item["path"] for item in only_txt["files"]] == ["notes.txt"]
+            no_src = client.get(url, params={"query": "needle", "exclude": "src"}).json()
+            assert [item["path"] for item in no_src["files"]] == ["notes.txt"]
+
+            bad = client.get(url, params={"query": "(", "regex": True})
+            assert bad.status_code == 400
+            assert client.get(url, params={"query": ""}).status_code == 400
+    finally:
+        (tmp_path / "link").unlink()
+        for child in outside.iterdir():
+            child.unlink()
+        outside.rmdir()
+
+
+@pytest.mark.skipif(not __import__("shutil").which("rg"), reason="ripgrep not installed")
+def test_text_search_caps_matches(tmp_path, monkeypatch):
+    from ene.hub import files as hubfiles
+
+    monkeypatch.setattr(hubfiles, "MAX_SEARCH_MATCHES", 5)
+    (tmp_path / "many.txt").write_text("hit\n" * 50, encoding="utf-8")
+    result = hubfiles.TextSearch().search("k", tmp_path, "hit")
+    assert result["match_count"] == 5
+    assert result["truncated"] is True and result["reason"] == "limit"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses a shell-script stand-in for rg")
+def test_text_search_stops_at_the_deadline(tmp_path, monkeypatch):
+    from ene.hub import files as hubfiles
+
+    fake = tmp_path / "rg"
+    fake.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(hubfiles.shutil, "which", lambda name: str(fake))
+    monkeypatch.setattr(hubfiles, "SEARCH_TIMEOUT", 0.3)
+    started = time.monotonic()
+    result = hubfiles.TextSearch().search("k", tmp_path, "anything")
+    assert time.monotonic() - started < 5
+    assert result["truncated"] is True and result["reason"] == "timeout"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("rg"), reason="ripgrep not installed")
+def test_text_search_flags_files_capped_per_file(tmp_path, monkeypatch):
+    from ene.hub import files as hubfiles
+
+    monkeypatch.setattr(hubfiles, "MAX_MATCHES_PER_FILE", 3)
+    (tmp_path / "many.txt").write_text("hit\n" * 10, encoding="utf-8")
+    (tmp_path / "few.txt").write_text("hit\n" * 2, encoding="utf-8")
+    result = hubfiles.TextSearch().search("k", tmp_path, "hit")
+    files = {item["path"]: item for item in result["files"]}
+    assert len(files["many.txt"]["matches"]) == 3 and files["many.txt"]["capped"] is True
+    assert files["few.txt"]["capped"] is False
+    assert result["per_file_limit"] == 3 and result["truncated"] is False

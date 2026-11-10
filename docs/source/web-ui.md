@@ -53,6 +53,8 @@ The sidebar groups every live session on the machine:
 | **Available** | Running, unattached | Click to attach |
 | **In a terminal** | Owned by a terminal | Run `/detach` or Ctrl+D there first |
 
+- **Title:** the sidebar, header, and browser tab show the session name, or the session ID if unnamed. Sidebar rows add the workspace folder after the title.
+- **Scroll position:** each session keeps its place when you switch away; one that was following the latest output stays at the bottom.
 - **Rename:** click the session name in the header; Enter saves (same as `/name <name>`), Escape cancels.
 - **Detach:** the unlink icon in the session header or on an "Open here" sidebar row; one click. The worker keeps running.
 - **Git branch:** in a Git workspace, a header chip shows the current branch (or short commit when detached); it refreshes after each round.
@@ -94,6 +96,18 @@ Open the side panel with the panel icon in the session header (it reopens the la
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
 - File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
+- **Mention:** hover a file or folder row and click `@` to insert its workspace-relative path into the message box.
+
+### Finding files and text
+
+| Action | How |
+| --- | --- |
+| Find files | Type in the **Files** filter (or press Ctrl/Cmd+P). It filters the open folder and fuzzy-matches paths across the whole workspace; Enter opens the first match. |
+| Search text | The search icon in the **Files** toolbar (or Ctrl/Cmd+Shift+F). Toggle match case, whole word, and regular expressions; the `…` button adds comma-separated include/exclude globs. Click a hit to open the file at that line. |
+
+- Both skip ignored files and `.git`; text search does not follow symlinks.
+- Text search needs `rg` (ripgrep) on the hub host and is search-only; ask the agent to make replacements.
+- Limits keep large workspaces responsive: 50 path matches; 1,000 text matches across at most 300 files, 50 per file; files over 1 MB are skipped; searches stop after 5 seconds. A capped result says so, and a file with more than 50 matching lines shows `50+`.
 - See [process output](#process-output) for the viewer opened from **Tasks**.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
 - TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
@@ -114,6 +128,8 @@ Open a process from **Tasks** or from the link under its `start_process` call in
 | Ctrl/Cmd+K | Search sessions (Enter opens or attaches the first match) |
 | Ctrl/Cmd+B | Collapse or expand the sidebar (open or close it on phones) |
 | Ctrl/Cmd+F | Find in conversation |
+| Ctrl/Cmd+P | Find files in the workspace |
+| Ctrl/Cmd+Shift+F | Search text in workspace files |
 | Escape | Close dialogs and suggestions, dismiss a question, or stop the round |
 
 ## Connection handling

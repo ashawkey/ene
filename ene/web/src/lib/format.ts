@@ -44,6 +44,11 @@ export function basename(path: string): string {
   return parts.at(-1) || path
 }
 
+/** Display title shared by the sidebar and pane header: name, else the session ID. */
+export function sessionTitle(session: { name?: string; title?: string; id: string }): string {
+  return session.name || session.title || session.id
+}
+
 export function percent(fraction: number): string {
   return `${Math.round(fraction * 100)}%`
 }

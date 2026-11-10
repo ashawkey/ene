@@ -4,8 +4,11 @@ import type {
   FilePreview,
   FsListing,
   GitBranch,
+  FindResult,
   GitChanges,
   GitDiff,
+  SearchOptions,
+  SearchResult,
   NewSessionRequest,
   ProcessOutput,
   SessionOptions,
@@ -97,6 +100,16 @@ export const endSession = (id: string) => post<{ ok: boolean }>(`${sid(id)}/end`
 
 export const listFiles = (id: string, path: string) => get<DirListing>(`${sid(id)}/files`, { path })
 export const readFile = (id: string, path: string) => get<FilePreview>(`${sid(id)}/file`, { path })
+export const findFiles = (id: string, query: string) => get<FindResult>(`${sid(id)}/files/find`, { query })
+export const searchText = (id: string, query: string, options: SearchOptions) =>
+  get<SearchResult>(`${sid(id)}/files/search`, {
+    query,
+    regex: String(options.regex),
+    case: String(options.case),
+    word: String(options.word),
+    include: options.include,
+    exclude: options.exclude,
+  })
 export const rawFileUrl = (id: string, path: string) =>
   `${sid(id)}/raw?${new URLSearchParams({ path }).toString()}`
 export const fileDiff = (id: string, path: string) => get<GitDiff>(`${sid(id)}/diff`, { path })

@@ -9,8 +9,9 @@ import { SessionPane } from './components/SessionPane'
 import { Sidebar } from './components/Sidebar'
 import { IconButton, LinkBanner, Spinner, Toasts, useMedia } from './components/ui'
 import { attachSession, detachSession, endSession, errorMessage, logout, setCsrf } from './lib/api'
-import { basename } from './lib/format'
+import { sessionTitle } from './lib/format'
 import type { SessionSummary } from './lib/protocol'
+import { requestFilesFocus } from './lib/search'
 import { useSocket } from './lib/socket'
 import { store } from './lib/storage'
 import type { ThemeChoice } from './lib/theme'
@@ -193,6 +194,11 @@ export default function App() {
           searchRef.current?.focus()
           searchRef.current?.select()
         }, 30)
+      } else if (mod && !event.altKey && activeRef.current && ((key === 'p' && !event.shiftKey) || (key === 'f' && event.shiftKey))) {
+        // Cmd/Ctrl+P finds files; Cmd/Ctrl+Shift+F searches their contents.
+        event.preventDefault()
+        setInspector('files')
+        requestFilesFocus(key === 'p' ? 'find' : 'search')
       } else if (mod && key === 'f' && !event.shiftKey && activeRef.current) {
         event.preventDefault()
         setFindOpen(true)
@@ -204,12 +210,12 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleRail])
+  }, [toggleRail, setInspector])
 
   const reviewCount = unread.size
   const activeSession = attached.find((session) => session.id === activeId)
   useEffect(() => {
-    const name = activeSession ? activeSession.name || basename(activeSession.cwd) : ''
+    const name = activeSession ? sessionTitle(activeSession) : ''
     document.title = `${reviewCount ? `(${reviewCount}) ` : ''}${name ? `${name} · ` : ''}${host}`
   }, [reviewCount, activeSession, host])
 

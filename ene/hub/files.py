@@ -7,10 +7,15 @@ workspace root is refused. Nothing here writes to disk.
 
 from __future__ import annotations
 
+import base64
+import json
 import mimetypes
 import os
+import shutil
 import stat
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 
@@ -20,6 +25,17 @@ MAX_RAW_BYTES = 16 * 1024 * 1024
 BINARY_SNIFF_BYTES = 8192
 GIT_TIMEOUT = 3.0
 MAX_CHANGES = 500
+MAX_FIND_RESULTS = 50
+MAX_QUERY_CHARS = 1000
+# Full-text search limits: a broad query in a large tree stops early and is
+# reported as truncated instead of stalling the hub.
+MAX_SEARCH_MATCHES = 1000
+MAX_SEARCH_FILES = 300
+MAX_MATCHES_PER_FILE = 50
+MAX_SEARCH_FILESIZE = "1M"
+MAX_SEARCH_OUTPUT_BYTES = 32 * 1024 * 1024
+MAX_PREVIEW_CHARS = 240
+SEARCH_TIMEOUT = 5.0
 # Raster formats only: an SVG is a document that can carry script, so it is
 # shown as text instead of being served under the hub's origin.
 IMAGE_TYPES = {
@@ -316,3 +332,254 @@ def git_diff(root: str | Path, relative: str) -> dict:
         "binary": old_binary or new_binary,
         "too_large": old_large or new_large,
     }
+
+
+def _query(value: str) -> str:
+    if not value or "\x00" in value or len(value) > MAX_QUERY_CHARS:
+        raise WorkspaceError("Invalid search query.")
+    return value
+
+
+def find_files(completer, query: str, limit: int = MAX_FIND_RESULTS) -> dict:
+    """Fuzzy-match file and folder paths across the workspace.
+
+    *completer* is the hub's cached :class:`~ene.terminal.AtFileCompleter`
+    for this workspace, so repeated keystrokes reuse one path index.
+    """
+    query = _query(query.strip())
+    matches = completer.find(query.replace("\\", "/"), limit + 1)
+    return {
+        "results": [
+            {"path": rel, "type": "dir" if is_dir else "file"}
+            for rel, is_dir in matches[:limit]
+        ],
+        "truncated": len(matches) > limit,
+    }
+
+
+def _rg_text(value: dict | None) -> str:
+    """Decode one ripgrep JSON text field (``text`` or base64 ``bytes``)."""
+    if not value:
+        return ""
+    if "text" in value:
+        return value["text"]
+    try:
+        return base64.b64decode(value.get("bytes", "")).decode("utf-8", errors="replace")
+    except (ValueError, TypeError):
+        return ""
+
+
+def _preview(line: str, spans: list[tuple[int, int]]) -> tuple[str, list[list[int]], int]:
+    """Clip a long line around its first match; return ``(text, ranges, offset)``."""
+    line = line.rstrip("\r\n")
+    offset = 0
+    if len(line) > MAX_PREVIEW_CHARS:
+        first = spans[0][0] if spans else 0
+        offset = max(0, min(first - 40, len(line) - MAX_PREVIEW_CHARS))
+        line = line[offset:offset + MAX_PREVIEW_CHARS]
+    ranges = [
+        [start - offset, min(end - offset, len(line))]
+        for start, end in spans
+        if start >= offset and start - offset < len(line)
+    ]
+    return line, ranges, offset
+
+
+def _char_spans(raw: dict, line: str, submatches: list) -> list[tuple[int, int]]:
+    """Convert ripgrep's byte offsets to character offsets in *line*."""
+    if "text" not in raw:
+        return []
+    encoded = line.encode("utf-8")
+    spans = []
+    for item in submatches:
+        try:
+            start, end = int(item["start"]), int(item["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        a = len(encoded[:start].decode("utf-8", errors="replace"))
+        b = a + len(encoded[start:end].decode("utf-8", errors="replace"))
+        spans.append((a, b))
+    return spans
+
+
+class TextSearch:
+    """Run ripgrep searches, at most one in flight per key (session).
+
+    Starting a search kills the previous one for the same key, so a user
+    typing quickly never stacks up ripgrep processes.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running: dict[str, subprocess.Popen] = {}
+
+    def cancel(self, key: str) -> None:
+        with self._lock:
+            process = self._running.pop(key, None)
+        if process is not None:
+            # Only signal: the owning request thread reads and closes the pipes.
+            _signal(process)
+
+    def search(
+        self,
+        key: str,
+        root: str | Path,
+        query: str,
+        *,
+        regex: bool = False,
+        case_sensitive: bool = False,
+        whole_word: bool = False,
+        include: str = "",
+        exclude: str = "",
+    ) -> dict:
+        base, _ = resolve_in_workspace(root, "")
+        query = _query(query)
+        rg = shutil.which("rg")
+        if rg is None:
+            raise WorkspaceError("Search requires ripgrep (rg) on the hub host.", 501)
+        command = [
+            rg, "--json", "--no-config", "--no-messages", "--hidden", "--no-require-git",
+            "--glob", "!.git",
+            "--max-count", str(MAX_MATCHES_PER_FILE),
+            "--max-filesize", MAX_SEARCH_FILESIZE,
+        ]
+        command.append("--case-sensitive" if case_sensitive else "--ignore-case")
+        if not regex:
+            command.append("--fixed-strings")
+        if whole_word:
+            command.append("--word-regexp")
+        for pattern in _globs(include):
+            command += ["--glob", pattern]
+        for pattern in _globs(exclude):
+            command += ["--glob", f"!{pattern.lstrip('!')}"]
+        command += ["--regexp", query, "--", "."]
+
+        self.cancel(key)
+        try:
+            process = subprocess.Popen(
+                command, cwd=base, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise WorkspaceError("Could not start the search.") from exc
+        with self._lock:
+            self._running[key] = process
+        try:
+            return self._collect(process, base)
+        finally:
+            with self._lock:
+                if self._running.get(key) is process:
+                    del self._running[key]
+            _kill(process)
+
+    def _collect(self, process: subprocess.Popen, base: Path) -> dict:
+        deadline = time.monotonic() + SEARCH_TIMEOUT
+        # The deadline is enforced from a timer: a read can block while rg
+        # walks a large tree without printing anything.
+        timer = threading.Timer(SEARCH_TIMEOUT, _signal, (process,))
+        timer.daemon = True
+        timer.start()
+        files: list[dict] = []
+        by_path: dict[str, dict] = {}
+        match_count = 0
+        read = 0
+        reason: str | None = None
+        assert process.stdout is not None
+        try:
+            for raw_line in process.stdout:
+                read += len(raw_line)
+                if read > MAX_SEARCH_OUTPUT_BYTES:
+                    reason = "limit"
+                    break
+                try:
+                    event = json.loads(raw_line)
+                except ValueError:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data") or {}
+                path = _rg_text(data.get("path"))
+                path = path.replace("\\", "/")
+                if path.startswith("./"):
+                    path = path[2:]
+                entry = by_path.get(path)
+                if entry is None:
+                    if len(files) >= MAX_SEARCH_FILES:
+                        reason = "limit"
+                        break
+                    entry = {"path": path, "matches": [], "capped": False}
+                    by_path[path] = entry
+                    files.append(entry)
+                lines = data.get("lines") or {}
+                text = _rg_text(lines)
+                spans = _char_spans(lines, text, data.get("submatches") or [])
+                preview, ranges, offset = _preview(text, spans)
+                entry["matches"].append({
+                    "line": data.get("line_number") or 0,
+                    "text": preview,
+                    "ranges": ranges,
+                    "clipped": offset > 0 or len(text.rstrip("\r\n")) > offset + len(preview),
+                })
+                # rg stops reading a file at --max-count matching lines.
+                entry["capped"] = len(entry["matches"]) >= MAX_MATCHES_PER_FILE
+                match_count += 1
+                if match_count >= MAX_SEARCH_MATCHES:
+                    reason = "limit"
+                    break
+        finally:
+            timer.cancel()
+        if reason is None and time.monotonic() >= deadline:
+            reason = "timeout"
+        if reason is None:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            # Exit 1 means "no matches"; 2 is an error (e.g. a bad regex) but
+            # rg also uses it for unreadable files alongside real results.
+            if process.returncode == 2 and not files:
+                detail = (process.stderr.read(2000) if process.stderr else b"").decode(
+                    "utf-8", errors="replace"
+                ).strip()
+                if detail:
+                    raise WorkspaceError(detail.splitlines()[-1][:300])
+            elif process.returncode not in (0, 1, 2):
+                # Killed by the next search for this session.
+                reason = "cancelled"
+        return {
+            "root": str(base),
+            "files": files,
+            "match_count": match_count,
+            "file_count": len(files),
+            "truncated": reason is not None,
+            "reason": reason,
+            "per_file_limit": MAX_MATCHES_PER_FILE,
+        }
+
+
+def _globs(value: str) -> list[str]:
+    if "\x00" in value or len(value) > MAX_QUERY_CHARS:
+        raise WorkspaceError("Invalid file pattern.")
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _signal(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _kill(process: subprocess.Popen) -> None:
+    _signal(process)
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    for stream in (process.stdout, process.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass

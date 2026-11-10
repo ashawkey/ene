@@ -556,6 +556,7 @@ class Hub:
         self._client_lock = threading.Lock()
         self._path_completers: dict[str, AtFileCompleter] = {}
         self._path_completion_lock = threading.Lock()
+        self._text_search = hubfiles.TextSearch()
 
         self._thread: threading.Thread | None = None
         self._server = None
@@ -826,6 +827,16 @@ class Hub:
         self._log(f"ended: {record.get('name') or runtime_id[:8]} (session {runtime_id[:8]})")
         self.refresh_records()
         self._notify_control()
+
+    def path_completer(self, work_dir: Path) -> AtFileCompleter:
+        """Cached path index for one workspace; hold ``_path_completion_lock``."""
+        key = str(work_dir)
+        completer = self._path_completers.get(key)
+        if completer is None:
+            # Confined: browser queries must not list directories outside.
+            completer = AtFileCompleter(work_dir, confine=True)
+            self._path_completers[key] = completer
+        return completer
 
     def workspace_of(self, runtime_id: str) -> str | None:
         """Workspace of any live session on this machine, attached or not."""
@@ -1142,10 +1153,7 @@ class Hub:
                 # AtFileCompleter caches its git/filesystem index. Serialize
                 # access so concurrent requests do not rebuild the same index.
                 with self._path_completion_lock:
-                    completer = self._path_completers.get(workspace)
-                    if completer is None:
-                        completer = AtFileCompleter(work_dir)
-                        self._path_completers[workspace] = completer
+                    completer = self.path_completer(work_dir)
                     document = Document(f"@{query}")
                     return [
                         completion.text
@@ -1380,6 +1388,45 @@ class Hub:
             require_login(request)
             return await browse_call(
                 hubfiles.read_file, session_workspace(session_id), path
+            )
+
+        @app.get("/api/sessions/{session_id}/files/find")
+        async def workspace_find(request: Request, session_id: str, query: str = ""):
+            require_login(request)
+            workspace = session_workspace(session_id)
+
+            def find() -> dict:
+                base, _ = hubfiles.resolve_in_workspace(workspace, "")
+                # Shares the @-completion index and its lock (see above).
+                with self._path_completion_lock:
+                    return hubfiles.find_files(self.path_completer(base), query)
+
+            return await browse_call(find)
+
+        @app.get("/api/sessions/{session_id}/files/search")
+        async def workspace_search(
+            request: Request,
+            session_id: str,
+            query: str = "",
+            regex: bool = False,
+            case: bool = False,
+            word: bool = False,
+            include: str = "",
+            exclude: str = "",
+        ):
+            require_login(request)
+            workspace = session_workspace(session_id)
+            return await browse_call(
+                lambda: self._text_search.search(
+                    session_id,
+                    workspace,
+                    query,
+                    regex=regex,
+                    case_sensitive=case,
+                    whole_word=word,
+                    include=include,
+                    exclude=exclude,
+                )
             )
 
         @app.get("/api/sessions/{session_id}/raw")

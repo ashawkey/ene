@@ -204,6 +204,32 @@ export type GitBranch = {
   detached: boolean
 }
 
+export type FoundPath = { path: string; type: 'dir' | 'file' }
+
+export type FindResult = { results: FoundPath[]; truncated: boolean }
+
+export type SearchMatch = {
+  line: number
+  /** Preview of the line; long lines are clipped around the first match. */
+  text: string
+  /** Character [start, end) ranges of matches within ``text``. */
+  ranges: Array<[number, number]>
+  clipped: boolean
+}
+
+export type SearchResult = {
+  root: string
+  /** ``capped``: the file has more matching lines than ``per_file_limit``; only those were read. */
+  files: Array<{ path: string; matches: SearchMatch[]; capped: boolean }>
+  match_count: number
+  file_count: number
+  truncated: boolean
+  reason: 'limit' | 'timeout' | 'cancelled' | null
+  per_file_limit: number
+}
+
+export type SearchOptions = { regex: boolean; case: boolean; word: boolean; include: string; exclude: string }
+
 export type GitChanges = {
   git: boolean
   branch: string

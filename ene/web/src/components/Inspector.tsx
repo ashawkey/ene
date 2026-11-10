@@ -150,6 +150,7 @@ export function Inspector({
   connected,
   filesRefresh,
   onOpenFile,
+  onMention,
   onJumpRound,
   onOpenProcess,
 }: {
@@ -166,7 +167,9 @@ export function Inspector({
   info: Record<string, string>
   connected: boolean
   filesRefresh: number
-  onOpenFile: (path: string, changed?: boolean) => void
+  onOpenFile: (path: string, changed?: boolean, line?: number) => void
+  /** Insert ``@path`` into the composer. */
+  onMention: (path: string) => void
   onJumpRound: (round: RoundStats) => void
   onOpenProcess: (processId: string) => void
 }) {
@@ -191,7 +194,7 @@ export function Inspector({
         <IconButton icon={X} label="Close panel" size="sm" onClick={onClose} />
       </div>
       <div className="inspector-body">
-        {tab === 'files' ? <FileBrowser sessionId={sessionId} onOpen={onOpenFile} refreshKey={filesRefresh} /> : null}
+        {tab === 'files' ? <FileBrowser sessionId={sessionId} onOpen={onOpenFile} onMention={onMention} refreshKey={filesRefresh} /> : null}
         {tab === 'stats' ? (
           <StatsPanel rounds={rounds} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
         ) : null}

@@ -15,17 +15,20 @@ import {
   Link,
   RefreshCw,
   Search,
+  TextSearch as TextSearchIcon,
   X,
 } from 'lucide-react'
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
-import { errorMessage, fileDiff, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
+import { errorMessage, fileDiff, findFiles, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
 import { bytes, relativeTime } from '../lib/format'
 import { highlight, languageForPath, splitHighlightedLines } from '../lib/highlight'
-import type { DirListing, FilePreview, GitChanges, GitDiff } from '../lib/protocol'
+import type { DirListing, FilePreview, FindResult, FoundPath, GitChanges, GitDiff } from '../lib/protocol'
+import { type FilesFocus, type Range, pathMatchRanges, useDebounced, useFilesFocus } from '../lib/search'
 import { splitLines } from '../lib/splitDiff'
 import { store } from '../lib/storage'
 import { CopyButton, Markdown } from './Markdown'
+import { Highlighted, TextSearch } from './Search'
 import { SplitDiff } from './SplitDiff'
 import { Empty, IconButton, Modal, Spinner } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
@@ -45,18 +48,64 @@ const STATUS_LETTER: Record<string, string> = {
   modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', conflict: 'U', untracked: '?',
 }
 
+const MOD_KEY = typeof navigator !== 'undefined' && /Mac|iP(hone|ad)/.test(navigator.platform) ? '⌘' : 'Ctrl+'
+
 /** Lines per lazily painted block of the code view. */
 const CODE_CHUNK = 200
+
+type OpenFile = (path: string, changed?: boolean, line?: number) => void
+
+/** A list row that opens a path, with a hover button mentioning it in the composer. */
+export function FileItem({
+  path,
+  className = '',
+  title,
+  onClick,
+  onMention,
+  expanded,
+  children,
+}: {
+  /** Workspace-relative path; folders end with ``/`` so the mention reads as one. */
+  path: string
+  className?: string
+  title?: string
+  onClick: () => void
+  onMention: (path: string) => void
+  /** Set for rows that fold a group (search results). */
+  expanded?: boolean
+  children: ReactNode
+}) {
+  return (
+    <div className={`file-item ${className}`}>
+      <button type="button" className="file-row" onClick={onClick} title={title} aria-expanded={expanded}>
+        {children}
+      </button>
+      <button
+        type="button"
+        className="copy-btn"
+        aria-label={`Mention ${path} in message`}
+        data-tip="Mention in message"
+        onClick={() => onMention(path)}
+      >
+        <AtSign size={14} />
+      </button>
+    </div>
+  )
+}
+
+const isHiddenPath = (path: string) => path.split('/').some((part) => part.startsWith('.'))
 
 // Memoized: the inspector re-renders on every streamed update, and a large
 // folder listing must not re-render with it.
 export const FileBrowser = memo(function FileBrowser({
   sessionId,
   onOpen,
+  onMention,
   refreshKey,
 }: {
   sessionId: string
-  onOpen: (path: string, changed?: boolean) => void
+  onOpen: OpenFile
+  onMention: (path: string) => void
   refreshKey: number
 }) {
   const [path, setPath] = useState(() => store.get(`ene.files.${sessionId}`) ?? '')
@@ -65,9 +114,27 @@ export const FileBrowser = memo(function FileBrowser({
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showHidden, setShowHidden] = useState(() => store.get('ene.files.hidden') === '1')
-  const [changesOnly, setChangesOnly] = useState(false)
+  const [mode, setMode] = useState<'browse' | 'changes' | 'search'>('browse')
   const [filter, setFilter] = useState('')
   const [tick, setTick] = useState(0)
+  const [found, setFound] = useState<FindResult | null>(null)
+  const [finding, setFinding] = useState(false)
+  const [searchFocus, setSearchFocus] = useState(0)
+  const filterInput = useRef<HTMLInputElement>(null)
+
+  useFilesFocus(useCallback((target: FilesFocus) => {
+    if (target === 'search') {
+      setMode('search')
+      setSearchFocus((value) => value + 1)
+    } else {
+      setMode('browse')
+      // Focus after the browse view has rendered its input.
+      window.setTimeout(() => {
+        filterInput.current?.focus()
+        filterInput.current?.select()
+      }, 0)
+    }
+  }, []))
 
   useEffect(() => {
     let cancelled = false
@@ -101,6 +168,25 @@ export const FileBrowser = memo(function FileBrowser({
     }
   }, [sessionId, tick, refreshKey])
 
+  // Recursive, fuzzy file finder over the whole workspace (hub-side index).
+  const findQuery = useDebounced(filter.trim(), 150)
+  useEffect(() => {
+    if (!findQuery || mode !== 'browse') {
+      setFound(null)
+      setFinding(false)
+      return
+    }
+    let cancelled = false
+    setFinding(true)
+    findFiles(sessionId, findQuery)
+      .then((data) => !cancelled && setFound(data))
+      .catch(() => !cancelled && setFound(null))
+      .finally(() => !cancelled && setFinding(false))
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, findQuery, mode, tick])
+
   const changeMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const change of changes?.changes ?? []) map.set(change.path, change.status)
@@ -125,32 +211,55 @@ export const FileBrowser = memo(function FileBrowser({
     ),
     [listing, showHidden, needle],
   )
+  // Workspace hits, minus the ones already listed for this folder.
+  const workspaceHits = useMemo(() => {
+    if (!needle || !found) return []
+    const shown = new Set(entries.map((entry) => join(entry.name)))
+    return found.results.filter((item) => !shown.has(item.path) && (showHidden || !isHiddenPath(item.path)))
+  }, [needle, found, entries, join, showHidden])
   const crumbs = listing?.path ? listing.path.split('/') : []
   const changeCount = changes?.changes.length ?? 0
+
+  const browse = (target: string) => {
+    setMode('browse')
+    setFilter('')
+    setPath(target)
+  }
+  const openFound = (item: FoundPath) => (item.type === 'dir' ? browse(item.path) : onOpen(item.path, changeMap.has(item.path) ? true : undefined))
 
   return (
     <div className="files">
       <div className="panel-toolbar">
         <div className="crumbs" role="navigation" aria-label="Folder path">
-          <button type="button" onClick={() => setPath('')} data-tip={listing?.root ?? 'Workspace'} aria-label="Workspace root">
+          <button type="button" onClick={() => browse('')} data-tip={listing?.root ?? 'Workspace'} aria-label="Workspace root">
             <House size={14} />
           </button>
           {crumbs.map((crumb, index) => (
             <span className="crumb" key={`${index}-${crumb}`}>
               <ChevronRight size={12} />
-              <button type="button" onClick={() => setPath(crumbs.slice(0, index + 1).join('/'))}>{crumb}</button>
+              <button type="button" onClick={() => browse(crumbs.slice(0, index + 1).join('/'))}>{crumb}</button>
             </span>
           ))}
         </div>
         <span className="grow" />
+        <IconButton
+          icon={TextSearchIcon}
+          size="sm"
+          label={mode === 'search' ? 'Back to files' : `Search in files (${MOD_KEY}⇧F)`}
+          active={mode === 'search'}
+          onClick={() => {
+            setMode(mode === 'search' ? 'browse' : 'search')
+            setSearchFocus((value) => value + 1)
+          }}
+        />
         {changes?.git ? (
           <IconButton
             icon={GitBranch}
             size="sm"
-            label={changesOnly ? 'Show all files' : `Changed files${changes.branch ? ` on ${changes.branch}` : ''}`}
-            active={changesOnly}
+            label={mode === 'changes' ? 'Show all files' : `Changed files${changes.branch ? ` on ${changes.branch}` : ''}`}
+            active={mode === 'changes'}
             badge={changeCount || null}
-            onClick={() => setChangesOnly(!changesOnly)}
+            onClick={() => setMode(mode === 'changes' ? 'browse' : 'changes')}
           />
         ) : null}
         <IconButton
@@ -165,15 +274,41 @@ export const FileBrowser = memo(function FileBrowser({
         />
         <IconButton icon={RefreshCw} size="sm" label="Refresh" busy={loading} onClick={() => setTick(tick + 1)} />
       </div>
-      {!changesOnly ? (
+      {mode === 'browse' ? (
         <label className="filter">
           <Search size={14} />
-          <input {...NO_AUTOFILL} value={filter} placeholder="Filter this folder" onChange={(event) => setFilter(event.target.value)} />
+          <input
+            {...NO_AUTOFILL}
+            ref={filterInput}
+            value={filter}
+            placeholder={`Find files (${MOD_KEY}P)`}
+            aria-label="Filter this folder and find files in the workspace"
+            onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && filter) {
+                event.preventDefault()
+                setFilter('')
+              } else if (event.key === 'Enter') {
+                const entry = entries[0]
+                if (entry) openFound({ path: join(entry.name), type: entry.type })
+                else if (workspaceHits[0]) openFound(workspaceHits[0])
+              }
+            }}
+          />
+          {finding ? <Spinner /> : null}
           {filter ? <button type="button" aria-label="Clear filter" onClick={() => setFilter('')}><X size={13} /></button> : null}
         </label>
       ) : null}
       {error ? <div className="panel-error">{error}</div> : null}
-      {changesOnly ? (
+      {mode === 'search' ? (
+        <TextSearch
+          sessionId={sessionId}
+          refreshKey={refreshKey}
+          focusSignal={searchFocus}
+          onOpen={(file, line) => onOpen(file, undefined, line)}
+          onMention={onMention}
+        />
+      ) : mode === 'changes' ? (
         <div className="file-list">
           {changes?.branch ? <div className="list-caption"><FolderGit2 size={13} />{changes.branch}</div> : null}
           {changeCount === 0 ? <Empty icon={GitBranch}>Working tree clean.</Empty> : null}
@@ -181,41 +316,38 @@ export const FileBrowser = memo(function FileBrowser({
             const name = change.path.split('/').at(-1) ?? change.path
             const Icon = fileIcon(name, 'file')
             return (
-              <button
-                type="button"
-                className="file-row"
-                key={change.path}
-                onClick={() => onOpen(change.path, true)}
-              >
+              <FileItem key={change.path} path={change.path} onMention={onMention} onClick={() => onOpen(change.path, true)}>
                 <Icon size={15} className="file-icon" />
                 <span className="file-name">
                   {name}
                   <span className="file-dir">{change.path.slice(0, -name.length)}</span>
                 </span>
                 <span className={`git-badge ${change.status}`} data-tip={change.status}>{STATUS_LETTER[change.status]}</span>
-              </button>
+              </FileItem>
             )
           })}
         </div>
       ) : (
         <div className="file-list">
-          {listing?.path ? (
-            <button type="button" className="file-row up" onClick={() => setPath(crumbs.slice(0, -1).join('/'))}>
+          {listing?.path && !needle ? (
+            <button type="button" className="file-row up" onClick={() => browse(crumbs.slice(0, -1).join('/'))}>
               <Folder size={15} className="file-icon" />
               <span className="file-name">..</span>
             </button>
           ) : null}
+          {needle && entries.length ? <div className="list-caption">{listing?.path ? 'This folder' : 'Workspace root'}</div> : null}
           {entries.map((entry) => {
             const full = join(entry.name)
             const Icon = fileIcon(entry.name, entry.type)
             const status = entry.type === 'file' ? changeMap.get(full) : undefined
             const dirty = entry.type === 'dir' && dirtyDirs.has(full)
             return (
-              <button
-                type="button"
-                className={`file-row ${entry.hidden ? 'hidden-entry' : ''}`}
+              <FileItem
                 key={entry.name}
-                onClick={() => (entry.type === 'dir' ? (setFilter(''), setPath(full)) : onOpen(full, status ? true : undefined))}
+                path={entry.type === 'dir' ? `${full}/` : full}
+                onMention={onMention}
+                className={entry.hidden ? 'hidden-entry' : ''}
+                onClick={() => (entry.type === 'dir' ? browse(full) : onOpen(full, status ? true : undefined))}
                 title={relativeTime(entry.mtime)}
               >
                 <Icon size={15} className={`file-icon ${entry.type}`} />
@@ -223,10 +355,38 @@ export const FileBrowser = memo(function FileBrowser({
                 {status ? <span className={`git-badge ${status}`} data-tip={status}>{STATUS_LETTER[status]}</span> : null}
                 {dirty ? <span className="dirty-dot" data-tip="Contains changes" /> : null}
                 {entry.type === 'file' ? <span className="file-size">{bytes(entry.size)}</span> : null}
-              </button>
+              </FileItem>
             )
           })}
-          {listing && entries.length === 0 ? <Empty icon={Folder}>{needle ? 'No matches.' : 'Empty folder.'}</Empty> : null}
+          {needle && workspaceHits.length ? <div className="list-caption">Workspace</div> : null}
+          {needle && workspaceHits.map((item) => {
+            const name = item.path.split('/').at(-1) ?? item.path
+            const Icon = fileIcon(name, item.type)
+            const status = item.type === 'file' ? changeMap.get(item.path) : undefined
+            const ranges = pathMatchRanges(item.path, needle)
+            const nameStart = item.path.length - name.length
+            return (
+              <FileItem
+                key={item.path}
+                path={item.type === 'dir' ? `${item.path}/` : item.path}
+                onMention={onMention}
+                onClick={() => openFound(item)}
+              >
+                <Icon size={15} className={`file-icon ${item.type}`} />
+                <span className="file-name">
+                  <Highlighted text={name} ranges={shiftRanges(ranges, -nameStart, name.length)} />
+                  <span className="file-dir">
+                    <Highlighted text={item.path.slice(0, nameStart)} ranges={shiftRanges(ranges, 0, nameStart)} />
+                  </span>
+                </span>
+                {status ? <span className={`git-badge ${status}`} data-tip={status}>{STATUS_LETTER[status]}</span> : null}
+              </FileItem>
+            )
+          })}
+          {listing && entries.length === 0 && !(needle && (workspaceHits.length || finding || findQuery !== filter.trim()))
+            ? <Empty icon={Folder}>{needle ? 'No matches.' : 'Empty folder.'}</Empty>
+            : null}
+          {needle && found?.truncated ? <div className="list-caption">Showing the best {found.results.length} workspace matches.</div> : null}
           {listing?.truncated ? <div className="list-caption">Showing the first 2000 entries.</div> : null}
           {!listing && loading ? <div className="center-pad"><Spinner /></div> : null}
         </div>
@@ -235,10 +395,18 @@ export const FileBrowser = memo(function FileBrowser({
   )
 })
 
+/** Ranges moved by `delta` and clipped to `[0, length)`. */
+function shiftRanges(ranges: Range[], delta: number, length: number): Range[] {
+  return ranges
+    .map(([start, end]): Range => [Math.max(0, start + delta), Math.min(length, end + delta)])
+    .filter(([start, end]) => end > start)
+}
+
 export const FileViewer = memo(function FileViewer({
   sessionId,
   path,
   changed,
+  line,
   onClose,
   onMention,
 }: {
@@ -246,6 +414,8 @@ export const FileViewer = memo(function FileViewer({
   path: string
   /** True: open on the diff; undefined: probe Git and offer the diff if changed. */
   changed?: boolean
+  /** 1-based line to scroll to and mark in the file view (from a search hit). */
+  line?: number
   onClose: () => void
   onMention: (path: string) => void
 }) {
@@ -254,8 +424,10 @@ export const FileViewer = memo(function FileViewer({
   const [diff, setDiff] = useState<GitDiff | null>(null)
   const [diffError, setDiffError] = useState('')
   const [mode, setMode] = useState<'diff' | 'file'>(changed ? 'diff' : 'file')
-  const [rendered, setRendered] = useState(/\.md$/i.test(path))
+  // A line target needs the source view, so Markdown is not rendered then.
+  const [rendered, setRendered] = useState(/\.md$/i.test(path) && !line)
   const [tick, setTick] = useState(0)
+  const codeView = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -317,6 +489,12 @@ export const FileViewer = memo(function FileViewer({
     return result
   }, [lines])
 
+  const codeShown = !showDiff && file?.kind === 'text' && !(rendered && isMarkdown)
+  useEffect(() => {
+    if (!line || !codeShown) return
+    codeView.current?.querySelector('.code-line.target')?.scrollIntoView({ block: 'center' })
+  }, [line, codeShown, lines])
+
   return (
     <Modal onClose={onClose} className="viewer" label={`File ${path}`}>
       <div className="viewer-head">
@@ -370,16 +548,16 @@ export const FileViewer = memo(function FileViewer({
               <div className="viewer-markdown"><Markdown text={text} /></div>
             ) : null}
             {file?.kind === 'text' && !(rendered && isMarkdown) ? (
-              <div className="code-view">
+              <div className="code-view" ref={codeView}>
                 {/* Chunks off screen skip layout and paint (content-visibility). */}
                 {chunks.map((chunk) => (
                   <div className="code-chunk" key={chunk.start}>
-                    {chunk.lines.map((line, offset) => (
-                      <div className="code-line" key={offset}>
+                    {chunk.lines.map((row, offset) => (
+                      <div className={`code-line ${chunk.start + offset + 1 === line ? 'target' : ''}`} key={offset}>
                         <span className="ln" aria-hidden>{chunk.start + offset + 1}</span>
-                        {line.html !== null
-                          ? <code className="hljs" dangerouslySetInnerHTML={{ __html: line.html || ' ' }} />
-                          : <code>{line.text || ' '}</code>}
+                        {row.html !== null
+                          ? <code className="hljs" dangerouslySetInnerHTML={{ __html: row.html || ' ' }} />
+                          : <code>{row.text || ' '}</code>}
                       </div>
                     ))}
                   </div>

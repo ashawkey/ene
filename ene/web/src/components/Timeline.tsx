@@ -27,6 +27,37 @@ export type TimelineHandle = {
 }
 
 const PIN_DISTANCE = 160
+
+/**
+ * Where a session's transcript was left: following the tail, or the item at
+ * the top of the view and its offset. Kept per session for the page's
+ * lifetime, so switching sessions (or re-attaching one) returns to the same
+ * spot. The item anchor survives history trimmed above it; `top` is the
+ * fallback when that item is gone.
+ */
+type ScrollMemory = { pinned: boolean; key: string | null; offset: number; top: number }
+const scrollMemory = new Map<string, ScrollMemory>()
+// Positions are recorded once scrolling pauses, after lazily rendered items
+// (content-visibility) have their real heights.
+const SAVE_DELAY = 150
+// Frames spent re-aligning a restored anchor while item heights settle.
+const SETTLE_FRAMES = 12
+
+/** The first `.t-item` whose bottom is below the scroller's top edge (binary search). */
+function topItem(element: HTMLElement): { key: string | null; offset: number } {
+  const items = element.querySelector('.timeline')?.children
+  if (!items?.length) return { key: null, offset: 0 }
+  const edge = element.getBoundingClientRect().top
+  let low = 0
+  let high = items.length - 1
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if (items[middle].getBoundingClientRect().bottom <= edge) low = middle + 1
+    else high = middle
+  }
+  const item = items[low] as HTMLElement
+  return { key: item.dataset.key ?? null, offset: item.getBoundingClientRect().top - edge }
+}
 // Jump buttons appear once the view is this far from the respective edge.
 const EDGE_DISTANCE = 24
 
@@ -41,9 +72,12 @@ export const Timeline = memo(function Timeline({
   onMatches,
   onOpenFile,
   onOpenStats,
+  memoryKey,
 }: {
   view: SessionView
   active: boolean
+  /** Remember the scroll position under this key (the session ID). */
+  memoryKey?: string
   handle: RefObject<TimelineHandle | null>
   query: string
   matchIndex: number
@@ -52,8 +86,20 @@ export const Timeline = memo(function Timeline({
   onOpenStats: () => void
 }) {
   const scroller = useRef<HTMLDivElement>(null)
-  const pinned = useRef(true)
-  const savedTop = useRef<number | null>(null)
+  const memory = useRef<ScrollMemory>(
+    (memoryKey ? scrollMemory.get(memoryKey) : undefined) ?? { pinned: true, key: null, offset: 0, top: 0 },
+  )
+  // Mirrors memory.pinned; kept as its own ref because most code reads only it.
+  const pinned = useRef(memory.current.pinned)
+  // Set while a remembered position still has to be applied (the anchor may
+  // not have been rendered yet, e.g. right after re-attaching).
+  const restorePending = useRef(false)
+  const saveTimer = useRef<number | null>(null)
+  const settleFrame = useRef<number | null>(null)
+  const stopSettling = useCallback(() => {
+    if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current)
+    settleFrame.current = null
+  }, [])
   const [canUp, setCanUp] = useState(false)
   const [canDown, setCanDown] = useState(false)
   const live = view.operationId !== null
@@ -83,25 +129,28 @@ export const Timeline = memo(function Timeline({
   const toTop = useCallback(() => {
     const element = scroller.current
     if (!element) return
+    stopSettling()
     pinned.current = false
     element.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [])
+  }, [stopSettling])
 
   const toBottom = useCallback((smooth = false) => {
     const element = scroller.current
     if (!element) return
+    stopSettling()
     pinned.current = true
     element.scrollTo({ top: element.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
-  }, [])
+  }, [stopSettling])
 
   const reveal = useCallback((target: HTMLElement | null) => {
     if (target) {
+      stopSettling()
       pinned.current = false
       target.scrollIntoView({ block: 'start', behavior: 'smooth' })
       target.classList.add('flash')
       window.setTimeout(() => target?.classList.remove('flash'), 1400)
     }
-  }, [])
+  }, [stopSettling])
 
   const scrollToSeq = useCallback((seq: number) => {
     const candidates = scroller.current?.querySelectorAll<HTMLElement>('[data-seq]') ?? []
@@ -128,24 +177,73 @@ export const Timeline = memo(function Timeline({
     handle.current = { scrollToSeq, scrollToRound, scrollToBottom: toBottom }
   }, [handle, scrollToSeq, scrollToRound, toBottom])
 
+  /** Record the current position; skipped while hidden (display: none reads as 0). */
+  const save = useCallback(() => {
+    const element = scroller.current
+    if (!element || !element.clientHeight) return
+    const anchor = pinned.current ? { key: null, offset: 0 } : topItem(element)
+    memory.current = { pinned: pinned.current, ...anchor, top: element.scrollTop }
+    if (memoryKey) scrollMemory.set(memoryKey, memory.current)
+  }, [memoryKey])
+
+  /** Scroll the remembered anchor back into place; false when it is not rendered. */
+  const align = useCallback((): boolean => {
+    const element = scroller.current
+    const saved = memory.current
+    const anchor = element && saved.key
+      ? element.querySelector<HTMLElement>(`[data-key="${CSS.escape(saved.key)}"]`)
+      : null
+    if (!element || !anchor) return false
+    const delta = anchor.getBoundingClientRect().top - element.getBoundingClientRect().top - saved.offset
+    if (Math.abs(delta) >= 1) element.scrollTop += delta
+    return true
+  }, [])
+
+  /** Apply the remembered position; false while its anchor is not rendered yet. */
+  const restore = useCallback((): boolean => {
+    const element = scroller.current
+    if (!element) return true
+    const saved = memory.current
+    pinned.current = saved.pinned
+    stopSettling()
+    if (saved.pinned) {
+      toBottom()
+      return true
+    }
+    if (!align()) {
+      element.scrollTop = saved.top
+      return false
+    }
+    // Items near the anchor render at their real height over the next
+    // frames and push it around; hold it in place until the user takes over.
+    let frames = SETTLE_FRAMES
+    const tick = () => {
+      align()
+      settleFrame.current = --frames > 0 ? requestAnimationFrame(tick) : null
+    }
+    settleFrame.current = requestAnimationFrame(tick)
+    return true
+  }, [toBottom, align, stopSettling])
+
   // Follow new output while pinned to the tail.
   useLayoutEffect(() => {
-    if (active && pinned.current) toBottom()
+    if (active && restorePending.current && view.items.length) {
+      // One more try now that the transcript has loaded; then settle.
+      restore()
+      restorePending.current = false
+    } else if (active && pinned.current) toBottom()
     measure()
-  }, [view.items, view.indicator, active, toBottom, measure])
+  }, [view.items, view.indicator, active, toBottom, measure, restore])
 
   // Hidden panes keep their position; restore it when shown again.
   useLayoutEffect(() => {
-    const element = scroller.current
-    if (!element) return
-    if (active) {
-      if (savedTop.current !== null && !pinned.current) element.scrollTop = savedTop.current
-      else toBottom()
-    }
-    return () => {
-      savedTop.current = element.scrollTop
-    }
-  }, [active, toBottom])
+    if (active) restorePending.current = !restore()
+  }, [active, restore])
+
+  useEffect(() => () => {
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+    stopSettling()
+  }, [stopSettling])
 
   // Keep the bottom in view when the composer grows or the viewport shrinks
   // (mobile keyboards); content resizes (expanding cards) can change which
@@ -165,19 +263,33 @@ export const Timeline = memo(function Timeline({
   const onScroll = useCallback(() => {
     const element = scroller.current
     if (!element) return
+    // A hidden pane has no layout; its scroll events carry no position.
+    if (!element.clientHeight) return
     const distance = element.scrollHeight - element.clientHeight - element.scrollTop
     pinned.current = distance < PIN_DISTANCE
     measure()
-  }, [measure])
+    // A restore still settling is not a new position.
+    if (settleFrame.current !== null) return
+    // Keep the raw offset current right away (a quick switch may hide the
+    // pane before the anchor is measured); the anchor refines it below.
+    memory.current = { pinned: pinned.current, key: null, offset: 0, top: element.scrollTop }
+    if (memoryKey) scrollMemory.set(memoryKey, memory.current)
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null
+      save()
+    }, SAVE_DELAY)
+  }, [measure, save, memoryKey])
 
   useEffect(() => {
     if (!currentKey) return
     const element = scroller.current?.querySelector(`[data-key="${CSS.escape(currentKey)}"]`)
     if (element) {
+      stopSettling()
       pinned.current = false
       element.scrollIntoView({ block: 'center' })
     }
-  }, [currentKey])
+  }, [currentKey, stopSettling])
 
   const renderItem = useCallback((item: TimelineItem, isLive: boolean, round?: RoundStats) => {
     switch (item.kind) {
@@ -197,7 +309,16 @@ export const Timeline = memo(function Timeline({
 
   return (
     <OpenFileContext.Provider value={onOpenFile}>
-      <div className="timeline-scroller" ref={scroller} onScroll={onScroll}>
+      <div
+        className="timeline-scroller"
+        ref={scroller}
+        onScroll={onScroll}
+        // Any user input ends a settling restore.
+        onWheel={stopSettling}
+        onTouchStart={stopSettling}
+        onPointerDown={stopSettling}
+        onKeyDown={stopSettling}
+      >
         <div className="timeline" aria-live="polite">
           {view.truncatedAt !== null ? (
             <div className="notice debug"><History size={14} /><span>Earlier history is no longer available in this view.</span></div>

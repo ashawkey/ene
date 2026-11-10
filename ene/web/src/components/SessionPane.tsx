@@ -2,7 +2,7 @@ import { ChevronDown, ChevronUp, Cpu, Folder, GitBranch, PanelLeft, Pencil, Pane
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { gitBranch } from '../lib/api'
-import { basename, compactNumber, percent } from '../lib/format'
+import { basename, sessionTitle, compactNumber, percent } from '../lib/format'
 import type { GitBranch as GitBranchInfo, ProcessActivity, RoundStats, SessionSummary } from '../lib/protocol'
 import { contextFraction } from '../lib/session'
 import { useSession } from '../lib/useSession'
@@ -45,8 +45,11 @@ export function SessionPane({
   const { view } = session
   const connected = session.status === 'open'
   const timeline = useRef<TimelineHandle | null>(null)
-  const [viewing, setViewing] = useState<{ path: string; changed?: boolean } | null>(null)
-  const openFile = useCallback((path: string, changed?: boolean) => setViewing({ path, changed }), [])
+  const [viewing, setViewing] = useState<{ path: string; changed?: boolean; line?: number } | null>(null)
+  const openFile = useCallback(
+    (path: string, changed?: boolean, line?: number) => setViewing({ path, changed, line }),
+    [],
+  )
   const closeFile = useCallback(() => setViewing(null), [])
   const [processId, setProcessId] = useState<string | null>(null)
   const closeProcess = useCallback(() => setProcessId(null), [])
@@ -121,6 +124,12 @@ export function SessionPane({
     setFocusSignal((value) => value + 1)
   }, [setDraft])
 
+  // On narrow screens the panel covers the composer, so close it first.
+  const mentionFromPanel = useCallback((path: string) => {
+    if (window.matchMedia?.('(max-width: 1100px)').matches) onInspector(null)
+    mention(path)
+  }, [mention, onInspector])
+
   const contextTip = useMemo(() => {
     const context = view.context
     if (!context) return 'Context'
@@ -128,7 +137,7 @@ export function SessionPane({
     return `Context ${compactNumber(context.context_tokens)}${limit}`
   }, [view.context])
 
-  const title = summary.name || summary.title || basename(summary.cwd)
+  const title = sessionTitle(summary)
   const model = view.context?.model || summary.model
 
   return (
@@ -214,6 +223,7 @@ export function SessionPane({
           view={view}
           active={active}
           handle={timeline}
+          memoryKey={summary.id}
           query={findOpen ? query : ''}
           matchIndex={matchIndex}
           onMatches={setMatchCount}
@@ -266,6 +276,7 @@ export function SessionPane({
             connected={connected}
             filesRefresh={filesRefresh}
             onOpenFile={openFile}
+            onMention={mentionFromPanel}
             onJumpRound={jumpRound}
             onOpenProcess={setProcessId}
           />
@@ -286,10 +297,11 @@ export function SessionPane({
 
       {active && viewing ? (
         <FileViewer
-          key={viewing.path}
+          key={`${viewing.path}:${viewing.line ?? ''}`}
           sessionId={summary.id}
           path={viewing.path}
           changed={viewing.changed}
+          line={viewing.line}
           onClose={closeFile}
           onMention={mention}
         />

@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react'
 import { Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, Unlink, X } from 'lucide-react'
 import type { RefObject } from 'react'
 
-import { basename } from '../lib/format'
+import { basename, sessionTitle } from '../lib/format'
 import type { SessionSummary } from '../lib/protocol'
 import type { LinkStatus } from '../lib/socket'
 import type { ThemeChoice } from '../lib/theme'
@@ -41,7 +41,7 @@ function SessionRow({
   const [armed, setArmed] = useState(false)
   const owned = session.attached_by === 'web'
   const terminal = session.attached_by === 'terminal'
-  const title = session.name || basename(session.cwd) || session.title
+  const title = sessionTitle(session)
   const tasks = (session.watchers ?? 0) + (session.background ?? 0)
   return (
     <div className={`session-row ${active ? 'active' : ''} ${owned ? 'owned' : ''} ${terminal ? 'locked' : ''}`}>
@@ -56,9 +56,10 @@ function SessionRow({
         <span className="session-text">
           <span className="session-title">
             <span className="clamp">{title}</span>
+            {session.cwd ? <span className="session-cwd clamp">{basename(session.cwd)}</span> : null}
             {unread ? <span className="unread" aria-label="Finished" /> : null}
           </span>
-          <span className="session-sub clamp">{session.preview || session.cwd}</span>
+          <span className="session-sub clamp">{session.preview || 'No messages yet'}</span>
         </span>
         <span className="session-meta">
           {busy ? <Spinner size={13} /> : terminal ? <Terminal size={13} /> : !owned ? <Link2 size={13} className="attach-hint" /> : null}
@@ -171,7 +172,7 @@ export function Sidebar({
         <div className="rail-list">
           {listed.slice(0, RAIL_LIMIT).map((session, index) => {
             const owned = session.attached_by === 'web'
-            const title = session.name || basename(session.cwd) || session.title
+            const title = sessionTitle(session)
             // Divide sessions open here from detached ones.
             const divider = !owned && index > 0 && listed[index - 1].attached_by === 'web'
             return (
@@ -182,7 +183,7 @@ export function Sidebar({
                 className={`rail-item ${session.id === activeId ? 'active' : ''} ${owned ? 'owned' : ''}`}
                 disabled={busyId !== null}
                 onClick={() => (owned ? onSelect(session.id) : onAttach(session.id))}
-                data-tip={`${title} · ${STATE_LABEL[session.state] ?? session.state}${owned ? '' : ' · click to attach'}`}
+                data-tip={`${title}${session.cwd ? ` · ${basename(session.cwd)}` : ''} · ${STATE_LABEL[session.state] ?? session.state}${owned ? '' : ' · click to attach'}`}
                 aria-label={title}
               >
                 <span className="rail-initial">{title.slice(0, 2)}</span>
