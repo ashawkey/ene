@@ -1,6 +1,7 @@
 import {
   ArrowDown,
   Bot,
+  ChevronRight,
   ChevronsUp,
   CircleCheck,
   CircleX,
@@ -139,7 +140,7 @@ export const ProcessViewer = memo(function ProcessViewer({
         ) : null}
         <IconButton icon={X} size="sm" label="Close" onClick={onClose} />
       </div>
-      {process.command ? <div className="proc-command mono clamp" data-tip={process.command}>$ {process.command}</div> : null}
+      {process.command ? <ProcessCommand command={process.command} /> : null}
       <div className="proc-body">
         {showChat ? (
           <ChatView
@@ -167,6 +168,25 @@ export const ProcessViewer = memo(function ProcessViewer({
     </Modal>
   )
 })
+
+/** The launching command: one clamped line that unfolds to the full text. */
+export function ProcessCommand({ command }: { command: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={`proc-command ${open ? 'open' : ''}`}>
+      <button type="button" className="proc-command-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <ChevronRight size={13} className="chev" />
+        {open ? <span className="muted">Command</span> : <span className="mono clamp">$ {command.replace(/\s+/g, ' ')}</span>}
+      </button>
+      {open ? (
+        <>
+          <CopyButton text={command} label="Copy command" />
+          <pre className="proc-command-full mono">$ {command}</pre>
+        </>
+      ) : null}
+    </div>
+  )
+}
 
 function ErrorBar({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (

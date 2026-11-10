@@ -848,6 +848,21 @@ class Hub:
             self._path_completers[key] = completer
         return completer
 
+    def warm_path_index(self, session: RemoteSession) -> None:
+        """Start indexing an attached session's workspace in the background,
+        so the first @-completion or file find does not wait for it."""
+        workspace = str(session.meta.get("cwd", ""))
+        if not workspace:
+            return
+        try:
+            work_dir = Path(workspace).resolve()
+            if not work_dir.is_dir():
+                return
+        except OSError:
+            return
+        with self._path_completion_lock:
+            self.path_completer(work_dir).warm()
+
     def workspace_of(self, runtime_id: str) -> str | None:
         """Workspace of any live session on this machine, attached or not."""
         with self._registry_lock:
@@ -1281,6 +1296,8 @@ class Hub:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except LiveError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
+            # Off the loop: the hub lock may be held by a running completion.
+            await loop.run_in_executor(None, self.warm_path_index, session)
             return {"session": session.summary()}
 
         @app.post("/api/sessions/{session_id}/detach")

@@ -465,6 +465,17 @@ def test_format_process_status_shows_one_line_per_running_process():
     assert format_process_status(0, 3, activity) == ""
 
 
+def test_process_status_snapshot_keeps_full_command_text():
+    command = "source env.sh; srun --mem=64G \\\n  python train.py " + "--flag " * 100
+    activity = [{"process_id": 1, "command": command, "status": "running"}]
+    item = process_status_snapshot(1, 0, activity)["processes"][0]
+    assert item["command"] == command.strip()
+    assert item["label"] == " ".join(command.split())[:40]
+
+    long = [{"process_id": 2, "command": "x" * 9000, "status": "running"}]
+    assert process_status_snapshot(1, 0, long)["processes"][0]["command"] == "x" * 8000 + "…"
+
+
 def test_format_process_status_converts_minutes_and_hours():
     activity = [
         {

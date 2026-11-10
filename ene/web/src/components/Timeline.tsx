@@ -26,7 +26,12 @@ export type TimelineHandle = {
   scrollToBottom: (smooth?: boolean) => void
 }
 
-const PIN_DISTANCE = 160
+// Following the tail is decided by the direction of travel, not by a
+// tolerance band: a tolerance re-pins every small upward step (trackpads,
+// smooth wheels, scrollbar drags), and the next streamed update or resize
+// yanks the view back down, so the user can never leave the bottom.
+// Any upward move off the bottom releases the tail; reaching it re-pins.
+const PIN_DISTANCE = 24
 
 /**
  * Where a session's transcript was left: following the tail, or the item at
@@ -91,6 +96,8 @@ export const Timeline = memo(function Timeline({
   )
   // Mirrors memory.pinned; kept as its own ref because most code reads only it.
   const pinned = useRef(memory.current.pinned)
+  // Last scrollTop seen or set here; an upward move from it is the user's.
+  const lastTop = useRef(0)
   // Set while a remembered position still has to be applied (the anchor may
   // not have been rendered yet, e.g. right after re-attaching).
   const restorePending = useRef(false)
@@ -140,6 +147,8 @@ export const Timeline = memo(function Timeline({
     stopSettling()
     pinned.current = true
     element.scrollTo({ top: element.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+    // Not for smooth scrolls, which only start moving here.
+    if (!smooth) lastTop.current = element.scrollTop
   }, [stopSettling])
 
   const reveal = useCallback((target: HTMLElement | null) => {
@@ -252,7 +261,10 @@ export const Timeline = memo(function Timeline({
     const element = scroller.current
     if (!element || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
-      if (pinned.current) element.scrollTop = element.scrollHeight
+      if (pinned.current) {
+        element.scrollTop = element.scrollHeight
+        lastTop.current = element.scrollTop
+      }
       measure()
     })
     observer.observe(element)
@@ -265,8 +277,13 @@ export const Timeline = memo(function Timeline({
     if (!element) return
     // A hidden pane has no layout; its scroll events carry no position.
     if (!element.clientHeight) return
-    const distance = element.scrollHeight - element.clientHeight - element.scrollTop
-    pinned.current = distance < PIN_DISTANCE
+    const top = element.scrollTop
+    const distance = element.scrollHeight - element.clientHeight - top
+    // Content shrinking under a pinned view clamps scrollTop upward too, but
+    // it stays at the bottom (distance ~0), so it does not count as leaving.
+    if (top < lastTop.current - 0.5 && distance > 1) pinned.current = false
+    else if (distance <= PIN_DISTANCE) pinned.current = true
+    lastTop.current = top
     measure()
     // A restore still settling is not a new position.
     if (settleFrame.current !== null) return

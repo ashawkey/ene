@@ -81,13 +81,16 @@ def process_status_snapshot(
     exited = exited[-_SNAPSHOT_EXITED_LIMIT:][::-1]
     processes = []
     for item in [*live, *exited]:
-        command = " ".join(str(item.get("command", "")).split())
+        raw_command = str(item.get("command", "")).strip()
+        command = " ".join(raw_command.split())
         label = item.get("label") or command
+        if len(raw_command) > _SNAPSHOT_COMMAND_MAX_CHARS:
+            raw_command = raw_command[:_SNAPSHOT_COMMAND_MAX_CHARS] + "…"
         events_bytes = int(item.get("events_bytes") or 0)
         processes.append({
             "process_id": str(item["process_id"]),
             "label": _clean_process_line(label)[:_PROCESS_LABEL_MAX_CHARS],
-            "command": command[:_SNAPSHOT_COMMAND_MAX_CHARS],
+            "command": raw_command,
             "elapsed_seconds": max(0, float(item.get("elapsed_seconds") or 0)),
             "last_line": _clean_process_line(item.get("last_line", "")),
             "watching": bool(item.get("watching")),
@@ -161,7 +164,8 @@ def _next_line_start(handle: Any, position: int) -> int | None:
 
 
 _PROCESS_LABEL_MAX_CHARS = 40
-_SNAPSHOT_COMMAND_MAX_CHARS = 300
+# Full command text (whitespace kept) so the Web UI can unfold it.
+_SNAPSHOT_COMMAND_MAX_CHARS = 8000
 # Exited processes stay listed (newest first) so their output remains viewable.
 _SNAPSHOT_EXITED_LIMIT = 20
 # One output read stays well inside a live-session frame even after JSON

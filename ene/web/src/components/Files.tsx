@@ -24,7 +24,7 @@ import { errorMessage, fileDiff, findFiles, listChanges, listFiles, rawFileUrl, 
 import { bytes, relativeTime } from '../lib/format'
 import { highlight, languageForPath, splitHighlightedLines } from '../lib/highlight'
 import type { DirListing, FilePreview, FindResult, FoundPath, GitChanges, GitDiff } from '../lib/protocol'
-import { type FilesFocus, type Range, pathMatchRanges, useDebounced, useFilesFocus } from '../lib/search'
+import { type FilesFocus, type Range, QueryCache, narrowMatches, pathMatchRanges, useDebounced, useFilesFocus } from '../lib/search'
 import { splitLines } from '../lib/splitDiff'
 import { store } from '../lib/storage'
 import { CopyButton, Markdown } from './Markdown'
@@ -97,6 +97,9 @@ const isHiddenPath = (path: string) => path.split('/').some((part) => part.start
 
 // Memoized: the inspector re-renders on every streamed update, and a large
 // folder listing must not re-render with it.
+// Workspace find answers per session and query, shared across remounts.
+const findCache = new QueryCache<FindResult>()
+
 export const FileBrowser = memo(function FileBrowser({
   sessionId,
   onOpen,
@@ -117,7 +120,8 @@ export const FileBrowser = memo(function FileBrowser({
   const [mode, setMode] = useState<'browse' | 'changes' | 'search'>('browse')
   const [filter, setFilter] = useState('')
   const [tick, setTick] = useState(0)
-  const [found, setFound] = useState<FindResult | null>(null)
+  // Workspace matches and the session and query they answer.
+  const [found, setFound] = useState<(FindResult & { session: string; query: string }) | null>(null)
   const [finding, setFinding] = useState(false)
   const [searchFocus, setSearchFocus] = useState(0)
   const filterInput = useRef<HTMLInputElement>(null)
@@ -169,17 +173,30 @@ export const FileBrowser = memo(function FileBrowser({
   }, [sessionId, tick, refreshKey])
 
   // Recursive, fuzzy file finder over the whole workspace (hub-side index).
-  const findQuery = useDebounced(filter.trim(), 150)
+  const findQuery = useDebounced(filter.trim(), 80)
+  const findTick = useRef(tick)
   useEffect(() => {
     if (!findQuery || mode !== 'browse') {
       setFound(null)
       setFinding(false)
       return
     }
+    const key = `${sessionId}\u0000${findQuery}`
+    // A refresh tick must refetch; otherwise reuse a recent answer.
+    const cached = findTick.current === tick ? findCache.get(key) : undefined
+    findTick.current = tick
+    if (cached) {
+      setFound({ ...cached, session: sessionId, query: findQuery })
+      setFinding(false)
+      return
+    }
     let cancelled = false
     setFinding(true)
     findFiles(sessionId, findQuery)
-      .then((data) => !cancelled && setFound(data))
+      .then((data) => {
+        findCache.set(key, data)
+        if (!cancelled) setFound({ ...data, session: sessionId, query: findQuery })
+      })
       .catch(() => !cancelled && setFound(null))
       .finally(() => !cancelled && setFinding(false))
     return () => {
@@ -213,10 +230,12 @@ export const FileBrowser = memo(function FileBrowser({
   )
   // Workspace hits, minus the ones already listed for this folder.
   const workspaceHits = useMemo(() => {
-    if (!needle || !found) return []
+    if (!needle || !found || found.session !== sessionId) return []
+    // Until the typed query's answer arrives, narrow the previous one locally.
+    const results = narrowMatches(found.results, (item) => item.path, found.query, needle) ?? []
     const shown = new Set(entries.map((entry) => join(entry.name)))
-    return found.results.filter((item) => !shown.has(item.path) && (showHidden || !isHiddenPath(item.path)))
-  }, [needle, found, entries, join, showHidden])
+    return results.filter((item) => !shown.has(item.path) && (showHidden || !isHiddenPath(item.path)))
+  }, [needle, found, entries, join, showHidden, sessionId])
   const crumbs = listing?.path ? listing.path.split('/') : []
   const changeCount = changes?.changes.length ?? 0
 

@@ -1177,7 +1177,13 @@ button.step-head:hover { background: var(--hover); }
 
 /* process viewer */
 .proc-viewer { position: relative; }
-.proc-command { padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.proc-command { position: relative; flex: none; border-bottom: 1px solid var(--line); color: var(--text-3); font-size: 12px; }
+.proc-command-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 6px 16px 6px 10px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.proc-command-toggle:hover { color: var(--text-2); }
+.proc-command-toggle .chev { flex: none; transition: transform .15s; }
+.proc-command.open .chev { transform: rotate(90deg); }
+.proc-command .copy-btn { position: absolute; top: 2px; right: 10px; }
+.proc-command-full { margin: 0; max-height: 30dvh; overflow: auto; padding: 0 16px 8px 29px; color: var(--text-2); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .proc-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .proc-body .timeline { padding-top: 18px; }
 .proc-body .timeline-scroller { border-radius: 0; }

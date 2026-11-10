@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import heapq
 import os
 import re
 import subprocess
@@ -91,9 +92,9 @@ class AtFileCompleter(Completer):
     # Hard limit on completions shown
     MAX_COMPLETIONS = 30
 
-    # How long a built candidate index stays valid before a refresh.
-    # Short enough to pick up new files during a session, long enough to
-    # avoid rebuilding on every burst of keystrokes.
+    # Age after which a query triggers a background refresh (the stale
+    # index still answers). Short enough to pick up new files during a
+    # session, long enough to avoid rebuilding on every burst of keystrokes.
     _INDEX_TTL = 5.0
 
     # Cap on candidates held in memory. Guards pathological monorepos;
@@ -113,9 +114,17 @@ class AtFileCompleter(Completer):
         self._work_dir = Path(work_dir or os.getcwd()).resolve()
         # When set (the web hub), directory listing never leaves work_dir.
         self._confine = confine
-        # Cached candidate index: list of (rel_path, is_dir).
-        self._index: list[tuple[str, bool]] = []
+        # Cached candidate index: list of (rel_path, is_dir), plus the
+        # lowercased match keys ``(candidate, basename)`` aligned with it.
+        # Both are swapped in together as one snapshot.
+        self._state: tuple[list[tuple[str, bool]], list[tuple[str, str]]] = ([], [])
         self._index_built_at = 0.0
+        self._refresh: threading.Thread | None = None
+        self._refresh_lock = threading.Lock()
+        # Last fuzzy query and the index positions it matched. A longer
+        # query that extends it only rescans those (subsequence matches of
+        # the longer query are a subset), so typing narrows incrementally.
+        self._narrow: tuple[list, str, list[int]] | None = None
 
     # ------------------------------------------------------------------
     # Public entry-point
@@ -215,22 +224,37 @@ class AtFileCompleter(Completer):
         """Return ``(rel_path, is_dir)`` pairs ranked by fuzzy match.
 
         The index is built once and reused across keystrokes (see
-        :meth:`_get_index`), so matching cost is independent of repo size.
+        :meth:`_get_index`). A C-level subsequence regex rejects
+        non-matching candidates before the Python scorer runs, and a query
+        extending the previous one only rescans the previous matches.
         Candidates are ranked with an fzf-style scorer that matches the
         basename first (falling back to the full path), so a short query
         finds a deeply-nested file.
         """
         pl = query.lower()
-        scored: list[tuple[int, str, bool]] = []  # (score, rel_path, is_dir)
+        index, keys = self._snapshot()
+        narrow = self._narrow
+        if narrow is not None and narrow[0] is index and pl.startswith(narrow[1]):
+            positions: Iterable[int] = narrow[2]
+        else:
+            positions = range(len(index))
+        if pl:
+            matches = re.compile(".*?".join(map(re.escape, pl)), re.DOTALL).search
+            positions = [i for i in positions if matches(keys[i][0])]
+        else:
+            positions = list(positions)
+        self._narrow = (index, pl, positions)
 
-        for rel, is_dir in self._get_index():
-            candidate = f"{rel}/" if is_dir else rel
-            base = rel.rsplit("/", 1)[-1]
-            score = self._fuzzy_score(base.lower(), pl)
+        score_of = self._fuzzy_score
+        scored: list[tuple[int, str, bool]] = []  # (score, rel_path, is_dir)
+        for i in positions:
+            rel, is_dir = index[i]
+            candidate, base = keys[i]
+            score = score_of(base, pl)
             if score > 0:
                 score += 20  # prefer basename hits
             else:
-                score = self._fuzzy_score(candidate.lower(), pl)
+                score = score_of(candidate, pl)
             if score <= 0:
                 continue
             # Shallower paths and shorter names rank higher on ties.
@@ -238,8 +262,12 @@ class AtFileCompleter(Completer):
             scored.append((score, rel, is_dir))
 
         # Sort: higher score first, then dirs first, then shorter path, then alpha
-        scored.sort(key=lambda x: (-x[0], not x[2], len(x[1]), x[1].lower()))
-        return [(rel, is_dir) for _score, rel, is_dir in scored[:limit]]
+        key = lambda x: (-x[0], not x[2], len(x[1]), x[1].lower())
+        if limit is not None and limit < len(scored):
+            ranked = heapq.nsmallest(limit, scored, key=key)
+        else:
+            ranked = sorted(scored, key=key)
+        return [(rel, is_dir) for _score, rel, is_dir in ranked[:limit]]
 
     def _may_list(self, directory: Path) -> bool:
         return not self._confine or directory == self._work_dir or self._work_dir in directory.parents
@@ -249,14 +277,45 @@ class AtFileCompleter(Completer):
     # ------------------------------------------------------------------
 
     def _get_index(self) -> list[tuple[str, bool]]:
-        """Return the cached (rel_path, is_dir) candidate list, rebuilding
-        it if the TTL has expired."""
-        now = time.monotonic()
-        if self._index and now - self._index_built_at < self._INDEX_TTL:
-            return self._index
-        self._index = self._build_index()
-        self._index_built_at = now
-        return self._index
+        """Return the cached (rel_path, is_dir) candidate list."""
+        return self._snapshot()[0]
+
+    def _snapshot(self) -> tuple[list[tuple[str, bool]], list[tuple[str, str]]]:
+        """Return the cached index and its match keys.
+
+        The first call builds synchronously. Afterwards an expired index
+        is still served while a background thread rebuilds it, so a
+        keystroke never waits on ``git ls-files`` or a filesystem walk.
+        """
+        if not self._index_built_at:
+            with self._refresh_lock:
+                refresh = self._refresh
+            if refresh is not None:
+                refresh.join()  # a warm-up build is already running
+            if not self._index_built_at:
+                self._rebuild()
+        elif time.monotonic() - self._index_built_at >= self._INDEX_TTL:
+            self.warm()
+        return self._state
+
+    def warm(self) -> None:
+        """Rebuild the index in a background thread unless one is running."""
+        with self._refresh_lock:
+            if self._refresh is not None and self._refresh.is_alive():
+                return
+            self._refresh = threading.Thread(
+                target=self._rebuild, name="ene-path-index", daemon=True
+            )
+            self._refresh.start()
+
+    def _rebuild(self) -> None:
+        index = self._build_index()
+        keys = []
+        for rel, is_dir in index:
+            lowered = rel.lower()
+            keys.append((f"{lowered}/" if is_dir else lowered, lowered.rsplit("/", 1)[-1]))
+        self._state = (index, keys)
+        self._index_built_at = time.monotonic()
 
     def _build_index(self) -> list[tuple[str, bool]]:
         index = self._git_index()
@@ -364,12 +423,16 @@ class AtFileCompleter(Completer):
         if text.startswith(pattern):
             return 500
 
+        start = text.find(pattern[0])
+        if start < 0:
+            return 0
         score = 0
         pi = 0
+        size = len(pattern)
         prev_matched = False
         boundary_chars = "/_-. "
-        for i, ch in enumerate(text):
-            if pi < len(pattern) and ch == pattern[pi]:
+        for i in range(start, len(text)):
+            if text[i] == pattern[pi]:
                 bonus = 1
                 if i == 0 or text[i - 1] in boundary_chars:
                     bonus += 8  # boundary match (word/path segment start)
@@ -377,12 +440,12 @@ class AtFileCompleter(Completer):
                     bonus += 5  # consecutive run
                 score += bonus
                 pi += 1
+                if pi == size:
+                    return score
                 prev_matched = True
             else:
                 prev_matched = False
-        if pi != len(pattern):
-            return 0  # not a subsequence
-        return score
+        return 0  # not a subsequence
 
     @staticmethod
     def _split(path_str: str) -> tuple[str, str]:

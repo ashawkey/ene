@@ -20,11 +20,15 @@ import type { PendingMessage } from '../lib/protocol'
 import type { OutboxEntry } from '../lib/useSession'
 import { IconButton, Spinner, useNow } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
+import { QueryCache, narrowMatches } from '../lib/search'
 
 type Suggestion = { value: string; label: string; detail: string; kind: 'command' | 'path' }
 
 const coarsePointer = () =>
   typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+
+// Completions per session and query, shared across remounts.
+const pathCache = new QueryCache<string[]>()
 
 export function Composer({
   sessionId,
@@ -65,7 +69,7 @@ export function Composer({
   const [cursor, setCursor] = useState(draft.length)
   const [index, setIndex] = useState(0)
   const [dismissed, setDismissed] = useState<string | null>(null)
-  const [paths, setPaths] = useState<{ query: string; items: string[] }>({ query: '', items: [] })
+  const [paths, setPaths] = useState<{ session: string; query: string; items: string[] }>({ session: '', query: '', items: [] })
   const historyIndex = useRef<number | null>(null)
   const stash = useRef('')
   const composing = useRef(false)
@@ -112,11 +116,20 @@ export function Composer({
 
   useEffect(() => {
     if (pathQuery === null || dismissed === draft) return
+    const key = `${sessionId}\u0000${pathQuery}`
+    const cached = pathCache.get(key)
+    if (cached) {
+      setPaths({ session: sessionId, query: pathQuery, items: cached })
+      return
+    }
     let cancelled = false
     const timer = window.setTimeout(() => {
       pathCompletions(sessionId, pathQuery)
-        .then((items) => !cancelled && setPaths({ query: pathQuery, items }))
-        .catch(() => !cancelled && setPaths({ query: pathQuery, items: [] }))
+        .then((items) => {
+          pathCache.set(key, items)
+          if (!cancelled) setPaths({ session: sessionId, query: pathQuery, items })
+        })
+        .catch(() => !cancelled && setPaths({ session: sessionId, query: pathQuery, items: [] }))
     }, 50)
     return () => {
       cancelled = true
@@ -133,15 +146,19 @@ export function Composer({
         .map(([name, detail]) => ({ value: `/${name}`, label: `/${name}`, detail, kind: 'command' as const }))
       return list.length === 1 && list[0].value === draft ? [] : list.slice(0, 50)
     }
-    if (pathQuery !== null && paths.query === pathQuery) {
-      const list = paths.items.map((item) => {
+    // Until this query's answer arrives, narrow the previous one locally.
+    const items = pathQuery !== null && paths.session === sessionId
+      ? narrowMatches(paths.items, (item) => item.replace(/^@/, ''), paths.query, pathQuery)
+      : null
+    if (pathQuery !== null && items) {
+      const list = items.map((item) => {
         const value = item.startsWith('@') ? item : `@${item}`
         return { value, label: value.slice(1), detail: value.endsWith('/') ? 'folder' : 'file', kind: 'path' as const }
       })
       return list.length === 1 && list[0].value === `@${pathQuery}` ? [] : list.slice(0, 50)
     }
     return []
-  }, [commandQuery, commands, dismissed, draft, pathQuery, paths])
+  }, [commandQuery, commands, dismissed, draft, pathQuery, paths, sessionId])
 
   useEffect(() => setIndex(0), [suggestions.length, commandQuery, pathQuery])
 

@@ -537,3 +537,34 @@ def test_git_index_honors_gitignore(tmp_path):
     # Ignored files must not appear even though they exist on disk.
     res = _complete(comp, "@ignored")
     assert not any("ignored" in r for r in res)
+
+
+def test_expired_index_is_served_while_rebuilding_in_background(tmp_path):
+    _touch(str(tmp_path / "src" / "widget.txt"))
+    comp = AtFileCompleter(tmp_path)
+    assert "@src/widget.txt" in _complete(comp, "@widget")
+    _touch(str(tmp_path / "src" / "gadget.txt"))
+    comp._index_built_at -= comp._INDEX_TTL  # expire
+    # The stale index answers immediately; the refresh runs off-thread.
+    assert _complete(comp, "@gadget") == []
+    comp._refresh.join(timeout=5)
+    assert "@src/gadget.txt" in _complete(comp, "@gadget")
+
+
+def test_warm_builds_the_index_before_the_first_query(tmp_path):
+    _touch(str(tmp_path / "widget.txt"))
+    comp = AtFileCompleter(tmp_path)
+    comp.warm()
+    assert "@widget.txt" in _complete(comp, "@wid")
+
+
+def test_narrowed_queries_rank_like_fresh_queries(tmp_path):
+    for name in ("alpha_beta.py", "a/b/c.py", "abc.md", "x/abacus.txt", "ab_c/readme"):
+        _touch(str(tmp_path / name))
+    typed = AtFileCompleter(tmp_path)
+    for size in range(1, 4):
+        query = "abc"[:size]
+        fresh = AtFileCompleter(tmp_path)
+        assert typed.find(query) == fresh.find(query)
+    # Deleting a character restarts from the whole index.
+    assert typed.find("ab") == AtFileCompleter(tmp_path).find("ab")
