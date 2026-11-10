@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Login } from './components/Login'
 import { NewSessionDialog } from './components/NewSession'
+import { ResizeHandle } from './components/ResizeHandle'
 import type { InspectorTab } from './components/Inspector'
 import { rememberInspectorTab } from './components/Inspector'
 import { SessionPane } from './components/SessionPane'
@@ -256,6 +257,7 @@ export default function App() {
         onLogout={signOut}
       />
       <main className="workspace">
+        {rail ? null : <ResizeHandle panel="sidebar" />}
         {attached.map((session) => (
           <SessionPane
             key={session.id}

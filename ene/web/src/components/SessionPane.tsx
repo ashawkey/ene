@@ -13,6 +13,7 @@ import { Inspector, lastInspectorTab } from './Inspector'
 import { ProcessViewer } from './ProcessViewer'
 import { PromptSheet } from './PromptSheet'
 import type { TimelineHandle } from './Timeline'
+import { ResizeHandle } from './ResizeHandle'
 import { Timeline } from './Timeline'
 import { OpenProcessContext, SessionIdContext } from './TimelineItems'
 import { ContextRing, IconButton, LinkBanner, LinkDot, StateIcon } from './ui'
@@ -144,6 +145,7 @@ export function SessionPane({
     <SessionIdContext.Provider value={summary.id}>
     <section className={`pane ${active ? 'active' : ''}`} hidden={!active} aria-label={title}>
       <div className="pane-main">
+        {active && inspector ? <ResizeHandle panel="inspector" /> : null}
         <header className="pane-header glass">
           <IconButton icon={PanelLeft} label="Sessions" className="menu-btn" onClick={onMenu} />
           <div className="pane-title">

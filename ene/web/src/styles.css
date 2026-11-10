@@ -49,8 +49,14 @@
   --radius: 20px;
   --radius-md: 14px;
   --radius-sm: 10px;
+  /* Preferred panel widths; the user can drag them (lib/resize.ts keeps the
+     same limits). The conversation column never shrinks below --main-min. */
   --sidebar-w: 288px;
+  --sidebar-min: 220px;
+  --sidebar-max: 420px;
   --inspector-w: 400px;
+  --inspector-min: 320px;
+  --main-min: 480px;
   --gap: 10px;
   /* Reading column of the conversation, composer, and questions. */
   --conv-width: 1040px;
@@ -378,8 +384,10 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 /* ---------- app layout ---------- */
 
 .app {
+  --sidebar-cap: min(var(--sidebar-max), 100vw - var(--main-min) - 3 * var(--gap));
+  --sidebar-col: clamp(var(--sidebar-min), var(--sidebar-w), var(--sidebar-cap));
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-col) minmax(0, 1fr);
   transition: grid-template-columns 0.22s cubic-bezier(0.3, 0.7, 0.2, 1);
   gap: var(--gap);
   height: 100dvh;
@@ -388,6 +396,19 @@ button.chip:hover { color: var(--text); background: var(--hover); }
   padding-bottom: max(var(--gap), env(safe-area-inset-bottom));
 }
 .workspace { position: relative; min-width: 0; min-height: 0; }
+/* A docked inspector takes its minimum before the sidebar may grow. */
+@media (min-width: 1101px) {
+  .app.with-inspector { --sidebar-cap: min(var(--sidebar-max), 100vw - var(--inspector-min) - var(--main-min) - 4 * var(--gap)); }
+}
+
+/* Drag handles sit in the gap between columns. */
+.resize-handle { position: absolute; z-index: 30; top: 0; bottom: 0; width: var(--gap); cursor: col-resize; touch-action: none; outline: none; }
+.resize-handle.resize-sidebar { left: calc(-1 * var(--gap)); }
+.resize-handle.resize-inspector { right: calc(-1 * var(--gap)); }
+.resize-handle::after { content: ''; position: absolute; top: 24px; bottom: 24px; left: 50%; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--accent); opacity: 0; transition: opacity 0.15s; }
+.resize-handle:hover::after, .resize-handle:focus-visible::after, .resize-handle:active::after { opacity: 0.6; }
+.resizing, .resizing * { cursor: col-resize !important; user-select: none !important; }
+.resizing .app { transition: none; }
 
 /* ---------- sidebar ---------- */
 
@@ -452,7 +473,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .sidebar-scrim { display: none; }
 
 /* Collapsed rail: icons only, more room for the conversation. */
-.app.rail-mode { grid-template-columns: 56px minmax(0, 1fr); }
+.app.rail-mode { --sidebar-col: 56px; }
 .sidebar.rail { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; overflow: visible; }
 .rail-list { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); width: 36px; }
 .rail-item {
@@ -506,7 +527,9 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 
 .pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); height: 100%; min-height: 0; }
 .pane[hidden] { display: none; }
-.app.with-inspector .pane { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
+.app.with-inspector .pane {
+  grid-template-columns: minmax(0, 1fr) clamp(var(--inspector-min), var(--inspector-w), min(50vw, 100vw - var(--sidebar-col) - var(--main-min) - 4 * var(--gap)));
+}
 /* The conversation column is positioned, so it would paint over the
    (unpositioned) side panel wherever anything inside it overflows; isolate it
    and keep the panel above, so stray overflow can never swallow its clicks. */
@@ -1223,6 +1246,7 @@ button.step-head:hover { background: var(--hover); }
 
 @media (max-width: 1100px) {
   .app.with-inspector .pane { grid-template-columns: minmax(0, 1fr); }
+  .resize-handle.resize-inspector { display: none; }
   .inspector {
     position: fixed;
     z-index: 70;
@@ -1238,6 +1262,7 @@ button.step-head:hover { background: var(--hover); }
 @media (max-width: 820px) {
   :root { --gap: 0px; }
   .app { grid-template-columns: minmax(0, 1fr); padding: 0; }
+  .resize-handle.resize-sidebar { display: none; }
   .sidebar {
     position: fixed;
     z-index: 75;

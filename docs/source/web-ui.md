@@ -62,6 +62,7 @@ The sidebar groups every live session on the machine:
 - **State icon:** spinner = working (model call or command); hourglass = idle in the foreground while background processes run or queued input remains; check = waiting for your input. A blue dot marks sessions that finished while you were elsewhere.
 - **Hub name:** the sidebar header and browser tab title show the hub machine's hostname, so tabs from different hubs stay distinguishable.
 - **Collapse:** the panel icon in the sidebar header (or Ctrl/Cmd+B) shrinks the sidebar to an icon rail; click a session there to switch or attach. The choice is remembered.
+- **Resize:** drag the edge between the sidebar and the conversation; double-click it to reset. Widths are remembered.
 
 ## Conversation
 
@@ -96,6 +97,7 @@ Open the side panel with the panel icon in the session header (it reopens the la
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
 - File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
+- **Resize:** drag the panel's left edge, up to half the window; double-click it to reset. The conversation keeps a minimum readable width, and on narrow windows the panel floats over it instead.
 - **Mention:** hover a file or folder row and click `@` to insert its workspace-relative path into the message box.
 
 ### Finding files and text
