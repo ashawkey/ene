@@ -79,7 +79,7 @@ The sidebar groups every live session on the machine:
 ### Composer
 
 - Enter sends; Shift+Enter adds a line. On touch devices, use the send button.
-- `/` at the start: commands and skills. `@`: workspace files. Up/Down select, Tab/Enter complete.
+- `/` at the start: commands and skills. `@`: workspace files; lookup starts after a 50 ms typing pause. Up/Down select, Tab/Enter complete.
 - Up/Down without suggestions: recall earlier input.
 - `!` at the start runs the rest as a one-off shell command in the workspace, shown in the conversation. For an interactive shell, use the [Terminal](#terminal) panel.
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
@@ -87,14 +87,14 @@ The sidebar groups every live session on the machine:
 
 ## Inspector
 
-Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics), the folder or Git branch chip (Files), or the "N running" chip shown while background processes run (Tasks):
+Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics), the folder or Git branch chip (Files), or the "N running" chip shown while background processes run (Processes):
 
 | Panel | Contents |
 | --- | --- |
 | **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. A changed file opens as a side-by-side diff against `HEAD` (unified on narrow screens); toggle to the file preview (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
 | **Terminal** | Interactive shells in the session workspace; see [Terminal](#terminal). |
 | **Statistics** | Rounds, agent time, model and tool time, tokens (input / cached / output), speed (tokens/s and TTFT), context usage, and per-round charts. Click a round to jump to it. |
-| **Tasks** | Running and recently exited background processes with runtime, exit code, and latest output. Open one to view its output, or stop it (click twice). |
+| **Processes** | Running and recently exited background processes with runtime, exit code, and latest output. Open one to view its output, or stop it (click twice). |
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
 - File browsing is read-only and confined to the workspace; paths outside it, including through symlinks, are refused.
@@ -111,7 +111,7 @@ Open the side panel with the panel icon in the session header (it reopens the la
 - Both skip ignored files and `.git`; text search does not follow symlinks.
 - Text search needs `rg` (ripgrep) on the hub host and is search-only; ask the agent to make replacements.
 - Limits keep large workspaces responsive: 50 path matches; 1,000 text matches across at most 300 files, 50 per file; files over 1 MB are skipped; searches stop after 5 seconds. A capped result says so, and a file with more than 50 matching lines shows `50+`.
-- See [process output](#process-output) for the viewer opened from **Tasks**.
+- See [process output](#process-output) for the viewer opened from **Processes**.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
 - TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
 
@@ -129,7 +129,7 @@ The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal,
 
 ## Process output
 
-Open a process from **Tasks** or from the link under its `start_process` call in the conversation.
+Open a process from **Processes** or from the link under its `start_process` call in the conversation.
 
 - **Log:** the full log, tail first, following live output (including a progress line still being redrawn). Load earlier output from the top, filter lines, toggle wrapping, or copy the loaded text.
 - **Conversation:** a [subagent](bundled-skills.md) opens as a read-only conversation: its task, replies, tool calls, and final result. Switch to **Log** for the raw output.

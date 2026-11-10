@@ -34,7 +34,7 @@ export const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string; icon: type
   { id: 'files', label: 'Files', icon: FolderOpen },
   { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
   { id: 'stats', label: 'Statistics', icon: ChartColumn },
-  { id: 'tasks', label: 'Background tasks', icon: Activity },
+  { id: 'tasks', label: 'Processes', icon: Activity },
   { id: 'info', label: 'Session info', icon: Info },
 ]
 

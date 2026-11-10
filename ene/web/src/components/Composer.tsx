@@ -74,13 +74,36 @@ export function Composer({
     if (focusSignal) field.current?.focus()
   }, [focusSignal])
 
-  // Grow with content up to the CSS max-height, then scroll.
-  useLayoutEffect(() => {
+  // Grow with content up to the CSS max-height; only scroll beyond it.
+  // scrollHeight is rounded to whole pixels while line boxes can be
+  // fractional (15.5px × 1.5), so pad by a pixel to avoid a spurious overflow.
+  const fitHeight = useCallback(() => {
     const element = field.current
     if (!element) return
+    element.style.overflowY = 'hidden'
     element.style.height = 'auto'
-    element.style.height = `${element.scrollHeight}px`
-  }, [draft])
+    const needed = element.scrollHeight + 1
+    const max = parseFloat(getComputedStyle(element).maxHeight)
+    const limited = Number.isFinite(max) && needed > max
+    element.style.height = `${limited ? max : needed}px`
+    element.style.overflowY = limited ? 'auto' : 'hidden'
+  }, [])
+
+  useLayoutEffect(fitHeight, [draft, fitHeight])
+
+  // Re-measure when the composer width changes and text re-wraps.
+  useEffect(() => {
+    const element = field.current
+    if (!element || typeof ResizeObserver === 'undefined') return
+    let width = element.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth === width) return
+      width = element.clientWidth
+      fitHeight()
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [fitHeight])
 
   const commandQuery = /^\/[\w:-]*$/.test(draft) ? draft.slice(1).toLowerCase() : null
   const before = draft.slice(0, cursor)
@@ -94,7 +117,7 @@ export function Composer({
       pathCompletions(sessionId, pathQuery)
         .then((items) => !cancelled && setPaths({ query: pathQuery, items }))
         .catch(() => !cancelled && setPaths({ query: pathQuery, items: [] }))
-    }, 120)
+    }, 50)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
