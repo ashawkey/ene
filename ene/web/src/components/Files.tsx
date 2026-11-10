@@ -311,7 +311,8 @@ export const FileBrowser = memo(function FileBrowser({
       ) : mode === 'changes' ? (
         <div className="file-list">
           {changes?.branch ? <div className="list-caption"><FolderGit2 size={13} />{changes.branch}</div> : null}
-          {changeCount === 0 ? <Empty icon={GitBranch}>Working tree clean.</Empty> : null}
+          {changes?.error ? <div className="panel-error">{changes.error}</div> : null}
+          {changeCount === 0 && !changes?.error ? <Empty icon={GitBranch}>Working tree clean.</Empty> : null}
           {changes?.changes.map((change) => {
             const name = change.path.split('/').at(-1) ?? change.path
             const Icon = fileIcon(name, 'file')

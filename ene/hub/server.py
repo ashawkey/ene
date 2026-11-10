@@ -13,6 +13,8 @@ Client surface: browsers authenticate with the shared token (``/api/login``),
 call the ``/api/*`` endpoints to list, create, attach, and detach sessions, and
 open ``/api/ws`` — either as a control channel (session list) or, with a
 ``session=<id>`` query param, as a per-session event stream.
+Browser terminals (:mod:`ene.hub.terminal`) are created over REST and
+streamed over ``/api/sessions/<id>/terminals/<terminal>/ws``.
 
 Note: no ``from __future__ import annotations`` here — FastAPI must evaluate
 endpoint annotations eagerly, and ``fastapi`` types are only imported inside
@@ -37,6 +39,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from ene.hub import files as hubfiles
 from ene.hub.link import WorkerLink
+from ene.hub.terminal import SUPPORTED as TERMINALS_SUPPORTED
+from ene.hub.terminal import TerminalError, TerminalManager, clamp_size
 from ene.live import (
     LiveBusyError,
     LiveError,
@@ -72,6 +76,8 @@ MAX_CREATE_BODY_BYTES = 8192
 MAX_REMEMBERED_ACTIONS = 512
 MAX_ACTION_ID_LENGTH = 128
 MAX_ROUNDS = 500                # round statistics kept per attached session
+MAX_TERMINAL_INPUT = 64 * 1024  # largest keyboard/paste frame from a browser
+MAX_TERMINAL_BACKLOG = 4 * 1024 * 1024  # unsent output before a slow viewer is dropped
 # Events that can change an attached session's list entry (state, title, preview).
 _SUMMARY_EVENTS = frozenset({
     "operation_start", "operation_end", "pending_set", "pending_cleared",
@@ -557,6 +563,8 @@ class Hub:
         self._path_completers: dict[str, AtFileCompleter] = {}
         self._path_completion_lock = threading.Lock()
         self._text_search = hubfiles.TextSearch()
+        # Browser terminals, owned by the hub and closed with their session.
+        self.terminals = TerminalManager()
 
         self._thread: threading.Thread | None = None
         self._server = None
@@ -749,6 +757,7 @@ class Hub:
             count = len(self._sessions)
         if session is None:
             return False
+        self.terminals.close_session(runtime_id)
         if session.link is not None:
             session.link.detach()
         session.touch()  # unblock browser readers so they re-check
@@ -770,6 +779,7 @@ class Hub:
             session = self._sessions.pop(runtime_id, None)
         if session is None:
             return
+        self.terminals.close_session(runtime_id)
         session.touch()
         self._log(
             f"session ended: {session.meta.get('title', runtime_id)} "
@@ -1361,6 +1371,53 @@ class Hub:
                 )
             return {"ok": True}
 
+        # -- browser terminals (an interactive shell in the workspace) -------
+
+        def terminal_error(exc: TerminalError) -> HTTPException:
+            return HTTPException(status_code=exc.status, detail=str(exc))
+
+        @app.get("/api/sessions/{session_id}/terminals")
+        async def terminals_list(request: Request, session_id: str):
+            require_login(request)
+            return {
+                "supported": TERMINALS_SUPPORTED,
+                "terminals": self.terminals.list(session_id),
+            }
+
+        @app.post("/api/sessions/{session_id}/terminals")
+        async def terminals_create(request: Request, session_id: str):
+            require_csrf(request)
+            body = await read_json_body(request, MAX_BODY_BYTES)
+            session = self.get_session(session_id)
+            if session is None:
+                raise HTTPException(status_code=409, detail="The session is not attached.")
+            cwd = str(session.meta.get("cwd", ""))
+            loop = asyncio.get_running_loop()
+            try:
+                terminal = await loop.run_in_executor(
+                    None,
+                    self.terminals.create,
+                    session_id,
+                    cwd,
+                    body.get("cols"),
+                    body.get("rows"),
+                )
+            except TerminalError as exc:
+                raise terminal_error(exc) from exc
+            if self.get_session(session_id) is None:
+                # Detached while the shell was starting; do not leak it.
+                self.terminals.remove(session_id, terminal.id)
+                raise HTTPException(status_code=409, detail="The session is not attached.")
+            self._log_dim(f"terminal opened: {terminal.title} (session {session_id[:8]})")
+            return {"terminal": terminal.describe()}
+
+        @app.post("/api/sessions/{session_id}/terminals/{terminal_id}/close")
+        async def terminals_close(request: Request, session_id: str, terminal_id: str):
+            require_csrf(request)
+            if not self.terminals.remove(session_id, terminal_id):
+                raise HTTPException(status_code=404, detail="Terminal not found.")
+            return {"ok": True}
+
         # -- workspace browsing (read-only, confined to the workspace) ------
 
         def session_workspace(session_id: str) -> str:
@@ -1459,8 +1516,12 @@ class Hub:
 
         # -- browser websocket: control channel or per-session stream -------
 
-        @app.websocket("/api/ws")
-        async def websocket_endpoint(websocket: WebSocket):
+        async def serve_socket(websocket, channel: str, make_serve) -> None:
+            """Authenticate a browser websocket and run ``make_serve(csrf, require_login)``.
+
+            Shared by every browser socket: cookie plus same-origin check, the
+            client cap, and closing the socket when the login ends.
+            """
             await websocket.accept()
             login_id = websocket.cookies.get(COOKIE_NAME)
             csrf = authenticate_cookie(login_id)
@@ -1475,8 +1536,6 @@ class Hub:
                     return
                 self._clients += 1
                 count = self._clients
-            session_id = websocket.query_params.get("session", "")
-            channel = f"session {session_id[:8]}" if session_id else "control"
             self._log_dim(f"web client connected ({channel}, {count} sockets)")
 
             def require_socket_login():
@@ -1501,13 +1560,7 @@ class Hub:
                     raise WebSocketDisconnect(code=4403)
 
             try:
-                if session_id:
-                    serve = self._serve_browser_session(
-                        websocket, csrf, session_id, require_socket_login
-                    )
-                else:
-                    serve = self._serve_browser_control(websocket, csrf, require_socket_login)
-                await self._race(serve, watch_login())
+                await self._race(make_serve(csrf, require_socket_login), watch_login())
             except WebSocketDisconnect as exc:
                 if exc.code == 4403:
                     await websocket.close(code=4403)
@@ -1518,6 +1571,30 @@ class Hub:
                     self._clients -= 1
                     count = self._clients
                 self._log_dim(f"web client disconnected ({channel}, {count} sockets)")
+
+        @app.websocket("/api/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            session_id = websocket.query_params.get("session", "")
+            channel = f"session {session_id[:8]}" if session_id else "control"
+
+            def make_serve(csrf, require_socket_login):
+                if session_id:
+                    return self._serve_browser_session(
+                        websocket, csrf, session_id, require_socket_login
+                    )
+                return self._serve_browser_control(websocket, csrf, require_socket_login)
+
+            await serve_socket(websocket, channel, make_serve)
+
+        @app.websocket("/api/sessions/{session_id}/terminals/{terminal_id}/ws")
+        async def terminal_socket(websocket: WebSocket, session_id: str, terminal_id: str):
+            await serve_socket(
+                websocket,
+                f"terminal {terminal_id[:6]}",
+                lambda _csrf, require_socket_login: self._serve_terminal(
+                    websocket, session_id, terminal_id, require_socket_login
+                ),
+            )
 
         app.mount(
             "/assets",
@@ -1694,6 +1771,97 @@ class Hub:
                     await websocket.send_json({"type": "cancel_ack", "ok": ok})
 
         await self._race(send_events(), receive_actions())
+
+    # -- browser: terminal stream -------------------------------------------
+
+    async def _serve_terminal(
+        self, websocket, session_id: str, terminal_id: str, require_login
+    ) -> None:
+        """Relay one terminal: binary frames carry raw bytes both ways.
+
+        On connect the retained scrollback is replayed. Text frames from the
+        browser are ``ping`` / ``resize``; the hub sends ``pong`` and, once the
+        shell is gone, ``{"type": "exit", "code": ...}``. A viewer that falls
+        too far behind is closed with 1013 and replays on reconnect.
+        """
+        terminal = self.terminals.get(session_id, terminal_id)
+        if terminal is None:
+            await websocket.close(code=4404)
+            return
+        loop = asyncio.get_running_loop()
+        pending = bytearray()
+        state: dict = {"exit": None, "overflow": False}
+        wake = asyncio.Event()
+
+        def push(kind: str, payload: object) -> None:  # on the event loop
+            if kind == "data":
+                pending.extend(payload)  # type: ignore[arg-type]
+                if len(pending) > MAX_TERMINAL_BACKLOG:
+                    state["overflow"] = True
+            else:
+                state["exit"] = payload
+            wake.set()
+
+        def on_output(kind: str, payload: object) -> None:  # on the reader thread
+            try:
+                loop.call_soon_threadsafe(push, kind, payload)
+            except RuntimeError:
+                pass  # the loop is shutting down
+
+        snapshot, alive = terminal.subscribe(on_output)
+        try:
+            require_login()
+            if snapshot:
+                await websocket.send_bytes(snapshot)
+            if not alive:
+                await websocket.send_json({"type": "exit", "code": terminal.exit_code})
+
+            async def send_output():
+                while alive:
+                    await wake.wait()
+                    wake.clear()
+                    require_login()
+                    if state["overflow"]:
+                        await websocket.close(code=1013)
+                        return
+                    if pending:
+                        data = bytes(pending)
+                        pending.clear()
+                        await websocket.send_bytes(data)
+                    if state["exit"] is not None:
+                        await websocket.send_json({"type": "exit", "code": state["exit"]})
+                        break
+                await asyncio.Event().wait()  # keep the socket for the client to close
+
+            async def receive_input():
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    require_login()
+                    data = message.get("bytes")
+                    if data is not None:
+                        if 0 < len(data) <= MAX_TERMINAL_INPUT:
+                            await loop.run_in_executor(None, terminal.write, data)
+                        continue
+                    try:
+                        payload = json.loads(message.get("text") or "")
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    action = payload.get("type")
+                    if action == "ping":
+                        await websocket.send_json({"type": "pong"})
+                    elif action == "resize":
+                        terminal.resize(
+                            clamp_size(payload.get("cols"), terminal.cols),
+                            clamp_size(payload.get("rows"), terminal.rows),
+                        )
+
+            await self._race(send_output(), receive_input())
+        finally:
+            terminal.unsubscribe(on_output)
 
     async def _deduplicated_forward(
         self, session_id: str, payload: dict
@@ -1896,6 +2064,7 @@ class Hub:
             with self._registry_lock:
                 sessions = list(self._sessions.values())
                 self._sessions.clear()
+            self.terminals.close_all(timeout=3)
             for session in sessions:
                 if session.link is not None:
                     try:

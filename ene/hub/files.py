@@ -24,6 +24,9 @@ MAX_TEXT_BYTES = 512 * 1024
 MAX_RAW_BYTES = 16 * 1024 * 1024
 BINARY_SNIFF_BYTES = 8192
 GIT_TIMEOUT = 3.0
+# `git status` walks the whole tree (untracked files included), which can take
+# far longer than a ref lookup in a large repo or on a network filesystem.
+GIT_STATUS_TIMEOUT = 15.0
 MAX_CHANGES = 500
 MAX_FIND_RESULTS = 50
 MAX_QUERY_CHARS = 1000
@@ -221,26 +224,40 @@ def git_branch(root: str | Path) -> dict:
 
 
 def git_changes(root: str | Path) -> dict:
-    """Summarize ``git status`` for the workspace; ``git: False`` outside a repo."""
+    """Summarize ``git status`` for the workspace; ``git: False`` outside a repo.
+
+    Inside a repo the result keeps ``git: True`` even when ``git status`` fails
+    or times out, carrying an ``error`` instead, so the UI still offers the
+    changes view and can say why it is empty.
+    """
     base, _ = resolve_in_workspace(root, "")
     try:
         top = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
         )
-        if top.returncode != 0:
-            return {"git": False, "branch": "", "changes": []}
-        repo = Path(top.stdout.strip()).resolve()
-        branch = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
-            cwd=base, capture_output=True, timeout=GIT_TIMEOUT,
-        )
     except (OSError, subprocess.SubprocessError):
         return {"git": False, "branch": "", "changes": []}
+    if top.returncode != 0:
+        return {"git": False, "branch": "", "changes": []}
+    repo = Path(top.stdout.strip()).resolve()
+    branch = git_branch(base)["branch"]
+    try:
+        status = subprocess.run(
+            ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+            cwd=base, capture_output=True, timeout=GIT_STATUS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "git": True, "branch": branch, "changes": [],
+            "error": f"git status took longer than {GIT_STATUS_TIMEOUT:g}s.",
+        }
+    except (OSError, subprocess.SubprocessError):
+        return {"git": True, "branch": branch, "changes": [], "error": "Could not run git status."}
+    if status.returncode != 0:
+        detail = status.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        message = detail[-1] if detail else "git status failed."
+        return {"git": True, "branch": branch, "changes": [], "error": message[:300]}
     changes: list[dict] = []
     records = status.stdout.decode("utf-8", errors="replace").split("\x00")
     index = 0

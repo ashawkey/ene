@@ -234,6 +234,8 @@ export type GitChanges = {
   git: boolean
   branch: string
   changes: GitChange[]
+  /** Set when the folder is a repo but `git status` failed or timed out. */
+  error?: string
 }
 
 export type GitDiff = {
@@ -286,4 +288,18 @@ export function isPrompt(value: unknown): value is Prompt {
     Array.isArray(v.choices) &&
     typeof v.default === 'string'
   )
+}
+
+export type TerminalInfo = {
+  id: string
+  title: string
+  shell: string
+  alive: boolean
+  exit_code: number | null
+  created: number
+}
+
+export type TerminalListing = {
+  supported: boolean
+  terminals: TerminalInfo[]
 }

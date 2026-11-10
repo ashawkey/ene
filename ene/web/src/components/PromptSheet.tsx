@@ -2,6 +2,7 @@ import { CircleHelp, CornerDownLeft, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import type { Prompt } from '../lib/protocol'
+import { inTerminal } from '../lib/terminalSocket'
 import { Markdown } from './Markdown'
 import { IconButton } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
@@ -37,6 +38,7 @@ export function PromptSheet({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
+      if (inTerminal(target)) return
       if (event.key === 'Escape') {
         // Captured first so the composer does not also stop the round.
         event.preventDefault()

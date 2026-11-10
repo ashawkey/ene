@@ -13,6 +13,8 @@ import type {
   ProcessOutput,
   SessionOptions,
   SessionSummary,
+  TerminalInfo,
+  TerminalListing,
 } from './protocol'
 
 export class ApiError extends Error {
@@ -140,4 +142,14 @@ export const conversations = (cwd: string) =>
 
 export function errorMessage(exc: unknown, fallback = 'The action failed.') {
   return exc instanceof ApiError ? exc.message : fallback
+}
+
+export const listTerminals = (id: string) => get<TerminalListing>(`${sid(id)}/terminals`)
+export const createTerminal = (id: string, size: { cols: number; rows: number }) =>
+  post<{ terminal: TerminalInfo }>(`${sid(id)}/terminals`, size).then((data) => data.terminal)
+export const closeTerminal = (id: string, terminalId: string) =>
+  post<{ ok: boolean }>(`${sid(id)}/terminals/${encodeURIComponent(terminalId)}/close`)
+export const terminalSocketUrl = (id: string, terminalId: string) => {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${scheme}//${location.host}${sid(id)}/terminals/${encodeURIComponent(terminalId)}/ws`
 }

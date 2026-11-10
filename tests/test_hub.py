@@ -1218,6 +1218,39 @@ def test_git_changes_reports_workspace_relative_paths(tmp_path):
     assert changes["changes"] == [{"path": "new.py", "status": "untracked", "staged": False}]
 
 
+def test_git_changes_keeps_repo_when_status_fails_or_times_out(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    from ene.hub import files as hubfiles
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    assert hubfiles.git_changes(tmp_path) == {"git": False, "branch": "", "changes": []}
+    subprocess.run(["git", "init", "-q", "-b", "trunk", str(tmp_path)], check=True)
+    real_run = subprocess.run
+
+    def slow_status(args, *rest, **kwargs):
+        if "status" in args:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(hubfiles.subprocess, "run", slow_status)
+    slow = hubfiles.git_changes(tmp_path)
+    assert slow["git"] is True and slow["branch"] == "trunk"
+    assert slow["changes"] == [] and "longer than" in slow["error"]
+
+    def failed_status(args, *rest, **kwargs):
+        if "status" in args:
+            return subprocess.CompletedProcess(args, 128, b"", b"fatal: detected dubious ownership\n")
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(hubfiles.subprocess, "run", failed_status)
+    failed = hubfiles.git_changes(tmp_path)
+    assert failed["git"] is True
+    assert failed["error"] == "fatal: detected dubious ownership"
+
+
 def test_git_branch_reports_branch_unborn_and_detached(tmp_path):
     import shutil
     import subprocess

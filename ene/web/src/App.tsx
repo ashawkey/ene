@@ -5,7 +5,7 @@ import { Login } from './components/Login'
 import { NewSessionDialog } from './components/NewSession'
 import { ResizeHandle } from './components/ResizeHandle'
 import type { InspectorTab } from './components/Inspector'
-import { rememberInspectorTab } from './components/Inspector'
+import { isInspectorTab, rememberInspectorTab } from './components/Inspector'
 import { SessionPane } from './components/SessionPane'
 import { Sidebar } from './components/Sidebar'
 import { IconButton, LinkBanner, Spinner, Toasts, useMedia } from './components/ui'
@@ -17,6 +17,7 @@ import { useSocket } from './lib/socket'
 import { store } from './lib/storage'
 import type { ThemeChoice } from './lib/theme'
 import { applyTheme, loadTheme, nextTheme } from './lib/theme'
+import { inTerminal } from './lib/terminalSocket'
 import { toast } from './lib/toast'
 
 const narrow = () => window.matchMedia?.('(max-width: 1100px)').matches ?? false
@@ -24,7 +25,7 @@ const narrow = () => window.matchMedia?.('(max-width: 1100px)').matches ?? false
 function loadInspector(): InspectorTab | null {
   if (narrow()) return null
   const value = store.get('ene.inspector')
-  return value === 'files' || value === 'stats' || value === 'tasks' || value === 'info' ? value : null
+  return isInspectorTab(value) ? value : null
 }
 
 export default function App() {
@@ -182,6 +183,8 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // A focused terminal gets every key (Ctrl+B, Ctrl+F, … mean something there).
+      if (inTerminal(event.target)) return
       const mod = event.metaKey || event.ctrlKey
       const key = event.key.toLowerCase()
       if (mod && key === 'k' && !event.shiftKey) {

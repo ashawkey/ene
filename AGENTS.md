@@ -17,7 +17,7 @@ Ene is a Python 3.10+ terminal-first AI coding agent.
 - `ene/skills.py`, `ene/personas.py`: discovery, validation, precedence, and prompt rendering. Built-in definitions live in `ene/bundled_skills/` and `ene/bundled_personas/`.
 - `ene/session_store.py`, `ene/library.py`: persisted sessions and the Git-backed skill/persona library.
 - `ene/cli.py`, `ene/terminal.py`, `ene/ui.py`: CLI entry point and terminal interaction/rendering.
-- `ene/hub/`: Web UI hub — `server.py` (FastAPI app, authentication, session registry, browser relay), `link.py` (attachment to a live worker), `files.py` (read-only workspace browsing).
+- `ene/hub/`: Web UI hub — `server.py` (FastAPI app, authentication, session registry, browser relay), `link.py` (attachment to a live worker), `files.py` (read-only workspace browsing), `terminal.py` (Web UI shells on local pseudo-terminals).
 - `ene/backend/rounds.py`: per-round statistics recorded by the agent and persisted in session revisions (`last_round`); `SessionStore.round_history` rebuilds them along a branch.
 - `ene/web/src/`: React and TypeScript Web UI. `ene/web/dist/` is the generated runtime UI served by FastAPI and included in Python packages.
 - `tests/`: pytest suite, generally organized as `test_<subsystem>.py`.

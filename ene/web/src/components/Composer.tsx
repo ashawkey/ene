@@ -8,7 +8,6 @@ import {
   ListPlus,
   SquareSlash,
   Square,
-  SquareTerminal,
   Undo2,
 } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
@@ -18,7 +17,6 @@ import { pathCompletions } from '../lib/api'
 import { compactNumber, duration } from '../lib/format'
 import type { LiveIndicator } from '../lib/session'
 import type { PendingMessage } from '../lib/protocol'
-import { store } from '../lib/storage'
 import type { OutboxEntry } from '../lib/useSession'
 import { IconButton, Spinner, useNow } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
@@ -27,13 +25,6 @@ type Suggestion = { value: string; label: string; detail: string; kind: 'command
 
 const coarsePointer = () =>
   typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
-
-/** In shell mode every submit becomes a `!` command; an explicit `!` is kept as is. */
-export const shellSubmission = (text: string) => (text.startsWith('!') ? text : `!${text}`)
-
-/** Shell-mode history: earlier `!` commands, without the prefix. */
-export const shellHistory = (history: string[]) =>
-  history.filter((item) => item.startsWith('!') && item.length > 1).map((item) => item.slice(1))
 
 export function Composer({
   sessionId,
@@ -78,15 +69,6 @@ export function Composer({
   const historyIndex = useRef<number | null>(null)
   const stash = useRef('')
   const composing = useRef(false)
-  const shellKey = `ene.shell.${sessionId}`
-  const [shell, setShellState] = useState(() => store.get(shellKey) === '1')
-  const setShell = useCallback((on: boolean) => {
-    setShellState(on)
-    store.set(shellKey, on ? '1' : null)
-    historyIndex.current = null
-    field.current?.focus()
-  }, [shellKey])
-  const recallList = useMemo(() => (shell ? shellHistory(history) : history), [history, shell])
 
   useEffect(() => {
     if (focusSignal) field.current?.focus()
@@ -100,7 +82,7 @@ export function Composer({
     element.style.height = `${element.scrollHeight}px`
   }, [draft])
 
-  const commandQuery = !shell && /^\/[\w:-]*$/.test(draft) ? draft.slice(1).toLowerCase() : null
+  const commandQuery = /^\/[\w:-]*$/.test(draft) ? draft.slice(1).toLowerCase() : null
   const before = draft.slice(0, cursor)
   const pathMatch = before.match(/(?:^|\s)@([^\s@]*)$/)
   const pathQuery = pathMatch ? pathMatch[1] : null
@@ -161,7 +143,7 @@ export function Composer({
 
   const send = () => {
     if (!draft.trim() || !connected) return
-    if (onSubmit(shell ? shellSubmission(draft) : draft)) {
+    if (onSubmit(draft)) {
       historyIndex.current = null
       setText('')
     }
@@ -169,7 +151,7 @@ export function Composer({
 
   const recall = (direction: -1 | 1) => {
     const element = field.current
-    if (!element || !recallList.length) return false
+    if (!element || !history.length) return false
     const value = element.value
     const caret = element.selectionStart ?? 0
     if (direction < 0 && value.slice(0, caret).includes('\n')) return false
@@ -177,17 +159,17 @@ export function Composer({
     if (historyIndex.current === null) {
       if (direction > 0) return false
       stash.current = draft
-      historyIndex.current = recallList.length - 1
+      historyIndex.current = history.length - 1
     } else {
       const next = historyIndex.current + direction
-      if (next >= recallList.length) {
+      if (next >= history.length) {
         historyIndex.current = null
         setText(stash.current)
         return true
       }
       historyIndex.current = Math.max(0, next)
     }
-    setText(recallList[historyIndex.current])
+    setText(history[historyIndex.current])
     return true
   }
 
@@ -211,12 +193,6 @@ export function Composer({
         setDismissed(draft)
         return
       }
-    }
-    // Backspace in an empty shell-mode composer returns to messages.
-    if (shell && event.key === 'Backspace' && draft === '') {
-      event.preventDefault()
-      setShell(false)
-      return
     }
     if (event.key === 'Escape' && busy) {
       event.preventDefault()
@@ -286,7 +262,7 @@ export function Composer({
           ) : null}
         </div>
       ) : null}
-      <div className={`composer glass ${connected ? '' : 'offline'} ${shell ? 'shell' : ''}`}>
+      <div className={`composer glass ${connected ? '' : 'offline'}`}>
         {suggestions.length ? (
           <div className="suggestions" role="listbox" id={`suggest-${sessionId}`}>
             {suggestions.map((item, position) => (
@@ -318,11 +294,9 @@ export function Composer({
           placeholder={
             !connected
               ? 'Reconnecting… your draft is kept'
-              : shell
-                ? (busy ? 'Queue a shell command…' : 'Shell command  ·  runs in the workspace')
-                : (busy ? 'Queue a follow-up…' : 'Message ene  ·  / commands  ·  @ files')
+              : (busy ? 'Queue a follow-up…' : 'Message ene  ·  / commands  ·  @ files  ·  ! shell')
           }
-          aria-label={shell ? 'Shell command' : 'Message'}
+          aria-label="Message"
           aria-controls={suggestions.length ? `suggest-${sessionId}` : undefined}
           aria-expanded={suggestions.length > 0}
           onChange={(event) => {
@@ -336,14 +310,7 @@ export function Composer({
           onKeyDown={onKeyDown}
         />
         <div className="composer-bar">
-          <IconButton
-            icon={SquareTerminal}
-            label={shell ? 'Shell mode on: input runs as ! commands' : 'Shell mode'}
-            size="sm"
-            active={shell}
-            onClick={() => setShell(!shell)}
-          />
-          {shell ? null : <IconButton icon={SquareSlash} label="Commands" size="sm" onClick={() => insertToken('/')} />}
+          <IconButton icon={SquareSlash} label="Commands" size="sm" onClick={() => insertToken('/')} />
           <IconButton icon={AtSign} label="Mention a file" size="sm" onClick={() => insertToken('@')} />
           <span className="grow" />
           {showStop ? (

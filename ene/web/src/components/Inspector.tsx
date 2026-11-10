@@ -1,4 +1,4 @@
-import { Activity, Bot, ChartColumn, CircleCheck, CircleX, Eye, FolderOpen, Info, MessagesSquare, Square, X } from 'lucide-react'
+import { Activity, Bot, ChartColumn, CircleCheck, CircleX, Eye, FolderOpen, Info, MessagesSquare, Square, SquareTerminal, X } from 'lucide-react'
 import { useState } from 'react'
 
 import { errorMessage, stopProcess } from '../lib/api'
@@ -10,16 +10,20 @@ import { toast } from '../lib/toast'
 import { CopyButton } from './Markdown'
 import { FileBrowser } from './Files'
 import { StatsPanel } from './Stats'
+import { TerminalPanel } from './Terminal'
 import { Empty, IconButton, useNow } from './ui'
 
-export type InspectorTab = 'files' | 'stats' | 'tasks' | 'info'
+export type InspectorTab = 'files' | 'terminal' | 'stats' | 'tasks' | 'info'
+
+export const isInspectorTab = (value: unknown): value is InspectorTab =>
+  value === 'files' || value === 'terminal' || value === 'stats' || value === 'tasks' || value === 'info'
 
 const LAST_TAB = 'ene.inspector.last'
 
 /** The tab the panel toggle reopens: whichever was used last. */
 export function lastInspectorTab(): InspectorTab {
   const value = store.get(LAST_TAB)
-  return value === 'stats' || value === 'tasks' || value === 'info' ? value : 'files'
+  return isInspectorTab(value) ? value : 'files'
 }
 
 export function rememberInspectorTab(tab: InspectorTab) {
@@ -28,6 +32,7 @@ export function rememberInspectorTab(tab: InspectorTab) {
 
 export const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string; icon: typeof FolderOpen }> = [
   { id: 'files', label: 'Files', icon: FolderOpen },
+  { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
   { id: 'stats', label: 'Statistics', icon: ChartColumn },
   { id: 'tasks', label: 'Background tasks', icon: Activity },
   { id: 'info', label: 'Session info', icon: Info },
@@ -195,6 +200,7 @@ export function Inspector({
       </div>
       <div className="inspector-body">
         {tab === 'files' ? <FileBrowser sessionId={sessionId} onOpen={onOpenFile} onMention={onMention} refreshKey={filesRefresh} /> : null}
+        {tab === 'terminal' ? <TerminalPanel sessionId={sessionId} connected={connected} /> : null}
         {tab === 'stats' ? (
           <StatsPanel rounds={rounds} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
         ) : null}

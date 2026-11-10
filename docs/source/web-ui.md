@@ -81,7 +81,7 @@ The sidebar groups every live session on the machine:
 - Enter sends; Shift+Enter adds a line. On touch devices, use the send button.
 - `/` at the start: commands and skills. `@`: workspace files. Up/Down select, Tab/Enter complete.
 - Up/Down without suggestions: recall earlier input.
-- Shell mode (terminal button): input runs as a `!` shell command in the workspace; Up/Down recall earlier shell commands. Backspace in an empty composer or the button switches back. The mode is remembered per session.
+- `!` at the start runs the rest as a one-off shell command in the workspace, shown in the conversation. For an interactive shell, use the [Terminal](#terminal) panel.
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
 - Escape or the stop button stops the round.
 
@@ -92,6 +92,7 @@ Open the side panel with the panel icon in the session header (it reopens the la
 | Panel | Contents |
 | --- | --- |
 | **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. A changed file opens as a side-by-side diff against `HEAD` (unified on narrow screens); toggle to the file preview (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
+| **Terminal** | Interactive shells in the session workspace; see [Terminal](#terminal). |
 | **Statistics** | Rounds, agent time, model and tool time, tokens (input / cached / output), speed (tokens/s and TTFT), context usage, and per-round charts. Click a round to jump to it. |
 | **Tasks** | Running and recently exited background processes with runtime, exit code, and latest output. Open one to view its output, or stop it (click twice). |
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
@@ -113,6 +114,18 @@ Open the side panel with the panel icon in the session header (it reopens the la
 - See [process output](#process-output) for the viewer opened from **Tasks**.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
 - TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
+
+## Terminal
+
+The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal, starting in the session workspace.
+
+- **New:** **+** in the terminal tab bar; each tab is a separate shell. Close a tab with its **×**.
+- **Persistence:** shells belong to the hub, not the browser. Closing the panel, switching sessions, or reloading keeps them running; reopening replays the last 256 KB of output.
+- **Exit:** an exited shell shows its exit code; **Restart** replaces it with a new shell.
+- **Lifetime:** detaching or ending the session, the worker exiting, or stopping the hub closes its shells.
+- **Keys:** a focused terminal receives every key, including the page shortcuts below.
+- **Limits:** 8 shells per session, 32 per hub.
+- Linux and macOS hubs only.
 
 ## Process output
 
@@ -144,7 +157,7 @@ Open a process from **Tasks** or from the link under its `start_process` call in
 
 ## Network and remote access
 
-- **Treat the token as shell access:** signed-in browsers can read workspace files and start agents in any directory.
+- **Treat the token as shell access:** signed-in browsers get an interactive shell as the hub's user, can read workspace files, and start agents in any directory. Terminals start in the workspace but are not confined to it.
 - Use a long random token and run the hub only on trusted networks.
 - For remote access, use a protected tunnel or reverse proxy.
 

@@ -242,9 +242,9 @@ export const ToolCall = memo(function ToolCall({
   const links = useContext(OpenProcessContext)
   const image = item.result?.image ?? null
   const empty = !output && !result && !image && item.diffs.length === 0
-  // Diffs fold themselves past a screenful; text folds past a few lines.
+  // File edits start folded; text folds past a few lines. Failures stay open.
   const lines = lineCount(output?.text ?? '') + lineCount(result)
-  const autoOpen = failed || running || item.diffs.length > 0 || lines <= AUTO_FOLD_LINES
+  const autoOpen = failed || (item.diffs.length === 0 && (running || lines <= AUTO_FOLD_LINES))
   return (
     <Step className={`tool ${failed ? 'failed' : ''}`} icon={icon} label={label} autoOpen={autoOpen}>
       {empty ? null : (
