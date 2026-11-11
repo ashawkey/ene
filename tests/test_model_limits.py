@@ -353,3 +353,17 @@ def test_error_does_not_replace_explicit_context(agent_factory):
         agent.call_api()
     assert queries == []
     assert agent.context_length == 64000
+
+
+def test_output_cap_shrinks_when_prompt_plus_cap_would_overrun_the_window(agent_factory):
+    """The compaction reserve is capped, so near the trigger the request cap shrinks."""
+    agent, _, requests = agent_factory(
+        limit=None, context_length=100_000, max_output_tokens=60_000,
+    )
+    # Real usage at 50k: under the trigger (100k - 32k - 8k = 60k), so no
+    # compaction — but 50k + 60k would overrun the window.
+    agent.token_estimator.observe(agent.context.total_chars, 50_000)
+
+    agent.call_api()
+
+    assert requests[-1].max_output_tokens == 100_000 - 50_000 - 2_000

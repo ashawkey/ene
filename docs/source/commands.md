@@ -121,7 +121,7 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 | `/help` | Show help message for all slash commands |
 | `/context [user\|inbox\|assistant\|id]` | List clipped messages, filter by role, or inspect one in full; `-1` is newest |
 | `/system_prompt` | Print the current full system prompt |
-| `/compact` | Force context compaction via LLM summarization |
+| `/compact` | Force [context compaction](#context-compaction) now |
 | `/recap` | Summarize the conversation's task in one sentence, focusing on user requests |
 | `/export <path/filename>` | Export the last assistant response as UTF-8 text; relative paths are resolved from the working directory |
 | `/continue` | Resume an unfinished round without a new user message; warn if already complete |
@@ -149,6 +149,25 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 
 - `/context` renders assistant content as Markdown when inspecting a message.
 - Output-limit, missing-terminal, and empty responses continue automatically. Truncation mid-tool-call stops instead; those calls are recorded as never executed.
+
+### Context compaction
+
+Compaction runs on `/compact`, or automatically at the lower of:
+
+- 85% of the context window.
+- The window minus an output reserve of `min(max output, 32,000) + 8,000` tokens.
+
+It never triggers below 50% of the window.
+
+Until then, history is append-only, so every request reuses the provider's prompt cache. Large tool results are still shortened when they first arrive.
+
+- **Full handoff:** the whole history is replaced by one summary message. Only the newest rounds survive verbatim, up to 5% of the window (at most 12,000 tokens).
+- **Always kept:** the round in progress: tool results not yet seen, an unanswered prompt, or a reply being continued. A reply before an unanswered prompt is kept when under 16,000 characters.
+- **Carried exactly:** the original request, later user messages (verbatim, newest 32,000 characters), touched files, and loaded skills.
+- **Transcript:** the replaced history is saved verbatim under `.ene/tool-results/<session>/`. The summary lists the path so the model can search it.
+- **Undo:** each pass first saves a session revision; `/rewind` to an earlier prompt restores the uncompacted history.
+- **Skipped:** when a pass would free less than 5% of the window.
+- **Output cap:** when prompt plus max output would overrun the window, the request asks for less output. A reply cut short continues automatically.
 
 ### Summary models
 

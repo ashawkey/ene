@@ -244,14 +244,15 @@ class AgentCommandsMixin:
     def _recap_input(self) -> str:
         """Render a bounded, user-focused view of the current conversation."""
         requests: list[str] = []
-        original = self.context.compaction_state.original_request.strip()
-        if original:
-            requests.append(original)
-
-        for message in self.context.messages:
-            if not message.is_user_input or message.text.startswith(SUMMARY_MARKER):
-                continue
-            text = message.display.strip()
+        state = self.context.compaction_state
+        # Compaction removes the user's messages from history but carries them
+        # verbatim, so they still count as requests.
+        live = [
+            message.display for message in self.context.messages
+            if message.is_user_input and not message.text.startswith(SUMMARY_MARKER)
+        ]
+        for text in (state.original_request, *state.user_messages, *live):
+            text = text.strip()
             if text and text not in requests:
                 requests.append(text)
 

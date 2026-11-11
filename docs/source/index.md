@@ -61,7 +61,7 @@ openai:
 - [Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol), and [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna): **1,050,000 total context tokens**, **128,000 output tokens**, and 922,000 maximum input tokens.
 - [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol): **1,050,000 context tokens** and **128,000 output tokens**. Thinking is always on; `none` and `minimal` map to `low`. Tool calls require `api: responses`.
 - [Claude Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5) (`claude-opus-5-5`): **1,000,000 context tokens** and **128,000 output tokens**. Thinking is always on; `none` and `minimal` map to `low`.
-- Ene reserves output headroom; default compaction starts near **892,500 input tokens** for GPT-6/6.1 and **850,000** for Opus 5.5.
+- Default [compaction](commands.md#context-compaction) starts near **892,500 input tokens** for GPT-6/6.1 and **850,000** for Opus 5.5.
 - For GPT-6 Sol/Luna reasoning with tool calls, use `api: responses`. Their Chat Completions function calling requires `reasoning_effort: none`.
 
 #### Responses API

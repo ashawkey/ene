@@ -16,7 +16,6 @@ from ene.context import (
     ContextManager,
     TokenEstimator,
     ToolResultEnvelope,
-    _artifact_path_in,
     compact_context,
     compact_tool_result_envelope,
     estimate_context_chars,
@@ -116,6 +115,8 @@ def test_failed_compaction_is_reported_as_no_compaction():
         Message.user("first"),
         Message.assistant("second"),
         Message.user("third"),
+        Message.assistant("fourth"),
+        Message.user("fifth"),
     ]
     warnings = []
     console = _Console()
@@ -138,6 +139,8 @@ def test_cancelling_a_compaction_is_not_reported_as_a_failure():
         Message.user("first"),
         Message.assistant("second"),
         Message.user("third"),
+        Message.assistant("fourth"),
+        Message.user("fifth"),
     ]
     warnings = []
     console = _Console()
@@ -172,7 +175,7 @@ def test_a_failed_request_keeps_the_context_management_it_paid_for(error):
     console.error = lambda *args, **kwargs: None
 
     def call_api():
-        # Stands in for the eviction + compaction call_api runs before the
+        # Stands in for the compaction call_api runs before the
         # request; the assistant message is only ever appended on success.
         context.replace_messages([Message.user(SUMMARY_MARKER)])
         raise error
@@ -225,13 +228,11 @@ def test_actual_failed_exec_capture_is_compacted_and_persisted(tmp_path):
     assert "HEAD" in captured and "brief stderr" in captured and len(captured) > 5_000
 
 
-def test_midsize_exec_capture_survives_for_eviction(tmp_path):
-    """Output too small to compact but big enough to trim must stay recoverable.
+def test_midsize_exec_output_enters_history_whole_without_a_capture(tmp_path):
+    """Below the ingress budget, output is kept as-is and nothing is left on disk.
 
-    A result between SOFT_TRIM_THRESHOLD and the ingress budget enters history
-    whole, so nothing is persisted for it — and layer 2 later cuts it to ~1.5k
-    chars. A command's output cannot be produced again, so the capture is kept
-    and pointed at even though no ingress compaction happens.
+    History is never trimmed after ingress, so a result that fits stays whole
+    until compaction, whose transcript then keeps it verbatim.
     """
     console = _Console()
     console.system = lambda *args, **kwargs: None
@@ -255,14 +256,9 @@ def test_midsize_exec_capture_survives_for_eviction(tmp_path):
     LLMAgent.execute_tool_calls(agent, [tool_call])
 
     stored = agent.context.messages[-1].text
-    assert "Large exec_command result compacted" not in stored  # entered whole
     assert "HEAD" in stored and "TAIL" in stored
-
-    # Layer 2 recovers the capture by parsing the pointer out of the message.
-    pointer = _artifact_path_in(stored)
-    assert pointer is not None
-    captured = (tmp_path / pointer).read_text()
-    assert "HEAD" in captured and "TAIL" in captured and len(captured) > 4_000
+    assert "Captured output" not in stored
+    assert not list(tmp_path.rglob("*.txt"))
 
 
 def test_old_session_captures_are_pruned(tmp_path):
@@ -876,10 +872,10 @@ def test_empty_response_with_provider_state_is_kept_for_replay():
 def _compaction_agent(token_readings):
     """Agent stub for :meth:`LLMAgent._run_compaction`, driven by token readings.
 
-    Messages are bulky on purpose: the history has to reach past the protected
-    recent window (15 % of the 100k window) *and* leave a split big enough to
-    clear the yield bar, otherwise compaction is a no-op and never reaches the
-    floor bookkeeping these tests are about.
+    Messages are bulky on purpose: the history has to reach past the kept
+    recent slice *and* leave enough behind it to clear the yield bar, otherwise
+    compaction is a no-op and never reaches the floor bookkeeping these tests
+    are about.
     """
     console = _Console()
     console.system = lambda *args, **kwargs: None
@@ -900,6 +896,7 @@ def _compaction_agent(token_readings):
         _compaction_floor_tokens=None,
         _context_tokens=lambda: next(readings),
         _snapshot_before_compaction=lambda: None,
+        _save_compaction_transcript=lambda text: None,
         _summarize=lambda prompt: "## Goal\nsummary",
     )
 

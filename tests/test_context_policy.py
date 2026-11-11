@@ -5,18 +5,19 @@ import json
 import pytest
 
 from ene.context import (
+    COMPACTION_KEEP_RECENT_MAX_TOKENS,
     COMPACTION_MIN_YIELD_RATIO,
     SUMMARY_MARKER,
     TokenEstimator,
     ToolResultEnvelope,
+    CompactionState,
     compact_context,
     compact_tool_result_envelope,
-    compaction_target_tokens,
     compaction_trigger_tokens,
-    eviction_trigger_tokens,
     needs_compaction,
-    prune_context,
+    request_output_tokens,
 )
+from ene.context import _TRANSCRIPT_HEADING
 from ene.messages import Message, ToolCall
 
 
@@ -121,6 +122,23 @@ def test_compaction_trigger_reserves_output_headroom():
     assert compaction_trigger_tokens(200_000, max_output_tokens=32_000) == 160_000
     # Small window with a huge output cap: the floor prevents constant compaction.
     assert compaction_trigger_tokens(32_000, max_output_tokens=16_000) == 16_000
+    # A huge output cap reserves at most 32k: gpt-5 no longer compacts at half
+    # its window, and a 1M window is governed by the ratio alone.
+    assert compaction_trigger_tokens(258_000, max_output_tokens=128_000) == 218_000
+    assert compaction_trigger_tokens(1_000_000, max_output_tokens=128_000) == 850_000
+
+
+def test_request_output_cap_shrinks_only_when_it_would_overrun_the_window():
+    # Plenty of room: the configured cap is sent unchanged.
+    assert request_output_tokens(1_000_000, 128_000, 850_000) == 128_000
+    # Near gpt-5's trigger, prompt + 128k would overrun 258k: shrink to fit,
+    # leaving 2% of the window for estimate error.
+    assert request_output_tokens(258_000, 128_000, 218_000) == 258_000 - 218_000 - 5_160
+    # Past the end of the window, still ask for a usable reply.
+    assert request_output_tokens(128_000, 32_000, 130_000) == 4_096
+    assert request_output_tokens(128_000, 2_000, 130_000) == 2_000
+    # Unknown window: nothing to fit against.
+    assert request_output_tokens(0, 32_000, 10**9) == 32_000
 
 
 def test_unknown_context_length_never_forces_compaction():
@@ -132,40 +150,35 @@ def test_unknown_context_length_never_forces_compaction():
     [
         (128_000, 32_000),   # typical window
         (1_000_000, 64_000),  # large window, ratio governs
-        (1_050_000, 128_000),  # GPT-6
         (258_000, 128_000),  # gpt-5: reserve drags the trigger to its floor
         (32_000, 16_000),    # small window, huge output cap
     ],
 )
-def test_eviction_always_gets_a_pass_before_compaction(context_length, max_output_tokens):
-    """Layer 2 is cheap and reversible; it must never be stranded above layer 3."""
-    evict = eviction_trigger_tokens(context_length, max_output_tokens)
-    compact = compaction_trigger_tokens(context_length, max_output_tokens)
-    assert evict < compact
+def test_full_handoff_lands_far_below_its_own_trigger(context_length, max_output_tokens):
+    """A pass replaces the whole history, so the next one is a window away.
 
-
-@pytest.mark.parametrize(
-    "context_length,max_output_tokens",
-    [
-        (128_000, 32_000),   # typical window
-        (1_000_000, 64_000),  # large window, ratio governs
-        (1_050_000, 128_000),  # GPT-6
-        (258_000, 128_000),  # gpt-5: reserve drags the trigger to its floor
-        (32_000, 16_000),    # small window, huge output cap
-    ],
-)
-def test_compaction_target_never_lands_on_its_own_trigger(context_length, max_output_tokens):
-    """A pass that hits its target must not be re-triggered by the next result.
-
-    gpt-5 used to put both on 129k of a 258k window, so every tool call after a
-    compaction bought another one.
+    The old sliding split aimed at half the window, which on gpt-5 put the
+    target on the trigger itself and bought a compaction every few rounds.
     """
+    cpt = 4.0
     trigger = compaction_trigger_tokens(context_length, max_output_tokens)
-    target = compaction_target_tokens(context_length, max_output_tokens)
-    assert target < trigger
-    # The gap has to be worth more than the yield a pass must produce at all,
-    # otherwise clearing the trigger is within noise of a single tool result.
-    assert trigger - target >= context_length * COMPACTION_MIN_YIELD_RATIO
+    messages = [Message.user("build the feature")]
+    i = 0
+    while sum(m.chars for m in messages) / cpt <= trigger:
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 8_000)
+        i += 1
+    messages.append(Message.assistant("done"))
+
+    result, _ = compact_context(
+        messages, lambda prompt: "## Goal\ng",
+        context_length=context_length, chars_per_token=cpt,
+    )
+
+    after = sum(m.chars for m in result) / cpt
+    # Only the small recent slice survives next to the handoff.
+    assert after <= COMPACTION_KEEP_RECENT_MAX_TOKENS + 2_000
+    assert trigger - after >= context_length * COMPACTION_MIN_YIELD_RATIO
+    assert result[-1].text == "done"
 
 
 def test_a_split_too_small_to_pay_for_itself_spends_no_round_trip():
@@ -181,7 +194,6 @@ def test_a_split_too_small_to_pay_for_itself_spends_no_round_trip():
     result, _ = compact_context(
         messages, lambda prompt: calls.append(prompt) or "## Goal\ng",
         context_length=CONTEXT_LENGTH, chars_per_token=CHARS_PER_TOKEN,
-        used_tokens=95_000,  # far over the trigger: the pressure is real
     )
 
     # The summarizable half is ~3k chars; the summary written back in its place
@@ -190,14 +202,8 @@ def test_a_split_too_small_to_pay_for_itself_spends_no_round_trip():
     assert result is messages
 
 
-# ---------------------------------------------------------------------------
-# Layer 2 eviction
-# ---------------------------------------------------------------------------
-
 CONTEXT_LENGTH = 100_000
 CHARS_PER_TOKEN = 4.0
-# window 400k chars · trigger 55k tokens · target 45k · min yield 32k chars
-# · protected tail min(25k tokens, 40k) = 100k chars
 
 
 def _turn(call_id, name, arguments, output):
@@ -210,166 +216,8 @@ def _turn(call_id, name, arguments, output):
     ]
 
 
-def _with_artifact(body, path):
-    """Wrap *body* in the footer Layer 1 writes when it offloads to disk."""
-    return (
-        f"[Large read_file result compacted: 999,999 characters]\n{body}\n"
-        f"[compacted: ~9→~1 tokens, -90%."
-        f" Captured output: {path}. Use a narrower read.]"
-    )
-
-
-def _tail_turns():
-    """Three exec_command turns, large enough to fill the protected tail."""
-    messages = []
-    for i in range(3):
-        messages += _turn(f"t{i}", "exec_command", {"command": f"echo {i}"}, "y" * 40_000)
-    return messages
-
-
-def _prune(messages, used_tokens):
-    return prune_context(messages, CONTEXT_LENGTH, CHARS_PER_TOKEN, used_tokens=used_tokens)
-
-
-def test_eviction_leaves_context_alone_below_the_trigger():
-    messages = [Message.user("start")]
-    for i in range(5):
-        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 30_000)
-    messages += _tail_turns()
-
-    assert _prune(messages, used_tokens=50_000) is messages
-
-
-def test_eviction_trims_oldest_results_and_spares_the_protected_tail():
-    messages = [Message.user("start")]
-    for i in range(5):
-        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 30_000)
-    messages += _tail_turns()
-
-    result = _prune(messages, used_tokens=67_500)
-
-    assert result is not messages
-    # Oldest four cover the shortfall; the fifth is left intact.
-    for index in (2, 4, 6, 8):
-        assert "[Trimmed: kept beginning" in result[index].text
-    assert result[10].text == "x" * 30_000
-    # The newest turns are never touched, whatever the pressure.
-    for index in (12, 14, 16):
-        assert result[index].text == "y" * 40_000
-
-
-def test_eviction_skips_a_pass_that_cannot_pay_for_the_cache_break():
-    """Small results are left alone rather than nibbled every round."""
-    messages = [Message.user("start")]
-    for i in range(5):
-        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 5_000)
-    messages += _tail_turns()
-
-    assert _prune(messages, used_tokens=60_000) is messages
-
-
-def test_superseded_read_is_cleared_and_keeps_its_recovery_pointer():
-    path = ".ene/tool-results/s1/r1-c0-read_file.txt"
-    messages = [Message.user("start")]
-    messages += _turn("c0", "read_file", {"file": "a.py"},
-                      _with_artifact("x" * 40_000, path))
-    messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 2_000)
-    messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 2_000)
-    # A later identical read makes the first one stale.
-    messages += _turn("c3", "read_file", {"file": "a.py"}, "x" * 40_000)
-    messages += _tail_turns()[:4]
-
-    result = _prune(messages, used_tokens=60_000)
-
-    cleared = result[2].text
-    assert cleared.startswith("[cleared: read_file(a.py)")
-    assert "superseded by a later identical call" in cleared
-    assert path in cleared
-    # Results that are still current are not collateral damage.
-    assert result[4].text == "x" * 2_000
-    assert result[6].text == "x" * 2_000
-
-
-def test_supersession_is_scoped_to_the_same_target():
-    """A snapshot of one process must not stale-mark another's."""
-    messages = [Message.user("start")]
-    messages += _turn("c0", "inspect_processes", {"process_id": "1"}, "x" * 40_000)
-    messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 30_000)
-    messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 30_000)
-    messages += _turn("c3", "inspect_processes", {"process_id": "2"}, "x" * 40_000)
-    messages += _tail_turns()[:4]
-
-    result = _prune(messages, used_tokens=60_000)
-
-    assert "[cleared:" not in result[2].text
-
-
-@pytest.mark.parametrize("read_path", ["a.py", "./a.py"])
-def test_write_invalidates_an_earlier_read_of_the_same_file(read_path):
-    messages = [Message.user("start")]
-    messages += _turn("c0", "read_file", {"file": read_path}, "x" * 40_000)
-    messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 5_000)
-    messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 5_000)
-    messages += _turn("c3", "edit_file", {"file": "a.py"}, "x" * 40_000)
-    messages += _tail_turns()[:4]
-
-    result = _prune(messages, used_tokens=60_000)
-
-    assert "file modified after this read" in result[2].text
-
-
-def test_failed_write_does_not_invalidate_an_earlier_read():
-    messages = [Message.user("start")]
-    messages += _turn("c0", "read_file", {"file": "a.py"}, "x" * 40_000)
-    messages += _turn("c1", "read_file", {"file": "b.py"}, "x" * 5_000)
-    messages += _turn("c2", "read_file", {"file": "c.py"}, "x" * 5_000)
-    messages += _turn("c3", "edit_file", {"file": "a.py"}, "Error: old_string not found")
-    messages += _tail_turns()[:4]
-
-    result = _prune(messages, used_tokens=60_000)
-
-    assert "file modified after this read" not in result[2].text
-
-
-def test_eviction_clears_only_what_is_recoverable_from_disk():
-    """Trimming comes first; clearing escalates only when it falls short."""
-    messages = [Message.user("start")]
-    for i in range(3):
-        path = f".ene/tool-results/s1/r{i}-c{i}-read_file.txt"
-        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"},
-                          _with_artifact("x" * 30_000, path))
-    messages += _tail_turns()
-
-    modest = _prune(messages, used_tokens=57_000)
-    assert "[Trimmed: kept beginning" in modest[2].text
-
-    severe = _prune(messages, used_tokens=82_500)
-    cleared = severe[2].text
-    assert cleared.startswith("[cleared: read_file(f0.py)")
-    assert "evicted to free context" in cleared
-    assert ".ene/tool-results/s1/r0-c0-read_file.txt" in cleared
-
-
-def test_trimming_keeps_the_recovery_pointer_so_a_later_pass_can_clear():
-    """A prefix policy drops the ingress footer; the pointer must be re-attached."""
-    messages = [Message.user("start")]
-    for i in range(5):
-        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"},
-                          _with_artifact("x" * 30_000, f".ene/tool-results/s1/r{i}.txt"))
-    messages += _tail_turns()
-
-    trimmed = _prune(messages, used_tokens=67_500)
-    assert "[Trimmed: kept beginning" in trimmed[2].text
-    assert ".ene/tool-results/s1/r0.txt" in trimmed[2].text
-
-    # Without the pointer the message would be stuck at its trimmed size forever.
-    cleared = _prune(trimmed, used_tokens=95_000)
-    assert cleared[2].text.startswith("[cleared: read_file(f0.py)")
-    assert ".ene/tool-results/s1/r0.txt" in cleared[2].text
-
-
 # ---------------------------------------------------------------------------
-# Layer 3 compaction
+# Compaction
 # ---------------------------------------------------------------------------
 
 
@@ -445,9 +293,11 @@ def test_summary_input_drops_the_middle_not_the_tail():
     assert "FIRST-REQUEST" in prompt
     assert "MID0 " in prompt
     # ...and the newest of the compacted range carry the current state.
-    assert any(f"MID{i} " in prompt for i in range(145, 159))
+    assert "MID398 " in prompt
+    # The in-flight round is kept verbatim, not summarized.
+    assert "MID399 " not in prompt
     # The middle is what gets sacrificed.
-    assert "MID80 " not in prompt
+    assert "MID200 " not in prompt
     assert "middle of the conversation omitted" in prompt
 
 
@@ -488,10 +338,10 @@ def test_file_lists_merge_across_compactions_and_track_writes():
     assert "- Read: b.py" in content  # a.py moved out of the read list
 
 
-def test_compaction_never_splits_into_the_protected_recent_window():
+def test_compaction_replaces_everything_but_a_small_recent_slice():
     messages = [Message.user("start")]
-    for i in range(20):
-        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 20_000)
+    for i in range(30):
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, f"R{i} " + "x" * 3_000)
     messages.append(Message.assistant("done"))
 
     seen, summarize = _capture()
@@ -499,14 +349,146 @@ def test_compaction_never_splits_into_the_protected_recent_window():
         messages, summarize,
         context_length=CONTEXT_LENGTH,
         chars_per_token=CHARS_PER_TOKEN,
-        used_tokens=90_000,
     )
 
-    # keep-recent is min(15% of 100k, 20k) = 15k tokens = 60k chars, so the
-    # newest turns survive even under heavy pressure.
-    kept = sum(m.chars for m in result[1:])
-    assert kept >= 60_000
-    assert result[-1].text == "done"
+    assert result[0].text.startswith(SUMMARY_MARKER)
+    # keep-recent is min(5% of 100k, 12k) = 5k tokens = 20k chars: the newest
+    # whole rounds that fit survive verbatim, with the final reply.
+    kept = result[1:]
+    assert 12_000 <= sum(m.chars for m in kept) <= 20_000
+    assert kept[0].is_assistant and kept[0].tool_calls  # never starts mid-pair
+    assert kept[-1].text == "done"
+    assert "R29 " not in seen["prompt"] and "R20 " in seen["prompt"]
+
+
+def test_in_flight_tool_results_survive_whatever_their_size():
+    """Results the model has not seen yet cannot be summarized away."""
+    messages = [Message.user("start")]
+    for i in range(10):
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 20_000)
+    messages += _turn("live", "exec_command", {"command": "pytest"}, "LIVE " + "y" * 30_000)
+
+    result, _ = compact_context(
+        messages, lambda prompt: "## Goal\ng",
+        context_length=CONTEXT_LENGTH, chars_per_token=CHARS_PER_TOKEN,
+    )
+
+    assert len(result) == 3
+    assert result[1].tool_calls[0].id == "live"
+    assert result[2].text.startswith("LIVE ")
+
+
+def test_unanswered_prompt_survives_with_the_reply_it_follows():
+    messages = [Message.user("start")]
+    for i in range(10):
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 20_000)
+    messages.append(Message.assistant("Option 1 or option 2?"))
+    messages.append(Message.user("do option 2"))
+
+    result, state = compact_context(
+        messages, lambda prompt: "## Goal\ng",
+        context_length=CONTEXT_LENGTH, chars_per_token=CHARS_PER_TOKEN,
+    )
+
+    assert [m.text for m in result[1:]] == ["Option 1 or option 2?", "do option 2"]
+    # Still a live message, so not duplicated in the carried requests.
+    assert state.user_messages == ()
+
+
+def test_later_user_messages_are_carried_verbatim_across_compactions():
+    messages = [Message.user("build it")]
+    messages += _turn("c0", "read_file", {"file": "a.py"}, "x")
+    messages.append(Message.assistant("ok"))
+    messages.append(Message.user("no, keep the old API\nand add tests", display_content=None))
+    messages += _turn("c1", "read_file", {"file": "b.py"}, "x")
+    messages.append(Message.user([], display_content=""))  # hidden payload
+    messages.append(Message.inbox("process 3 exited"))
+    messages.append(Message.assistant("done"))
+
+    first, state = compact_context(messages, lambda prompt: "## Goal\ng")
+    assert state.original_request == "build it"
+    assert state.user_messages == ("no, keep the old API\nand add tests",)
+    assert "> no, keep the old API\n> and add tests" in first[0].text
+
+    second_input = first + [Message.user("ship it")] + _turn(
+        "c2", "read_file", {"file": "c.py"}, "x"
+    ) + [Message.assistant("shipped")]
+    second, state = compact_context(second_input, lambda prompt: "## Goal\ng", state=state)
+    assert state.user_messages == ("no, keep the old API\nand add tests", "ship it")
+    # Carried messages are rebuilt from state, never re-summarized.
+    assert second[0].text.count("keep the old API") == 1
+
+
+def test_carried_user_messages_keep_the_newest_within_budget():
+    state = CompactionState()
+    for i in range(20):
+        state = state.absorb([
+            Message.user(f"M{i} " + "z" * 3_000),
+            Message.assistant("ok"),
+        ])
+    assert state.original_request.startswith("M0 ")
+    assert state.user_messages[-1].startswith("M19 ")
+    assert sum(len(text) for text in state.user_messages) <= 32_000
+    assert state.omitted_user_messages == 19 - len(state.user_messages)
+    assert "older message(s) omitted" in "\n".join(state.render_requests())
+
+
+def test_transcript_is_saved_verbatim_and_referenced():
+    messages = [Message.user("start")]
+    messages += _turn("c0", "read_file", {"file": "a.py"}, "FULL " + "q" * 5_000)
+    messages.append(Message.assistant("done"))
+    saved = []
+
+    def save(text):
+        saved.append(text)
+        return f".ene/tool-results/s/t{len(saved)}.txt"
+
+    first, state = compact_context(messages, lambda prompt: "## Goal\ng", save_transcript=save)
+    # The transcript has what the summarizer only saw an excerpt of.
+    assert "FULL " + "q" * 5_000 in saved[0]
+    assert "Tool result: read_file (c0)" in saved[0]
+    assert ".ene/tool-results/s/t1.txt" in first[0].text
+    assert state.transcripts == (".ene/tool-results/s/t1.txt",)
+
+    second_input = first + _turn("c1", "read_file", {"file": "b.py"}, "x") + [
+        Message.assistant("again")
+    ]
+    second, state = compact_context(
+        second_input, lambda prompt: "## Goal\ng", state=state, save_transcript=save
+    )
+    assert state.transcripts == (".ene/tool-results/s/t1.txt", ".ene/tool-results/s/t2.txt")
+    assert "t1.txt, .ene/tool-results/s/t2.txt" in second[0].text
+
+
+def test_failed_transcript_save_still_compacts():
+    messages = [Message.user("start")] + _turn("c0", "ls", {"path": "."}, "x") + [
+        Message.assistant("done")
+    ]
+
+    def fail(_text):
+        raise OSError("disk full")
+
+    result, state = compact_context(messages, lambda prompt: "## Goal\ng", save_transcript=fail)
+    assert result is not messages
+    assert state.transcripts == ()
+    assert _TRANSCRIPT_HEADING not in result[0].text
+
+
+def test_update_uses_the_carried_summary_not_the_whole_handoff():
+    messages = [Message.user("build it")] + _turn("c0", "ls", {"path": "."}, "x") + [
+        Message.assistant("done")
+    ]
+    first, state = compact_context(messages, lambda prompt: "## Goal\nFIRST-SUMMARY")
+
+    seen, summarize = _capture()
+    compact_context(
+        first + _turn("c1", "ls", {"path": "src"}, "x") + [Message.assistant("more")],
+        summarize, state=state,
+    )
+    previous = seen["prompt"].split("<previous-summary>")[1].split("</previous-summary>")[0]
+    assert previous.strip() == "## Goal\nFIRST-SUMMARY"
+    # Tool calls reach the summarizer with what they acted on.
+    assert "[Called tool: ls(src)]" in seen["prompt"]
 
 
 def test_manual_compaction_of_a_short_session_spends_nothing():
@@ -521,7 +503,6 @@ def test_manual_compaction_of_a_short_session_spends_nothing():
     result, _ = compact_context(
         messages, lambda prompt: calls.append(prompt) or "## Goal\ng",
         context_length=CONTEXT_LENGTH, chars_per_token=CHARS_PER_TOKEN,
-        used_tokens=used,
     )
 
     # The whole history sits inside the protected recent window.
@@ -529,16 +510,16 @@ def test_manual_compaction_of_a_short_session_spends_nothing():
     assert result is messages
 
 
-def test_compaction_is_a_no_op_when_the_split_walks_off_the_front():
-    """An all-tool-call history must not be 'summarized' into a longer one."""
+def test_compaction_is_a_no_op_when_only_the_in_flight_round_has_work():
+    """Only user messages precede the round in flight: nothing to summarize."""
     messages = [
+        Message.user("hello"),
+        Message.user("and also this"),
         Message.assistant(
             content="",
             tool_calls=[ToolCall("c0", "read_file", '{"file": "a.py"}')],
         ),
         Message.tool("c0", "x" * 500),
-        Message.user("hello"),
-        Message.assistant("hi"),
     ]
     calls = []
 
@@ -567,3 +548,36 @@ def test_prior_summary_is_not_clipped_when_compacting_again():
 
     assert seen["prompt"].count("PRIOR-") == 1000
     assert result[0].text.startswith(SUMMARY_MARKER)
+
+
+def test_a_reply_being_continued_survives_whatever_its_size():
+    """A response cut off by the output limit is continued from its own text."""
+    messages = [Message.user("write the report")]
+    for i in range(10):
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 20_000)
+    partial = "PARTIAL " + "r" * 30_000
+    messages.append(Message.assistant(partial))
+
+    result, _ = compact_context(
+        messages, lambda prompt: "## Goal\ng",
+        context_length=CONTEXT_LENGTH, chars_per_token=CHARS_PER_TOKEN,
+    )
+
+    assert [m.text for m in result[1:]] == [partial]
+
+
+def test_a_long_reply_followed_by_a_prompt_is_summarized():
+    messages = [Message.user("write the report")]
+    for i in range(10):
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 20_000)
+    messages.append(Message.assistant("LONG " + "r" * 30_000))
+    messages.append(Message.user("shorten it"))
+
+    seen, summarize = _capture()
+    result, _ = compact_context(
+        messages, summarize,
+        context_length=CONTEXT_LENGTH, chars_per_token=CHARS_PER_TOKEN,
+    )
+
+    assert [m.text for m in result[1:]] == ["shorten it"]
+    assert "LONG " in seen["prompt"]

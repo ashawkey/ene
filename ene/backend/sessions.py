@@ -690,9 +690,13 @@ class SessionMixin:
         carried = data.get("compaction_state") or {}
         self.context.compaction_state = CompactionState(
             original_request=carried.get("original_request", ""),
+            user_messages=tuple(carried.get("user_messages", ())),
+            omitted_user_messages=carried.get("omitted_user_messages", 0),
+            summary=carried.get("summary", ""),
             read_files=tuple(carried.get("read_files", ())),
             modified_files=tuple(carried.get("modified_files", ())),
             skills=tuple(carried.get("skills", ())),
+            transcripts=tuple(carried.get("transcripts", ())),
         )
         self.round_id = data.get("round_id", 0)
         if not getattr(self, "session_name", ""):

@@ -1,27 +1,27 @@
 """Context management for ene: tool-result filtering and compaction.
 
-Three layers of context window management:
+Two layers of context window management:
 1. Tool-result ingress — compact oversized results before they reach history.
-2. Context eviction — trim/clear old tool results once the window is half full.
-3. Compaction — LLM-summarize oldest messages near the end of the window.
+2. Compaction — near the end of the window, replace the whole history with an
+   LLM-written handoff, keeping only the in-flight round and a small recent tail.
 
-Layers 2 and 3 rewrite history the provider has already cached, so both are
-deliberately rare and bulk: usage is measured against the last real token count
-reported by the API, and an eviction pass runs only when it frees enough to pay
-for the cache invalidation it causes.
+History is otherwise append-only, so every request reuses the provider's cached
+prefix. Rewriting old messages in place — trimming stale tool results once the
+window was half full — was tried and dropped: each pass re-billed the whole
+prefix, and holding usage near half the window cost more per round than letting
+it grow and handing off once. Usage is measured against the last real token
+count reported by the API.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from ene.messages import ContentPart, ImagePart, Message, TextPart, ToolCall
-from ene.tools.formatting import result_text_failed
 from ene.ui import AgentConsole
 from ene.utils.interrupt import RequestInterrupted
 
@@ -231,69 +231,42 @@ _TOOL_RESULT_GUIDANCE = {
     "web_search": "Refine the query before requesting more results.",
 }
 
-# Layer 2: eviction thresholds, as a fraction of the context window in tokens.
-# Evicting rewrites already-cached history, so the window is spent rather than
-# hoarded: nothing is touched below PRUNE_TRIGGER_RATIO, and a pass that cannot
-# free PRUNE_MIN_YIELD_RATIO does not run at all (the reasoning behind the
-# Anthropic API's `clear_at_least`). One deep pass beats a nibble every round.
-PRUNE_TRIGGER_RATIO = 0.55
-PRUNE_DROP_RATIO = 0.10  # how far below the trigger a single pass aims to land
-PRUNE_MIN_YIELD_RATIO = 0.08
-
-# Newest slice of the window eviction never touches. Token-denominated so it
-# does not swing with message size; KEEP_LAST_ASSISTANTS is only a floor.
-PROTECTED_TAIL_RATIO = 0.25
-PROTECTED_TAIL_MAX_TOKENS = 40_000
-KEEP_LAST_ASSISTANTS = 3
-
-SOFT_TRIM_THRESHOLD = 3000  # trim results larger than this (head+tail ≈ 1.5K, so min savings ≈ 50%)
-SOFT_TRIM_HEAD = 750
-SOFT_TRIM_TAIL = 750
-
-# Tools whose output cannot be produced again. A file read or a search can just
-# be repeated, but a command runs once, with side effects, against a world that
-# has since moved on. Results in the band between SOFT_TRIM_THRESHOLD and the
-# ingress budget are small enough to enter history untouched yet still large
-# enough for eviction to trim later, so for these tools the capture is kept on
-# disk even though no ingress compaction happens.
-UNREPEATABLE_TOOLS = frozenset({"exec_command"})
-
-# Layer 3: compaction threshold. A flat ratio leaves too little room on a small
-# window and compacts absurdly early on a very large one, so the trigger also
-# reserves space for the model's own output plus the compaction round-trip.
+# Compaction threshold. A flat ratio leaves too little room on a small window
+# and compacts absurdly early on a very large one, so the trigger also reserves
+# space for the model's own output plus the compaction round-trip.
 COMPACTION_RATIO = 0.85
 COMPACTION_RESERVE_TOKENS = 8_000
-COMPACTION_MIN_TRIGGER_RATIO = 0.5  # floor, for models with a huge output cap
-COMPACTION_TARGET_RATIO = 0.5  # ceiling on post-compaction usage
-# How far below the trigger a pass must land. A model whose output reserve pulls
-# the trigger down onto its floor puts trigger and target on the same token
-# (gpt-5 reserves 128k of a 258k window, landing both on 129k), so a pass that
-# hits its target lands back on the trigger and the next tool result fires
-# another one. Holding the target this far under the trigger keeps the two apart
-# whatever the reserve does.
-COMPACTION_HYSTERESIS_RATIO = 0.15
-COMPACTION_SUMMARY_MAX_CHARS = 50_000  # summarization input budget
+# The output share of that reserve is capped: a reply rarely uses a 128k output
+# cap, and reserving all of it dragged gpt-5's trigger down to half its window.
+# A request whose cap would overrun the window gets a smaller one instead (see
+# request_output_tokens), and a reply cut short is continued automatically.
+COMPACTION_OUTPUT_RESERVE_MAX_TOKENS = 32_000
+COMPACTION_MIN_TRIGGER_RATIO = 0.5  # floor, for tiny windows
 # Ceiling on the summarization response, and the allowance used when deciding
-# whether a split can free enough: the summary is the one part of a compaction
+# whether a pass can free enough: the summary is the one part of a compaction
 # that adds context back. Generous because reasoning tokens count against the
 # same budget, and a truncated handoff is worse than a slightly long one.
 COMPACTION_SUMMARY_MAX_TOKENS = 8_000
 
-# Newest slice of the history compaction never summarizes away, so the split
-# cannot swallow the work currently in progress.
-COMPACTION_KEEP_RECENT_RATIO = 0.15
-COMPACTION_KEEP_RECENT_MAX_TOKENS = 20_000
+# Summarization input budget, as (window ratio, floor, ceiling) in characters.
+# The raw history is discarded entirely, so the summarizer gets a generous view
+# on a large window; the ceiling keeps it well inside a smaller summary model.
+COMPACTION_SUMMARY_INPUT = (0.15, 50_000, 200_000)
+
+# Compaction is a full handoff: every message is replaced by one summary,
+# except the newest rounds, kept verbatim up to this slice of the window. The
+# round in flight (a tool call whose results the model has not yet seen, or a
+# prompt it has not yet answered) is always kept, whatever its size.
+COMPACTION_KEEP_RECENT_RATIO = 0.05
+COMPACTION_KEEP_RECENT_MAX_TOKENS = 12_000
+# The final reply that ended the last turn is kept verbatim when this small, so
+# a follow-up like "do option 2" still resolves after an idle compaction.
+COMPACTION_LAST_REPLY_MAX_CHARS = 16_000
 
 # Below this yield a compaction is considered ineffective.
 COMPACTION_MIN_YIELD_RATIO = 0.05
 # Growth required before retrying after any compaction attempt.
 COMPACTION_RETRY_GROWTH_RATIO = 0.10
-
-# wait_processes is retired but stays prunable in resumed session histories.
-PRUNABLE_TOOLS = frozenset({
-    "read_file", "exec_command", "web_fetch", "inspect_processes", "wait_processes",
-    "web_search", "glob_files", "grep_files", "ls",
-})
 
 
 # ---------------------------------------------------------------------------
@@ -526,8 +499,8 @@ def _sample_suffix(text: str, available: int) -> str:
 def _compact_process_output(result: dict[str, Any], text: str, available: int) -> str:
     """Keep process status metadata plus the latest requested log tail.
 
-    Falls back to *text* when the result is not the expected shape — at ingress
-    that is the formatted result, during eviction the stored message body.
+    Falls back to *text*, the formatted result, when the result is not the
+    expected shape.
     """
     processes = result.get("processes")
     if not isinstance(processes, list):
@@ -566,8 +539,8 @@ def _compact_process_output(result: dict[str, Any], text: str, available: int) -
 
 def _excerpt_for(
     tool_name: str, result: dict[str, Any], text: str, budget: int
-) -> tuple[str, str]:
-    """Excerpt *text* from whichever end carries the signal, with a label.
+) -> str:
+    """Excerpt *text* from whichever end carries the signal.
 
     The full output is already on disk under a pointer, so an excerpt only has
     to be enough to decide whether to go and read it — which end it comes from
@@ -578,15 +551,12 @@ def _excerpt_for(
     Command output is deliberately *not* tail-only: stdout and stderr share one
     pipe, and a piped child block-buffers stdout while stderr stays unbuffered,
     so a diagnostic routinely lands ahead of the bulk output it describes.
-
-    Shared by ingress and eviction so a result is cut the same way whenever it
-    is cut; the label is only used by the eviction placeholder.
     """
     if tool_name in PREFIX_TOOLS:
-        return _sample_prefix(text, budget), "beginning"
+        return _sample_prefix(text, budget)
     if tool_name == "inspect_processes":
-        return _compact_process_output(result, text, budget), "status and latest log"
-    return _sample_edges(text, budget), "beginning and end"
+        return _compact_process_output(result, text, budget)
+    return _sample_edges(text, budget)
 
 
 def _compaction_footer(
@@ -670,7 +640,7 @@ def compact_tool_result_envelope(
     ))
     content_budget = budget - len(header) - len(trailing_notice) - footer_reserve
 
-    excerpt, _ = _excerpt_for(tool_name, envelope.result, text, content_budget)
+    excerpt = _excerpt_for(tool_name, envelope.result, text, content_budget)
     body = f"{header}{excerpt}{trailing_notice}"
     retained_tokens = max(1, int((len(body) + footer_reserve) / chars_per_token))
     footer = _compaction_footer(
@@ -686,7 +656,7 @@ def compact_tool_result_envelope(
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: Context pruning
+# Tool-call helpers
 # ---------------------------------------------------------------------------
 
 
@@ -698,69 +668,22 @@ def _parse_call_arguments(tool_call: ToolCall) -> dict[str, Any]:
     return arguments if isinstance(arguments, dict) else {}
 
 
-def build_tool_call_index(messages: list[Message]) -> dict[str, tuple[str, dict[str, Any]]]:
-    """Build a tool_call_id → (tool_name, arguments) lookup in one O(n) pass."""
-    index: dict[str, tuple[str, dict[str, Any]]] = {}
-    for message in messages:
-        if not message.is_assistant:
-            continue
-        for tool_call in message.tool_calls or []:
-            if not tool_call.id or not tool_call.name:
-                continue
-            index[tool_call.id] = (tool_call.name, _parse_call_arguments(tool_call))
-    return index
-
-
 def build_tool_name_index(messages: list[Message]) -> dict[str, str]:
     """Build a tool_call_id → tool_name lookup from all assistant messages."""
-    return {tc_id: name for tc_id, (name, _) in build_tool_call_index(messages).items()}
+    return {
+        tool_call.id: tool_call.name
+        for message in messages if message.is_assistant
+        for tool_call in message.tool_calls or []
+        if tool_call.id and tool_call.name
+    }
 
 
-# Arguments that identify *what* a result describes. A later call with the same
-# identity makes every earlier result for it stale, which makes those the
-# cheapest eviction targets available: their content is already known to be
-# superseded, so dropping them costs no capability at all.
-_IDENTITY_ARGS: dict[str, tuple[str, ...]] = {
-    "read_file": ("file", "offset", "limit"),
-    "ls": ("path", "all"),
-    "glob_files": ("pattern", "base_dir", "recursive"),
-    "grep_files": ("pattern", "path", "file_glob"),
-    "web_fetch": ("url",),
-    "web_search": ("query",),
-    "exec_command": ("command", "cwd"),
-    # Per process: a snapshot of one process says nothing about another.
-    "inspect_processes": ("process_id",),
-    "wait_processes": ("process_ids",),
-}
-
-# Writing to a file invalidates every earlier read of it, whatever range that
-# read covered. These are not prunable results themselves, only invalidators.
+# Tools whose call changes a file; compaction lists their targets as modified.
 _WRITE_TOOLS = frozenset({"write_file", "edit_file", "multi_edit", "remove_file"})
 
-# Argument shown in an eviction placeholder so the model can still tell which
-# call the cleared result came from.
+# Argument shown next to a tool name so a summary can still tell which call it
+# was: the file it read, the command it ran, the URL it fetched.
 _DIGEST_ARGS = ("file", "path", "command", "url", "query", "pattern")
-
-# The ingress footer records where the full output was captured; eviction must
-# carry that pointer through instead of dropping it with the rest of the text.
-_ARTIFACT_PATH_RE = re.compile(r"Captured output: (.+?\.txt)\.")
-
-
-def _identity_key(tool_name: str, arguments: dict[str, Any]) -> tuple | None:
-    fields = _IDENTITY_ARGS.get(tool_name)
-    if fields is None:
-        return None
-    return (tool_name, *(str(arguments.get(field, "")) for field in fields))
-
-
-def _file_key(arguments: dict[str, Any]) -> str:
-    """Comparable spelling of a call's ``file`` so ``./a.py`` matches ``a.py``."""
-    path = str(arguments.get("file", ""))
-    return os.path.normpath(path) if path else ""
-
-
-def _written_path(tool_name: str, arguments: dict[str, Any]) -> str:
-    return _file_key(arguments) if tool_name in _WRITE_TOOLS else ""
 
 
 def _call_digest(arguments: dict[str, Any]) -> str:
@@ -772,287 +695,53 @@ def _call_digest(arguments: dict[str, Any]) -> str:
     return ""
 
 
-def _artifact_path_in(text: str) -> str | None:
-    match = _ARTIFACT_PATH_RE.search(text)
-    return match.group(1) if match else None
-
-
-def _soft_trim(text: str, tool_name: str, artifact_path: str | None = None) -> str | None:
-    """Trim old tool output using the same retention policy as ingress.
-
-    *artifact_path* is re-appended when the retained excerpt does not already
-    contain it: the ingress footer sits at the end of the text, so a prefix
-    policy would otherwise drop the only pointer to the full output — and with
-    it the ability of a later pass to clear the message down to a placeholder.
-    """
-    if len(text) <= SOFT_TRIM_THRESHOLD:
-        return None
-    retained = SOFT_TRIM_HEAD + SOFT_TRIM_TAIL
-    result: dict[str, Any] = {}
-    if tool_name == "inspect_processes":
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = None  # already compacted at ingress; excerpt the text
-        if isinstance(parsed, dict):
-            result = parsed
-    excerpt, policy = _excerpt_for(tool_name, result, text, retained)
-    trimmed = f"{excerpt}\n[Trimmed: kept {policy} {retained} chars of {len(text)} total]"
-    if artifact_path and artifact_path not in trimmed:
-        trimmed += f"\n[Captured output: {artifact_path}.]"
-    return trimmed
-
-
-def _prunable_range(
-    messages: list[Message], context_length: int, chars_per_token: float
-) -> tuple[int, int]:
-    """Return (start, end) indices of the zone eligible for eviction.
-
-    The tail is protected by size rather than by message count: the newest
-    PROTECTED_TAIL_RATIO of the window (capped at PROTECTED_TAIL_MAX_TOKENS) is
-    always kept whole, and never fewer than KEEP_LAST_ASSISTANTS turns. Both
-    constraints apply, so the earlier of the two boundaries wins.
-    """
-    start = 0
-    for i, m in enumerate(messages):
-        if m.is_user:
-            start = i
-            break
-
-    remaining = KEEP_LAST_ASSISTANTS
-    assistant_end = 0
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].is_assistant:
-            remaining -= 1
-            if remaining == 0:
-                assistant_end = i
-                break
-    if remaining > 0:
-        return 0, 0
-
-    protected_chars = min(
-        context_length * PROTECTED_TAIL_RATIO, PROTECTED_TAIL_MAX_TOKENS
-    ) * chars_per_token
-    used = 0
-    size_end = 0
-    for i in range(len(messages) - 1, -1, -1):
-        used += _message_budget_chars(messages[i], chars_per_token)
-        if used >= protected_chars:
-            size_end = i
-            break
-
-    return start, min(assistant_end, size_end)
-
-
-@dataclass(frozen=True)
-class _Evictable:
-    """A tool result in the eviction zone, with why it may already be stale."""
-
-    index: int
-    tool_name: str
-    arguments: dict[str, Any]
-    stale_reason: str | None
-
-
-def _evictable_results(
-    messages: list[Message], start: int, end: int, call_index: dict[str, tuple[str, dict]]
-) -> list[_Evictable]:
-    """Collect prunable results in [start, end), flagging superseded ones.
-
-    Identity and invalidation are tracked across the *whole* history, not just
-    the eviction zone, so a recent re-read or write correctly marks an old
-    result stale.
-    """
-    latest_identity: dict[tuple, int] = {}
-    latest_write: dict[str, int] = {}
-    zone: list[tuple[int, str, dict[str, Any]]] = []
-
-    for i, msg in enumerate(messages):
-        if not msg.is_tool:
-            continue
-        call = call_index.get(msg.tool_call_id) if msg.tool_call_id else None
-        if call is None:
-            continue
-        name, arguments = call
-        key = _identity_key(name, arguments)
-        if key is not None:
-            latest_identity[key] = i
-        written = _written_path(name, arguments)
-        # A failed write left the file as it was, so earlier reads stay valid.
-        if written and not result_text_failed(msg.text or ""):
-            latest_write[written] = i
-        if start <= i < end and name in PRUNABLE_TOOLS:
-            zone.append((i, name, arguments))
-
-    evictable: list[_Evictable] = []
-    for i, name, arguments in zone:
-        key = _identity_key(name, arguments)
-        reason = None
-        if key is not None and latest_identity.get(key, i) > i:
-            reason = "superseded by a later identical call"
-        elif name == "read_file":
-            path = _file_key(arguments)
-            if path and latest_write.get(path, i) > i:
-                reason = "file modified after this read"
-        evictable.append(_Evictable(i, name, arguments, reason))
-    return evictable
-
-
-def _cleared_text(item: _Evictable, artifact_path: str | None, reason: str) -> str:
-    """Placeholder that keeps the call identity and the recovery pointer."""
-    digest = _call_digest(item.arguments)
-    call = f"{item.tool_name}({digest})" if digest else item.tool_name
-    recovery = f" Full output: {artifact_path}." if artifact_path else ""
-    return f"[cleared: {call} — {reason}.{recovery}]"
-
-
-def _plan_evictions(
-    messages: list[Message], evictable: list[_Evictable], target_chars: float
-) -> tuple[dict[int, str], int]:
-    """Choose replacement text per message, stopping once *target_chars* is met.
-
-    Superseded results are cleared first and unconditionally within the pass —
-    their content is wrong, so keeping it costs tokens *and* misleads. The rest
-    are trimmed to their per-tool retention policy, and only fully cleared when
-    trimming everything still falls short and the complete output is
-    recoverable from disk. (The caller may still discard the whole plan if it
-    frees too little to pay for the cache invalidation.)
-    """
-    planned: dict[int, str] = {}
-    freed = 0
-
-    def apply(index: int, new_text: str) -> None:
-        nonlocal freed
-        previous = planned.get(index, messages[index].text)
-        saving = len(previous) - len(new_text)
-        if saving <= 0:
-            return
-        planned[index] = new_text
-        freed += saving
-
-    fresh: list[_Evictable] = []
-    for item in evictable:
-        if item.stale_reason is None:
-            fresh.append(item)
-            continue
-        text = messages[item.index].text
-        apply(item.index, _cleared_text(item, _artifact_path_in(text), item.stale_reason))
-
-    for item in fresh:
-        if freed >= target_chars:
-            return planned, freed
-        text = messages[item.index].text
-        trimmed = _soft_trim(text, item.tool_name, _artifact_path_in(text))
-        if trimmed is not None:
-            apply(item.index, trimmed)
-
-    for item in fresh:
-        if freed >= target_chars:
-            break
-        text = messages[item.index].text
-        artifact_path = _artifact_path_in(text)
-        if artifact_path:
-            apply(item.index, _cleared_text(item, artifact_path, "evicted to free context"))
-
-    return planned, freed
-
-
-def eviction_trigger_tokens(context_length: int, max_output_tokens: int = 0) -> int:
-    """Token usage at which eviction starts — always below the compaction trigger.
-
-    Eviction is deterministic and keeps a recovery pointer; compaction costs an
-    LLM round-trip and discards detail, so layer 2 must get a pass first. A model
-    whose output reserve is large relative to its window (gpt-5: 128k of 258k)
-    pulls the compaction trigger down to its floor, below a flat 55 %; the
-    eviction trigger follows it down instead of being stranded above it.
-    """
-    compaction = compaction_trigger_tokens(context_length, max_output_tokens)
-    return int(min(
-        context_length * PRUNE_TRIGGER_RATIO,
-        compaction - context_length * PRUNE_MIN_YIELD_RATIO,
-    ))
-
-
-def prune_context(
-    messages: list[Message],
-    context_length: int,
-    chars_per_token: float = DEFAULT_CHARS_PER_TOKEN,
-    used_tokens: int | None = None,
-    max_output_tokens: int = 0,
-) -> list[Message]:
-    """Evict old tool results once the context window is over half full.
-
-    Eviction rewrites messages the provider has already cached, which costs a
-    full prefix re-read on the next request. The whole pass is therefore gated
-    on freeing at least PRUNE_MIN_YIELD_RATIO of the window, so the cost is
-    paid rarely and in bulk rather than a little every round.
-
-    Returns the original list when nothing is evicted. Pass *used_tokens* to
-    reuse the live usage estimate instead of re-deriving it from characters.
-    """
-    if not messages or context_length <= 0:
-        return messages
-
-    if used_tokens is None:
-        used_tokens = int(_context_budget_chars(messages, chars_per_token) / chars_per_token)
-    trigger = eviction_trigger_tokens(context_length, max_output_tokens)
-    if used_tokens < trigger:
-        return messages
-
-    start, end = _prunable_range(messages, context_length, chars_per_token)
-    if start >= end:
-        return messages
-
-    evictable = _evictable_results(
-        messages, start, end, build_tool_call_index(messages)
-    )
-    if not evictable:
-        return messages
-
-    min_yield_chars = context_length * PRUNE_MIN_YIELD_RATIO * chars_per_token
-    target_tokens = trigger - context_length * PRUNE_DROP_RATIO
-    need_chars = (used_tokens - target_tokens) * chars_per_token
-    planned, freed = _plan_evictions(
-        messages, evictable, max(need_chars, min_yield_chars)
-    )
-
-    if freed < min_yield_chars:
-        return messages  # not worth invalidating the cached prefix
-
-    result = list(messages)
-    for index, text in planned.items():
-        result[index] = result[index].with_text(text)
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Layer 3: Compaction
 # ---------------------------------------------------------------------------
+#
+# A pass is a full handoff, not a sliding window: the whole history is replaced
+# by one summary message, and only the newest rounds survive verbatim. Keeping
+# the most recent half of the window used to leave a long session compacting
+# again a few rounds later, re-summarizing the same material each time; a full
+# handoff pays the cache invalidation once and buys back nearly the whole window.
+#
+# What a summary cannot afford to paraphrase is carried exactly instead: the
+# user's own messages, the files and skills touched, and a pointer to a verbatim
+# transcript on disk, so a detail the summary dropped can still be looked up.
 
 SUMMARY_MARKER = "[Previous conversation summary]"
 
-# Headings the emitted summary uses. The deterministic ones are parsed back out
-# on the next compaction rather than trusted to survive re-summarization.
+# Headings the emitted summary uses. The deterministic ones are rebuilt from
+# CompactionState on every pass rather than trusted to survive re-summarization.
 _ORIGINAL_REQUEST_HEADING = "## Original request"
+_USER_MESSAGES_HEADING = "## Later user messages"
 _FILES_HEADING = "## Files"
 _SKILLS_HEADING = "## Loaded skills"
+_TRANSCRIPT_HEADING = "## Full transcript"
 
-# Per-message excerpt limits when building the summarization input. Generous
-# because the total is capped by COMPACTION_SUMMARY_MAX_CHARS, and recency is
-# already handled by _fit_summary_input dropping from the middle.
-_SUMMARY_MESSAGE_CHARS = 800
-_SUMMARY_TOOL_RESULT_CHARS = 500
+# Per-message excerpt limits when building the summarization input. The total
+# is capped by COMPACTION_SUMMARY_INPUT, and recency is handled by
+# _fit_summary_input dropping from the middle.
+_SUMMARY_MESSAGE_CHARS = 2_000
+_SUMMARY_TOOL_RESULT_CHARS = 1_000
 
 # A prior summary stands in for everything before it, so it is passed to the
 # summarizer separately with a far larger budget than an ordinary message.
-_PRIOR_SUMMARY_CHAR_LIMIT = 12_000
+_PRIOR_SUMMARY_CHAR_LIMIT = 16_000
 
 # The original request is reproduced verbatim rather than re-summarized.
 _FIRST_REQUEST_CHAR_LIMIT = 4_000
 
+# Later user messages are carried verbatim too: they are the cheapest and most
+# authoritative record of intent, and a correction such as "no, keep the old
+# API" is exactly what a paraphrase loses. The newest messages win the budget.
+_USER_MESSAGE_CHAR_LIMIT = 4_000
+_USER_MESSAGES_CHAR_BUDGET = 32_000
+
 # Files are carried as a list, never as contents: re-reading them here is what
 # makes compaction refill the window and cascade into compacting again.
 _SUMMARY_FILE_LIST_LIMIT = 25
+_TRANSCRIPT_LIST_LIMIT = 10
 
 _SUMMARY_FORMAT = """\
 ## Goal
@@ -1063,22 +752,28 @@ _SUMMARY_FORMAT = """\
 
 ## Progress
 ### Done
-- [Work that is finished]
+- [Work that is finished, with the files and functions it touched]
 ### In Progress
-- [What is being worked on right now]
+- [What is being worked on right now, and its exact current state]
 ### Blocked
 - [Anything preventing progress, or "(none)"]
 
 ## Key Decisions
 - **[Decision]**: [Why it was made]
 
+## Errors & Fixes
+- [Errors hit, how each was resolved, and approaches that failed, or "(none)"]
+
 ## Next Steps
 1. [Ordered list of what should happen next]
 
 ## Critical Context
-- [Data, error text, or references needed to continue, or "(none)"]"""
+- [Data, values, commands and their latest results, or references needed to continue, or "(none)"]"""
 
 _SUMMARY_RULES = """\
+The raw history is discarded once you answer: this summary, the user's own
+messages, and a list of touched files are all the next assistant will see.
+Do not copy the user's messages out again; record what was done and learned.
 Preserve exact file paths, function and class names, commands, and error text
 verbatim — never paraphrase an identifier. Keep each section concise."""
 
@@ -1126,31 +821,44 @@ Use this EXACT section structure:
 def compaction_trigger_tokens(context_length: int, max_output_tokens: int = 0) -> int:
     """Token usage at which compaction has to run.
 
-    Reserves room for the model's own output plus the compaction round-trip on
-    top of a plain ratio, so the trigger stays safe on a small window without
-    firing absurdly early on a very large one.
+    Reserves room for the model's own output (capped, see
+    COMPACTION_OUTPUT_RESERVE_MAX_TOKENS) plus the compaction round-trip on top
+    of a plain ratio, so the trigger stays safe on a small window without firing
+    absurdly early on a very large one.
     """
-    reserve = max_output_tokens + COMPACTION_RESERVE_TOKENS
+    reserve = (
+        min(max_output_tokens, COMPACTION_OUTPUT_RESERVE_MAX_TOKENS)
+        + COMPACTION_RESERVE_TOKENS
+    )
     return int(max(
         context_length * COMPACTION_MIN_TRIGGER_RATIO,
         min(context_length * COMPACTION_RATIO, context_length - reserve),
     ))
 
 
-def compaction_target_tokens(context_length: int, max_output_tokens: int = 0) -> int:
-    """Token usage a compaction pass aims to land on.
+# Room kept free past a request's estimated prompt when its output cap has to
+# shrink to fit the window: the prompt estimate is calibrated, not exact.
+REQUEST_OUTPUT_SAFETY_RATIO = 0.02
+MIN_REQUEST_OUTPUT_TOKENS = 4_096
 
-    Held below the trigger rather than set by ratio alone, so a pass that hits
-    its target cannot be re-triggered by the very next tool result. The ratio
-    still binds on models where the trigger sits high enough on its own, which
-    keeps a single pass deep rather than turning one big compaction into several
-    shallow ones.
+
+def request_output_tokens(
+    context_length: int, max_output_tokens: int, prompt_tokens: int
+) -> int:
+    """Output cap for one request: the configured cap, unless it overruns the window.
+
+    The compaction trigger reserves only part of a large output cap, so near the
+    trigger prompt plus cap can exceed the window — which providers that count
+    both against it (vLLM, Anthropic) reject outright. Shrinking the cap instead
+    costs at most a reply cut short, and those are continued automatically.
     """
-    return int(min(
-        context_length * COMPACTION_TARGET_RATIO,
-        compaction_trigger_tokens(context_length, max_output_tokens)
-        - context_length * COMPACTION_HYSTERESIS_RATIO,
-    ))
+    if context_length <= 0:
+        return max_output_tokens
+    room = context_length - prompt_tokens - int(context_length * REQUEST_OUTPUT_SAFETY_RATIO)
+    return max(
+        min(max_output_tokens, room),
+        min(max_output_tokens, MIN_REQUEST_OUTPUT_TOKENS),
+    )
 
 
 def needs_compaction(
@@ -1178,6 +886,64 @@ def _is_summary(msg: Message) -> bool:
     return msg.is_user and msg.text.startswith(SUMMARY_MARKER)
 
 
+def _in_flight_start(messages: list[Message]) -> int:
+    """Start of the tail a pass must keep whatever its size.
+
+    Everything after the newest assistant message is input the model has not
+    responded to yet — tool results it asked for, a new prompt, a notification
+    — and a summary written without the model having seen it would drop it.
+    The newest assistant message is kept with it: its tool calls are what those
+    results answer, and a short final reply is what a follow-up prompt refers to.
+    A reply that is the very last message is kept whatever its size: it may be
+    one cut off by the output limit and about to be continued, and a summary of
+    half an answer cannot be continued from.
+    """
+    last = next(
+        (i for i in range(len(messages) - 1, -1, -1) if messages[i].is_assistant),
+        None,
+    )
+    if last is None:
+        return 0  # nothing has been answered yet, so nothing can be summarized
+    reply = messages[last]
+    if (
+        reply.tool_calls
+        or last == len(messages) - 1
+        or reply.chars <= COMPACTION_LAST_REPLY_MAX_CHARS
+    ):
+        return last
+    return last + 1
+
+
+def _tail_start(
+    messages: list[Message], context_length: int, chars_per_token: float
+) -> int:
+    """Index from which messages survive a pass verbatim.
+
+    The in-flight round always survives; whole earlier messages join it only
+    while they fit the small recent budget, so the working set the model is in
+    the middle of using does not have to be re-read immediately. Never extends
+    over a previous summary, which is always replaced.
+    """
+    start = _in_flight_start(messages)
+    if context_length <= 0:
+        return start
+    keep_chars = min(
+        context_length * COMPACTION_KEEP_RECENT_RATIO,
+        COMPACTION_KEEP_RECENT_MAX_TOKENS,
+    ) * chars_per_token
+    used = _context_budget_chars(messages[start:], chars_per_token)
+    while start > 0:
+        previous = _safe_split_index(messages, start - 1)
+        if _is_summary(messages[previous]):
+            break
+        cost = _context_budget_chars(messages[previous:start], chars_per_token)
+        if used + cost > keep_chars:
+            break
+        used += cost
+        start = previous
+    return start
+
+
 def _render_summary_input(messages: list[Message]) -> list[str]:
     """Render each message for the summarizer, one entry per message.
 
@@ -1200,7 +966,9 @@ def _render_summary_input(messages: list[Message]) -> list[str]:
             if msg.text:
                 parts.append(f"Assistant: {msg.text[:limit]}")
             for tool_call in msg.tool_calls or []:
-                parts.append(f"  [Called tool: {tool_call.name}]")
+                digest = _call_digest(_parse_call_arguments(tool_call))
+                call = f"{tool_call.name}({digest})" if digest else tool_call.name
+                parts.append(f"  [Called tool: {call}]")
         elif msg.is_tool:
             snippet = msg.text[:limit] + "..." if len(msg.text) > limit else msg.text
             parts.append(f"  [Tool result]: {snippet}")
@@ -1244,13 +1012,52 @@ def _fit_summary_input(parts: list[str], budget: int) -> str:
     return "\n".join(head) + marker + "\n".join(tail)
 
 
-def _merge_recent(previous: list[str], current: list[str]) -> list[str]:
+def summary_input_budget(
+    context_length: int, chars_per_token: float = DEFAULT_CHARS_PER_TOKEN
+) -> int:
+    """Characters of rendered history the summarizer may see in one pass."""
+    ratio, floor, ceiling = COMPACTION_SUMMARY_INPUT
+    if context_length <= 0:
+        return floor
+    return int(max(floor, min(context_length * ratio * chars_per_token, ceiling)))
+
+
+def render_transcript(messages: list[Message]) -> str:
+    """Render *messages* verbatim, for the on-disk record a pass leaves behind."""
+    names = build_tool_name_index(messages)
+    blocks: list[str] = []
+    for msg in messages:
+        if _is_summary(msg):
+            label = "Earlier compaction summary"
+        elif msg.is_inbox:
+            label = "Inbox notification"
+        elif msg.is_user:
+            label = "User"
+        elif msg.is_assistant:
+            label = "Assistant"
+        elif msg.is_tool:
+            name = names.get(msg.tool_call_id or "", "unknown tool")
+            label = f"Tool result: {name} ({msg.tool_call_id})"
+        else:
+            label = msg.role.capitalize()
+        lines = [f"### {label}"]
+        if msg.text:
+            lines.append(msg.text)
+        if msg.image_count:
+            lines.append(f"[{msg.image_count} image(s) not included in this transcript]")
+        for tool_call in msg.tool_calls or []:
+            lines.append(f"[Tool call {tool_call.id}: {tool_call.name} {tool_call.arguments}]")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
+
+
+def _merge_recent(previous: list[str], current: list[str], limit: int) -> list[str]:
     """Combine two last-touch-ordered lists, newest last, bounded in length."""
     merged = {name: None for name in previous}
     for name in current:
         merged.pop(name, None)
         merged[name] = None
-    return list(merged)[-_SUMMARY_FILE_LIST_LIMIT:]
+    return list(merged)[-limit:]
 
 
 def _collect_tool_usage(messages: list[Message]) -> tuple[list[str], list[str], list[str]]:
@@ -1285,38 +1092,108 @@ def _collect_tool_usage(messages: list[Message]) -> tuple[list[str], list[str], 
     return list(read), list(modified), list(skills)
 
 
+def _clip_user_message(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _USER_MESSAGE_CHAR_LIMIT:
+        return text
+    note = "\n[... message truncated ...]"
+    return text[:_USER_MESSAGE_CHAR_LIMIT - len(note)] + note
+
+
+def _bound_user_messages(messages: list[str]) -> tuple[list[str], int]:
+    """Keep the newest messages that fit the budget; return them and the count dropped."""
+    kept: list[str] = []
+    used = 0
+    for text in reversed(messages):
+        if used + len(text) > _USER_MESSAGES_CHAR_BUDGET:
+            break
+        kept.append(text)
+        used += len(text)
+    kept.reverse()
+    return kept, len(messages) - len(kept)
+
+
 @dataclass(frozen=True)
 class CompactionState:
     """Facts that have to outlive the messages they were derived from.
 
-    Compaction deletes the tool calls and the opening user turn, so a later pass
-    can no longer see who asked for what or which files were touched. Carrying
-    that as data — rather than writing it into the summary prose and parsing it
-    back out on the next pass — keeps it exact: a model cannot drop a path it
+    Compaction deletes the whole history, so a later pass can no longer see who
+    asked for what or which files were touched. Carrying that as data — rather
+    than writing it into the summary prose and parsing it back out on the next
+    pass — keeps it exact: a model cannot drop a path or a user's message it
     never had to reproduce, and a heading it invents cannot shadow ours.
     """
 
     original_request: str = ""
+    # User messages after the original request, verbatim, oldest first.
+    user_messages: tuple[str, ...] = ()
+    omitted_user_messages: int = 0
+    # The model-written part of the latest handoff, updated by the next pass.
+    summary: str = ""
     read_files: tuple[str, ...] = ()
     modified_files: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
+    # Verbatim transcripts of compacted history, oldest first.
+    transcripts: tuple[str, ...] = ()
 
     def absorb(self, messages: list[Message]) -> CompactionState:
         """Fold the messages about to be summarized into the carried state."""
         read, modified, skills = _collect_tool_usage(messages)
-        modified_files = _merge_recent(list(self.modified_files), modified)
+        modified_files = _merge_recent(
+            list(self.modified_files), modified, _SUMMARY_FILE_LIST_LIMIT
+        )
         written = set(modified_files)
-        return CompactionState(
+
+        inputs = [
+            msg for msg in messages if msg.is_user_input and not _is_summary(msg)
+        ]
+        original_request = self.original_request
+        if not original_request and inputs:
             # The first user turn defines the task, and only the first: a later
             # pass must not relabel the session with a mid-session instruction.
-            original_request=self.original_request or _first_user_text(messages),
+            original_request = inputs.pop(0).text[:_FIRST_REQUEST_CHAR_LIMIT]
+        later = [_clip_user_message(msg.display) for msg in inputs]
+        user_messages, dropped = _bound_user_messages(
+            list(self.user_messages) + [text for text in later if text]
+        )
+
+        return replace(
+            self,
+            original_request=original_request,
+            user_messages=tuple(user_messages),
+            omitted_user_messages=self.omitted_user_messages + dropped,
             read_files=tuple(
-                path for path in _merge_recent(list(self.read_files), read)
+                path for path in _merge_recent(
+                    list(self.read_files), read, _SUMMARY_FILE_LIST_LIMIT
+                )
                 if path not in written
             ),
             modified_files=tuple(modified_files),
-            skills=tuple(_merge_recent(list(self.skills), skills)),
+            skills=tuple(_merge_recent(list(self.skills), skills, _SUMMARY_FILE_LIST_LIMIT)),
         )
+
+    def handoff(self, summary: str, transcript: str | None) -> CompactionState:
+        """Record the summary a pass wrote and where its transcript was saved."""
+        transcripts = self.transcripts
+        if transcript:
+            transcripts = tuple(
+                _merge_recent(list(transcripts), [transcript], _TRANSCRIPT_LIST_LIMIT)
+            )
+        return replace(self, summary=summary, transcripts=transcripts)
+
+    def render_requests(self) -> list[str]:
+        """Render what the user asked for, verbatim, as leading sections."""
+        lines: list[str] = []
+        if self.original_request:
+            lines += ["", _ORIGINAL_REQUEST_HEADING, self.original_request]
+        if self.user_messages:
+            note = "Verbatim, oldest first"
+            if self.omitted_user_messages:
+                note += f"; {self.omitted_user_messages} older message(s) omitted"
+            lines += ["", _USER_MESSAGES_HEADING, f"{note}."]
+            for text in self.user_messages:
+                lines += ["", "\n".join(f"> {line}" for line in text.splitlines())]
+        return lines
 
     def render(self) -> list[str]:
         """Render the carried facts as trailing sections of a summary message."""
@@ -1335,63 +1212,49 @@ class CompactionState:
                 f"- Active: {', '.join(self.skills)}",
                 "- Call load_skill again if you need the full instructions.",
             ]
+        if self.transcripts:
+            lines += [
+                "",
+                _TRANSCRIPT_HEADING,
+                f"- Saved verbatim, oldest first: {', '.join(self.transcripts)}",
+                "- When a detail you need is missing here, search it with grep_files "
+                "or read_file a slice instead of guessing.",
+            ]
         return lines
 
 
-def _first_user_text(messages: list[Message]) -> str:
-    """The opening request, skipping a summary standing in for earlier turns."""
-    for msg in messages:
-        if msg.is_user_input and not _is_summary(msg):
-            return msg.text[:_FIRST_REQUEST_CHAR_LIMIT]
-    return ""
-
-
-def _build_summary_message(summary: str, state: CompactionState) -> Message:
+def _build_summary_message(state: CompactionState) -> Message:
     """Assemble the replacement message, carried sections included."""
     lines = [
         SUMMARY_MARKER,
         "The earlier conversation was compacted. This is a system-generated "
         "handoff, not a new instruction from the user.",
     ]
-    if state.original_request:
-        lines += ["", _ORIGINAL_REQUEST_HEADING, state.original_request]
-    lines += ["", summary]
+    lines += state.render_requests()
+    if state.summary:
+        lines += ["", state.summary]
     lines += state.render()
     return Message.user("\n".join(lines))
 
 
-def _keep_recent_split_limit(
-    messages: list[Message], context_length: int, chars_per_token: float
-) -> int:
-    """Highest split index that leaves the protected recent window intact.
-
-    Returns 0 when the whole history fits inside that window — there is then
-    nothing old enough to summarize, however full the context window is.
-    """
-    keep_chars = min(
-        context_length * COMPACTION_KEEP_RECENT_RATIO,
-        COMPACTION_KEEP_RECENT_MAX_TOKENS,
-    ) * chars_per_token
-    used = 0
-    for i in range(len(messages) - 1, -1, -1):
-        used += _message_budget_chars(messages[i], chars_per_token)
-        if used >= keep_chars:
-            return i
-    return 0
-
-
 def _yields_enough(
-    messages: list[Message], split_index: int, context_length: int, chars_per_token: float
+    to_compact: list[Message],
+    state: CompactionState,
+    context_length: int,
+    chars_per_token: float,
 ) -> bool:
-    """Whether summarizing ``messages[:split_index]`` is worth the round-trip.
+    """Whether replacing *to_compact* with a handoff is worth the round-trip.
 
-    What a pass really frees is the compacted messages *minus* the summary it
-    writes back. A split that nets less than COMPACTION_MIN_YIELD_RATIO is one
-    the caller's floor would suppress on the next round anyway, so it is cheaper
-    to notice here than after paying for the summarization.
+    What a pass really frees is the compacted messages *minus* the handoff it
+    writes back: the carried sections, measured exactly, plus the summary at its
+    maximum length. A pass that nets less than COMPACTION_MIN_YIELD_RATIO is not
+    worth a summarization request or the cache invalidation it causes.
     """
-    freed = _context_budget_chars(messages[:split_index], chars_per_token)
-    written_back = COMPACTION_SUMMARY_MAX_TOKENS * chars_per_token
+    freed = _context_budget_chars(to_compact, chars_per_token)
+    written_back = (
+        _build_summary_message(state).chars
+        + COMPACTION_SUMMARY_MAX_TOKENS * chars_per_token
+    )
     min_yield = context_length * COMPACTION_MIN_YIELD_RATIO * chars_per_token
     return freed - written_back >= min_yield
 
@@ -1402,96 +1265,44 @@ def compact_context(
     console: AgentConsole | None = None,
     context_length: int = 0,
     chars_per_token: float = DEFAULT_CHARS_PER_TOKEN,
-    used_tokens: int | None = None,
-    max_output_tokens: int = 0,
     state: CompactionState = CompactionState(),
+    save_transcript: Callable[[str], str | None] | None = None,
 ) -> tuple[list[Message], CompactionState]:
-    """Compact messages by LLM-summarizing the oldest portion.
+    """Replace the history with one LLM-written handoff message.
 
-    When *context_length* is provided the split point is calculated to bring
-    usage down to :func:`compaction_target_tokens`. Otherwise falls back to 40 %
-    of messages.
-
-    *messages* should **not** include the system prompt (it is managed
-    separately by ContextManager). *summarize* receives the prepared prompt
-    and returns summary text through the active provider. *state* carries the
-    facts earlier passes summarized away; the caller keeps the one returned.
+    Everything except the in-flight round and a small recent slice (see
+    :func:`_tail_start`) is summarized away. *messages* should **not** include
+    the system prompt (it is managed separately by ContextManager). *summarize*
+    receives the prepared prompt and returns summary text through the active
+    provider. *state* carries the facts earlier passes summarized away; the
+    caller keeps the one returned. *save_transcript*, when given, stores the
+    verbatim compacted history and returns a path the handoff can point to.
 
     Returns a new list, or *messages* itself when no compaction happened —
     nothing old enough to summarize, too little to be worth the round-trip, or a
     failed summarization. Callers rely on that identity to tell a pass that
     shrank the context from one that changed nothing.
     """
-    if len(messages) <= 2:
+    split_index = _tail_start(messages, context_length, chars_per_token)
+    to_compact = messages[:split_index]
+    if not any(message.is_assistant or message.is_tool for message in to_compact):
+        # Nothing the model did precedes the in-flight round: only a previous
+        # summary or user messages, which are carried verbatim anyway. A pass
+        # would cost a round-trip and free nothing.
         return messages, state
 
-    max_split = max(1, len(messages) - 2)  # keep the 2 latest messages
-    if context_length > 0:
-        # The protected recent window can cover the entire history — a short
-        # session, or one whose usage is dominated by the system prompt and
-        # tool schemas rather than by messages. Summarizing anyway would rewrite
-        # the oldest message for the price of a round-trip and grow the context,
-        # so report nothing to do and let the caller decide.
-        max_split = min(
-            max_split,
-            _keep_recent_split_limit(messages, context_length, chars_per_token),
-        )
-        if max_split < 1:
-            return messages, state
-
-    if context_length > 0:
-        budget_tokens = int(_context_budget_chars(messages, chars_per_token) / chars_per_token)
-        if used_tokens is None:
-            used_tokens = budget_tokens
-        elif any(message.image_count for message in messages):
-            # Removing images invalidates the measured anchor: per-image usage
-            # is unknown. Free enough for the post-compaction estimate as well.
-            used_tokens = max(used_tokens, budget_tokens)
-        # Only message characters can be freed, but the overhead the anchor
-        # accounts for (system prompt, tool schemas) still has to come out of
-        # the target — so convert the token shortfall back into characters.
-        chars_to_free = (
-            used_tokens - compaction_target_tokens(context_length, max_output_tokens)
-        ) * chars_per_token
-
-        if chars_to_free > 0:
-            # Walk forward accumulating chars until we've covered enough
-            cumulative = 0
-            split_index = 1
-            for i in range(0, len(messages)):
-                cumulative += _message_budget_chars(messages[i], chars_per_token)
-                if cumulative >= chars_to_free:
-                    split_index = i + 1
-                    break
-            else:
-                split_index = max_split
-        else:
-            # Already under target ratio; compact a fixed fraction of oldest messages
-            split_index = int(len(messages) * 0.4)
-    else:
-        # unknown context length, compact a fixed fraction of oldest messages
-        split_index = int(len(messages) * 0.4)
-
-    split_index = max(1, min(split_index, max_split))
-
-    split_index = _safe_split_index(messages, split_index)
-    if split_index <= 0:
-        # Walking off the front means the whole history is one tool-call group.
-        # Summarizing nothing would prepend an invented summary and *grow* the
-        # context, so leave it to the caller (or the API) to fail loudly.
-        return messages, state
-
+    absorbed = state.absorb(to_compact)
     if context_length > 0 and not _yields_enough(
-        messages, split_index, context_length, chars_per_token
+        to_compact, absorbed, context_length, chars_per_token
     ):
         return messages, state
 
-    to_compact = messages[:split_index]
-    to_keep = messages[split_index:]
-
-    previous = next((m.text for m in to_compact if _is_summary(m)), "")
+    previous = state.summary or next(
+        (message.text for message in to_compact if _is_summary(message)), ""
+    )
     conversation = _fit_summary_input(
-        _render_summary_input(to_compact), COMPACTION_SUMMARY_MAX_CHARS
+        _render_summary_input(to_compact),
+        summary_input_budget(context_length, chars_per_token),
     )
     if previous:
         prompt = _COMPACTION_UPDATE_PROMPT.format(
@@ -1507,18 +1318,30 @@ def compact_context(
             conversation=conversation,
         )
 
+    def warn(text: str) -> None:
+        if console is not None:
+            console.warn(text, exc_info=True)
+        else:
+            print(f"[WARNING] {text}", file=sys.stderr)
+
     try:
         summary = summarize(prompt).strip()
     except RequestInterrupted:
         raise  # the user cancelled; the caller unwinds, nothing failed
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        warning = f"Context compaction LLM call failed ({error}); preserving context"
-        if console is not None:
-            console.warn(warning, exc_info=True)
-        else:
-            print(f"[WARNING] {warning}", file=sys.stderr)
+        warn(
+            f"Context compaction LLM call failed ({type(exc).__name__}: {exc}); "
+            "preserving context"
+        )
         return messages, state
 
-    state = state.absorb(to_compact)
-    return [_build_summary_message(summary, state)] + to_keep, state
+    transcript = None
+    if save_transcript is not None:
+        try:
+            transcript = save_transcript(render_transcript(to_compact))
+        except (OSError, ValueError, RuntimeError) as exc:
+            # The handoff stands on its own; it just cannot point at a record.
+            warn(f"Could not save the compacted transcript ({exc})")
+
+    state = absorbed.handoff(summary, transcript)
+    return [_build_summary_message(state)] + messages[split_index:], state

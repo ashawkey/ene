@@ -117,6 +117,17 @@ def persist_tool_result_artifact(
         raise
 
 
+def persist_compaction_transcript(
+    text: str, work_dir: str | None, session_id: str | None, round_id: int
+) -> str:
+    """Save the verbatim history a compaction pass replaced; return its path."""
+    path = _artifact_path(
+        "compaction", uuid.uuid4().hex[:12], work_dir, session_id, round_id
+    )
+    _save_text(path, text)
+    return _relative_path(path, work_dir)
+
+
 def _artifact_path(
     tool_name: str,
     tool_call_id: str,

@@ -194,7 +194,7 @@ def test_image_heavy_history_compacts_and_reduces_live_estimate(tmp_path):
     assert LLMAgent._context_tokens(agent) == 150_000
     compacted, state = compact_context(
         agent.context.messages, lambda _: 'Inspected older screenshots.',
-        context_length=agent.context_length, used_tokens=150_000,
+        context_length=agent.context_length,
     )
     assert compacted is not agent.context.messages
     agent.context.replace_messages(compacted)

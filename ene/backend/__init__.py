@@ -38,6 +38,7 @@ from ene.tools import (
 from ene.tools.process_manager import format_process_status, process_status_snapshot
 from ene.tools.results import (
     discard_tool_result_artifact,
+    persist_compaction_transcript,
     persist_tool_result_artifact,
     prune_tool_result_artifacts,
     read_tool_result_text,
@@ -55,15 +56,13 @@ from ene.context import (
     COMPACTION_SUMMARY_MAX_TOKENS,
     ContextManager,
     TokenEstimator,
-    SOFT_TRIM_THRESHOLD,
-    UNREPEATABLE_TOOLS,
     CompactionState,
     ToolResultEnvelope,
     compact_context,
     compact_tool_result_envelope,
     estimate_context_chars,
     needs_compaction,
-    prune_context,
+    request_output_tokens,
     tool_result_char_budget,
 )
 from ene.messages import ImagePart, Message, TextPart
@@ -641,29 +640,18 @@ class LLMAgent(
 
         Atomic with respect to the conversation: the assistant message is
         appended as the last step, so every failure path leaves the history
-        exactly as it was found — apart from eviction and compaction, which are
-        window maintenance rather than turn state and are meant to persist.
+        exactly as it was found — apart from compaction, which is window
+        maintenance rather than turn state and is meant to persist.
         Responses cut off by the output limit or without a terminal finish
         reason are appended too; ``get_response`` then continues them.
         """
 
         self._discover_model_limits()
 
-        # context management: evict old tool results, then compact if needed
+        # Context management: history stays append-only (so the provider's
+        # cached prefix keeps matching) until it is handed off in one pass.
         if self.context_length > 0:
-            t_prune = time.monotonic()
             cpt = self.token_estimator.chars_per_token
-            self.context.replace_messages(
-                prune_context(
-                    self.context.messages, self.context_length, cpt,
-                    used_tokens=self._context_tokens(),
-                    max_output_tokens=self.max_output_tokens,
-                )
-            )
-            prune_elapsed = time.monotonic() - t_prune
-            if self.verbose and prune_elapsed > 0.1:
-                self.console.debug(f"Context eviction took {prune_elapsed:.2f}s")
-
             used_tokens = self._context_tokens()
             if needs_compaction(
                 self.context.messages, self.context_length, cpt,
@@ -688,6 +676,14 @@ class LLMAgent(
                 f"context: ~{ctx_tokens}tok / {self.context_length}tok [{ctx_pct:.0f}%])"
             )
 
+        def output_cap() -> int:
+            # The configured cap, shrunk when prompt + cap would overrun the window.
+            if self.context_length <= 0:
+                return self.max_output_tokens
+            return request_output_tokens(
+                self.context_length, self.max_output_tokens, self._context_tokens()
+            )
+
         def build_request() -> tuple[list[Message], CompletionRequest]:
             # Repair any malformed tool-call arguments in the history so a
             # broken call can never be re-sent and rejected by the provider.
@@ -698,7 +694,7 @@ class LLMAgent(
                 messages=messages,
                 tools=self.tools,
                 stream=self.stream,
-                max_output_tokens=self.max_output_tokens,
+                max_output_tokens=output_cap(),
                 reasoning_effort=self.reasoning_effort,
                 session_id=self._session_id,
             )
@@ -765,8 +761,13 @@ class LLMAgent(
                             "Request byte limit reported by the API"
                             if payload_overflow else "Context overflow reported by the API"
                         )
-                        fits = learned_limit and (
-                            self._context_tokens() + self.max_output_tokens < self.context_length
+                        # Under the learned limit's own trigger, the retry
+                        # fits with room to answer; otherwise compact first.
+                        fits = learned_limit and not needs_compaction(
+                            self.context.messages, self.context_length,
+                            self.token_estimator.chars_per_token,
+                            used_tokens=self._context_tokens(),
+                            max_output_tokens=self.max_output_tokens,
                         )
                         if fits or shrank_images or self._run_compaction(reason) or learned_limit:
                             messages, request = build_request()
@@ -863,9 +864,8 @@ class LLMAgent(
                     console=self.console,
                     context_length=self.context_length,
                     chars_per_token=self.token_estimator.chars_per_token,
-                    used_tokens=before_tokens,
-                    max_output_tokens=self.max_output_tokens,
                     state=self.context.compaction_state,
+                    save_transcript=self._save_compaction_transcript,
                 ),
                 self.cancellation,
                 on_cancel=lambda: self._cancel_compaction_provider(),
@@ -874,10 +874,10 @@ class LLMAgent(
             raise RequestInterrupted()
 
         if compacted is self.context.messages:
-            # Identity means no pass happened: everything old enough sits inside
-            # the protected recent window, the split could not free enough to pay
-            # for the round-trip, or the summarization failed (which warns on its
-            # own). Either way the context is untouched.
+            # Identity means no pass happened: nothing precedes the in-flight
+            # round, the pass could not free enough to pay for the round-trip,
+            # or the summarization failed (which warns on its own). Either way
+            # the context is untouched.
             self.console.system("Nothing worth compacting — context unchanged.")
             if self.context_length > 0:
                 self._compaction_floor_tokens = (
@@ -910,6 +910,14 @@ class LLMAgent(
                 after_tokens + int(self.context_length * COMPACTION_RETRY_GROWTH_RATIO)
             )
         return before_tokens > after_tokens
+
+    def _save_compaction_transcript(self, text: str) -> str | None:
+        """Store the history a compaction replaces, so the handoff can point at it."""
+        if not self._session_id:
+            return None
+        return persist_compaction_transcript(
+            text, self.work_dir, self._session_id, self.round_id
+        )
 
     def _summary_provider(self):
         """Return the configured compaction provider, model, and ownership flag."""
@@ -1209,28 +1217,6 @@ class LLMAgent(
                     f"Compacted {function_name} result "
                     f"({compacted.original_chars:,}→{compacted.retained_chars:,} chars){notice}"
                 )
-            elif (
-                function_name in UNREPEATABLE_TOOLS
-                and envelope.original_chars > SOFT_TRIM_THRESHOLD
-            ):
-                # Small enough to enter history whole, big enough for layer 2 to
-                # trim later — and this output cannot be produced a second time.
-                # The pointer goes in the message text rather than a side table
-                # so it survives eviction and session save/resume alike.
-                try:
-                    artifact_path = persist_tool_result_artifact(
-                        function_name,
-                        result_text,
-                        result,
-                        tool_call.id,
-                        self.work_dir,
-                        self._session_id,
-                        self.round_id,
-                    )
-                except (OSError, ValueError) as e:
-                    self.console.warn(f"Could not save tool output: {e}")
-                else:
-                    result_text += f"\n[Captured output: {artifact_path}.]"
             else:
                 cleanup_error = discard_tool_result_artifact(result)
                 if cleanup_error:

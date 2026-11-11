@@ -387,7 +387,9 @@ def test_recap_uses_compacted_original_request_and_bounds_input(monkeypatch):
         Message.assistant("irrelevant"),
         Message.user("latest request"),
     ], provider)
-    agent.context.compaction_state = CompactionState(original_request="opening request")
+    agent.context.compaction_state = CompactionState(
+        original_request="opening request",
+    )
 
     recap_input = agent._recap_input()
 
@@ -395,6 +397,25 @@ def test_recap_uses_compacted_original_request_and_bounds_input(monkeypatch):
     assert "internal handoff" not in recap_input
     assert "latest request" in recap_input
     assert len(recap_input) <= 24_100
+
+
+def test_recap_includes_user_messages_carried_through_compaction(monkeypatch):
+    from ene.config import conf
+
+    monkeypatch.delitem(conf, "recap_model", raising=False)
+    agent, _, _ = _recap_agent([
+        Message.user("[Previous conversation summary]\ninternal handoff"),
+        Message.assistant("done"),
+        Message.user("latest request"),
+    ], NS())
+    agent.context.compaction_state = CompactionState(
+        original_request="opening request",
+        user_messages=("carried correction",),
+    )
+
+    recap_input = agent._recap_input()
+
+    assert recap_input.index("carried correction") < recap_input.index("latest request")
 
 
 def test_recap_uses_configured_alias_and_closes_temporary_provider(monkeypatch):
@@ -2139,3 +2160,56 @@ def test_context_list_sends_wider_rows_to_wrapping_clients():
     assert len(row) <= 120 and row.endswith("...")
     assert 200 < len(wide_row) <= 320 and wide_row.endswith("...")
     assert "\n" not in wide_row and "wide_ansi" in event.data
+
+
+def test_compaction_saves_a_transcript_and_its_state_survives_a_session_round_trip(
+    monkeypatch, tmp_path,
+):
+    import json
+    from ene.ui import AgentConsole
+    from ene.messages import ToolCall
+
+    monkeypatch.setattr(
+        backend, "create_provider", lambda *_args, **_kwargs: NS(close=lambda: None)
+    )
+    agent = LLMAgent(
+        model="test-model",
+        api_key="",
+        base_url="",
+        provider_name="openai",
+        console=AgentConsole(render_terminal=False),
+        terminal_prompts=False,
+        work_dir=str(tmp_path),
+    )
+    try:
+        agent._session_id = "s1"
+        agent._snapshot_before_compaction = lambda: None
+        agent._summarize = lambda prompt: "## Goal\nsummary"
+        agent.context.add(Message.user("build it"))
+        for i in range(3):
+            if i == 1:
+                agent.context.add(Message.user("now add tests"))
+            agent.context.add(Message.assistant(
+                "", tool_calls=[ToolCall(f"c{i}", "read_file", json.dumps({"file": f"f{i}.py"}))]
+            ))
+            agent.context.add(Message.tool(f"c{i}", f"BODY{i} " + "x" * 12_000))
+        agent.context.add(Message.assistant("done"))
+        agent.context.add(Message.user("thanks, ship it"))
+        agent.context_length = 20_000
+
+        assert agent._run_compaction("test") is True
+
+        state = agent.context.compaction_state
+        assert state.user_messages == ("now add tests",)
+        (transcript,) = state.transcripts
+        assert "BODY2" in (tmp_path / transcript).read_text()
+        assert [m.text for m in agent.context.messages[1:]] == ["done", "thanks, ship it"]
+
+        saved = agent._session_data()
+        # The store writes JSON: tuples come back as lists.
+        saved["compaction_state"] = json.loads(json.dumps(saved["compaction_state"]))
+        agent.context.compaction_state = CompactionState()
+        agent._restore_session_data(saved)
+        assert agent.context.compaction_state == state
+    finally:
+        agent.close()
