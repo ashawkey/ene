@@ -86,7 +86,7 @@ The sidebar groups every live session on the machine:
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
 - The queued chip shows a clock for a message that joins the running round and a list-end icon for a `/wait` message that runs after it, with any remaining delay in parentheses.
 - Escape or the stop button stops the round.
-- **Model:** the picker next to the send button shows the current model; choosing another sends `/model <name>`. It is locked while a round runs.
+- **Model:** the picker next to the send button shows the current model as `alias (model name)`; choosing another sends `/model <name>`. It is locked while a round runs.
 - **Status line:** above the composer while the agent works: activity, elapsed time, session tokens, and, while a reply streams, an estimated output speed (`~42 tok/s`).
 - **Background processes:** an "N running" chip in the status line stays visible, even while idle, until every background process exits; click it to open Processes.
 

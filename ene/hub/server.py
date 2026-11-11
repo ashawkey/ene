@@ -82,7 +82,7 @@ MAX_TERMINAL_BACKLOG = 4 * 1024 * 1024  # unsent output before a slow viewer is 
 # Events that can change an attached session's list entry (state, title, preview).
 _SUMMARY_EVENTS = frozenset({
     "operation_start", "operation_end", "pending_set", "pending_cleared",
-    "background_status", "session_meta", "user_message",
+    "background_status", "session_meta", "model_changed", "user_message",
 })
 
 # Discovery file: written by the hub so a second ``ene hub`` can detect that
@@ -376,6 +376,9 @@ class RemoteSession:
             if isinstance(commands, dict)
             else {}
         )
+        model = status.get("model")
+        if isinstance(model, str) and model:
+            self.meta["model"] = model
         startup = status.get("startup")
         self.info = (
             {key: value for key, value in startup.items() if isinstance(value, str)}
@@ -463,6 +466,10 @@ class RemoteSession:
                 self.meta["name"] = name
             if isinstance(title, str):
                 self.meta["title"] = title
+        elif etype == "model_changed":
+            model = data.get("model")
+            if isinstance(model, str) and model:
+                self.meta["model"] = model
         elif etype == "user_message":
             text = data.get("text")
             if isinstance(text, str):
@@ -612,11 +619,13 @@ class Hub:
             seen.add(runtime_id)
             summary = attached.get(runtime_id)
             if summary is not None:
-                # Keep the record's workspace/model, which the worker owns.
+                # Keep the record's workspace, which the worker owns. The
+                # model follows live `model_changed` events, which arrive
+                # before the next registry poll.
                 summary = {
                     **summary,
                     "cwd": record.get("workspace", summary["cwd"]),
-                    "model": record.get("model", summary["model"]),
+                    "model": summary["model"] or record.get("model", ""),
                 }
                 listing.append(summary)
                 continue

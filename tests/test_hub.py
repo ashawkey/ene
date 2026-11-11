@@ -403,6 +403,14 @@ def test_remote_session_tracks_context_status_for_authoritative_state():
     }
 
 
+def test_remote_session_summary_follows_model_switches():
+    session = RemoteSession("s1", {"model": "fast"})
+    session.ingest({"type": "model_changed", "data": {"model": "smart"}})
+    assert session.summary()["model"] == "smart"
+    session.hydrate({"model": "deep"})
+    assert session.summary()["model"] == "deep"
+
+
 def test_remote_session_preserves_model_marker_on_hydration_and_events():
     session = RemoteSession("s1", {})
     context = {"context_tokens": 0, "model": "gpt-6-sol", "model_icon": "🔷"}

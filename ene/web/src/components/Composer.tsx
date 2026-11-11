@@ -81,7 +81,7 @@ export function Composer({
   cwd: string
   /** Current model alias. */
   model: string
-  /** Resolved `provider/model`, shown as the picker's tooltip. */
+  /** Resolved model name, shown after the alias when it differs. */
   modelDetail?: string
   modelIcon?: string
   /** Switch models; same as `/model <alias>`. */
@@ -513,13 +513,12 @@ function ModelPicker({
 
   const choices = model && !models.includes(model) ? [model, ...models] : models
   if (!choices.length) return null
-  const tip = disabled
-    ? `${detail || model} — switch models between rounds`
-    : `${detail || model} — switch model`
+  const label = detail && model && detail !== model ? `${model} (${detail})` : model || detail || 'model'
+  const tip = disabled ? 'Switch models between rounds' : 'Switch model (/model)'
   return (
     <label className={`model-picker ${disabled ? 'disabled' : ''}`} data-tip={tip}>
       {icon ? <span className="model-icon">{icon}</span> : <Cpu size={13} />}
-      <span className="clamp">{model || 'model'}</span>
+      <span className="clamp">{label}</span>
       <ChevronDown size={12} className="model-caret" />
       <select
         value={model}

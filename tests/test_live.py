@@ -1952,6 +1952,26 @@ def test_live_worker_session_metadata_uses_switched_conversation_id(monkeypatch)
     })]
 
 
+def test_live_worker_records_model_switch(monkeypatch):
+    worker = Worker.__new__(Worker)
+    worker.runtime_id = "runtime"
+    worker.record = {"model": "fast", "workspace": "/tmp/workspace"}
+    events = []
+    worker.events = SimpleNamespace(
+        publish=lambda kind, **data: events.append((kind, data))
+    )
+    monkeypatch.setattr(
+        live_worker,
+        "update_record",
+        lambda _runtime_id, **changes: worker.record | changes,
+    )
+
+    worker._model_changed("smart")
+
+    assert worker.record["model"] == "smart"
+    assert events == [("model_changed", {"model": "smart"})]
+
+
 def test_live_worker_restores_saved_name_when_resuming(monkeypatch):
     worker = Worker.__new__(Worker)
     worker.runtime_id = "runtime"

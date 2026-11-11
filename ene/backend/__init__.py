@@ -349,6 +349,7 @@ class LLMAgent(
         self.session_name = session_name
         self._session_changed = None
         self._session_name_changed = None
+        self._model_changed = None
 
         self.console.prompt_broker = self.prompt_broker
         if terminal_prompts and self.prompt_broker is not None:

@@ -127,8 +127,9 @@ describe('model picker', () => {
 
   it('switches models through the select', async () => {
     const onModel = vi.fn()
-    render(<Input onModel={onModel} modelDetail="openai/gpt-fast" />)
+    render(<Input onModel={onModel} modelDetail="gpt-fast" />)
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText('fast (gpt-fast)')).toBeTruthy()
     const select = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement
     expect(select.value).toBe('fast')
     expect(Array.from(select.options).map((option) => option.value)).toEqual(['fast', 'smart'])

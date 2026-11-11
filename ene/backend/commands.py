@@ -1020,6 +1020,9 @@ class AgentCommandsMixin:
         self.show_thinking = True
         self._reasoning_observed = False
         self.presence.update(model=self.model_alias or self.model)
+        callback = getattr(self, "_model_changed", None)
+        if callback is not None:
+            callback(self.model_alias or self.model)
         self._publish_context_status()
 
         reasoning = (

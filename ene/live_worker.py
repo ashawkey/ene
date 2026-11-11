@@ -470,6 +470,7 @@ class Worker:
         self._seed_last_user_message()
         self.agent._session_changed = self._session_changed
         self.agent._session_name_changed = self._session_name_changed
+        self.agent._model_changed = self._model_changed
         self.record = update_identity(
             self.runtime_id,
             name=self.agent.session_name,
@@ -548,6 +549,11 @@ class Worker:
         )
         self._publish_session_name(name)
         return name
+
+    def _model_changed(self, model: str) -> None:
+        """Record a `/model` switch so session listings show the new model."""
+        self.record = update_record(self.runtime_id, model=model)
+        self.events.publish("model_changed", model=model)
 
     def _publish_session_name(self, name: str) -> None:
         assert self.agent is not None
