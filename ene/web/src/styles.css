@@ -559,7 +559,6 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .name-input { min-width: 0; width: min(320px, 100%); margin: -3px -6px; padding: 2px 6px; border: 1px solid var(--accent); border-radius: 8px; outline: 0; background: var(--glass-strong); color: var(--text); font: inherit; letter-spacing: inherit; }
 @media (hover: none) { .name-pencil { opacity: 1; } }
 .pane-chips { display: flex; gap: 6px; min-width: 0; overflow: hidden; }
-.chip-procs { flex: none; }
 .header-actions { display: flex; align-items: center; gap: 2px; }
 .context-btn {
   display: inline-flex;
@@ -907,6 +906,8 @@ button.step-head:hover { background: var(--hover); }
 .status-strip { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 6px 6px; font-size: 12px; }
 .status-live { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .status-label { font-weight: 600; color: var(--text); }
+.status-procs { display: inline-flex; flex: none; align-items: center; gap: 6px; margin-left: auto; padding: 1px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--text-2); font: inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
+.status-procs:hover { background: var(--hover); color: var(--text); }
 .pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .proc-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .proc-dot.watching { background: var(--accent); }

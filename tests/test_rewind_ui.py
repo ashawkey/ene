@@ -311,6 +311,26 @@ def test_replay_omits_tool_activity(tmp_path: Path):
     assert "4 messages hidden" in console.text
 
 
+def test_replay_shows_compaction_summary_as_a_response(tmp_path: Path):
+    from ene.context import SUMMARY_MARKER, CompactionState
+
+    agent, _, console = _build(tmp_path, [])
+    agent.context.compaction_state = CompactionState(summary="## Goal\nship it")
+    agent.context.messages = [
+        Message.user(f"{SUMMARY_MARKER}\nhandoff preamble\n\n## Goal\nship it"),
+        Message.user("next prompt"),
+    ]
+    responses = []
+    console.response = responses.append
+
+    SessionMixin._replay_context(agent)
+
+    assert responses == ["## Goal\nship it"]
+    assert "handoff preamble" not in console.text
+    assert "next prompt" in console.text
+    assert "messages hidden" not in console.text
+
+
 def test_replay_shows_all_saved_conversation_turns(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     agent.context.messages = []

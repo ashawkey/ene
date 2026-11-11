@@ -162,6 +162,7 @@ It never triggers below 50% of the window.
 Until then, history is append-only, so every request reuses the provider's prompt cache. Large tool results are still shortened when they first arrive.
 
 - **Full handoff:** the whole history is replaced by one summary message. Only the newest rounds survive verbatim, up to 5% of the window (at most 12,000 tokens).
+- **Shown:** the model-written summary is displayed like a model response in the terminal and Web UI, and again when the session is replayed.
 - **Always kept:** the round in progress: tool results not yet seen, an unanswered prompt, or a reply being continued. A reply before an unanswered prompt is kept when under 16,000 characters.
 - **Carried exactly:** the original request, later user messages (verbatim, newest 32,000 characters), touched files, and loaded skills.
 - **Transcript:** the replaced history is saved verbatim under `.ene/tool-results/<session>/`. The summary lists the path so the model can search it.

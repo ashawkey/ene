@@ -879,6 +879,8 @@ def _compaction_agent(token_readings):
     """
     console = _Console()
     console.system = lambda *args, **kwargs: None
+    console.responses = []
+    console.response = console.responses.append
     context = ContextManager("system prompt")
     for i in range(10):
         context.add(Message.user(f"request {i} " + "x" * 6_000))
@@ -909,6 +911,8 @@ def test_ineffective_compaction_sets_a_floor_against_repeating():
     # context has actually grown again.
     assert agent._compaction_floor_tokens == 99_000
     assert agent.compaction_totals["count"] == 1
+    # The model-written handoff is shown like a model response.
+    assert agent.console.responses == ["## Goal\nsummary"]
 
 
 def test_effective_compaction_still_holds_off_the_next_one():

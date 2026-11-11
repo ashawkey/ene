@@ -308,6 +308,7 @@ function indicatorFrom(data: Record<string, unknown>): LiveIndicator {
     input_tokens: num(data.input_tokens),
     output_tokens: num(data.output_tokens),
     cached_tokens: num(data.cached_tokens),
+    tps: optionalNum(data.tps),
     receivedAt: Date.now(),
   }
 }
@@ -507,7 +508,13 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
       break
     }
     case 'thinking_update':
-      if (next.indicator) next.indicator = { ...next.indicator, suffix: str(data.suffix, next.indicator.suffix) }
+      if (next.indicator) {
+        next.indicator = {
+          ...next.indicator,
+          suffix: str(data.suffix, next.indicator.suffix),
+          tps: optionalNum(data.tps) ?? next.indicator.tps,
+        }
+      }
       break
     case 'thinking_stop':
       next.indicator = null

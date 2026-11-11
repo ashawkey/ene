@@ -89,6 +89,8 @@ export type Indicator = {
   input_tokens?: number
   output_tokens?: number
   cached_tokens?: number
+  /** Live output tokens/s estimate while a model response streams. */
+  tps?: number | null
 }
 
 /** One agent round, recorded and persisted by the agent (ene/backend/rounds.py). */

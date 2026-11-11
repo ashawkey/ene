@@ -14,7 +14,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from ene.backend.batch import BatchCompletionMixin
 from ene.backend.commands import AgentCommandsMixin
-from ene.backend.rounds import RoundStatsMixin
+from ene.backend.rounds import OutputRateMeter, RoundStatsMixin
 from ene.backend.inbox import format_inbox_message, idle_timeout_notice
 from ene.personas import (
     DEFAULT_PERSONA,
@@ -896,6 +896,9 @@ class LLMAgent(
             f"~{before_tokens:,} tokens → ~{after_tokens:,} tokens "
             f"(saved {saved_pct:.0f}%)"
         )
+        if state.summary:
+            # Show the handoff the model wrote, rendered like a model response.
+            self.console.response(state.summary)
 
         self.compaction_totals["count"] += 1
         self.compaction_totals["tokens_before"] += before_tokens
@@ -1023,6 +1026,8 @@ class LLMAgent(
     def _stream_completion(self, request: CompletionRequest):
         """Stream a provider request to the terminal and web sinks."""
         with self.console.stream_response(show_thinking=self.show_thinking) as sink:
+            meter: OutputRateMeter | None = None
+
             def consume():
                 stream = None
                 try:
@@ -1031,6 +1036,7 @@ class LLMAgent(
                         on_content=sink.on_content,
                         on_thinking=sink.on_thinking,
                         on_first_token=getattr(self, "_mark_first_token", None),
+                        on_output=meter.add if meter is not None else None,
                         should_stop=lambda: (
                             self.cancellation is not None
                             and self.cancellation.cancelled
@@ -1040,7 +1046,10 @@ class LLMAgent(
                     if stream is not None:
                         stream.close()
 
-            with self.console.thinking(status_suffix=self._status_suffix()):
+            with self.console.thinking(status_suffix=self._status_suffix()) as indicator:
+                publish = getattr(indicator, "set_output_rate", None)
+                if publish is not None:
+                    meter = OutputRateMeter(self.token_estimator.chars_to_tokens, publish)
                 return run_interruptible(
                     consume, self.cancellation, on_cancel=self.provider.cancel
                 )

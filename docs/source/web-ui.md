@@ -85,10 +85,12 @@ The sidebar groups every live session on the machine:
 - `!` at the start runs the rest as a one-off shell command in the workspace, shown in the conversation. For an interactive shell, use the [Terminal](#terminal) panel.
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
 - Escape or the stop button stops the round.
+- **Status line:** above the composer while the agent works: activity, elapsed time, session tokens, and, while a reply streams, an estimated output speed (`~42 tok/s`).
+- **Background processes:** an "N running" chip in the status line stays visible, even while idle, until every background process exits; click it to open Processes.
 
 ## Inspector
 
-Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics), the folder or Git branch chip (Files), or the "N running" chip shown while background processes run (Processes):
+Open the side panel with the panel icon in the session header (it reopens the last tab), or jump to a tab from the context gauge (Statistics), the folder or Git branch chip (Files), or the "N running" chip above the composer (Processes):
 
 | Panel | Contents |
 | --- | --- |

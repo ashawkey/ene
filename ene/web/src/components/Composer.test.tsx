@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { pathCompletions } from '../lib/api'
@@ -7,7 +8,7 @@ import { Composer } from './Composer'
 
 vi.mock('../lib/api', () => ({ pathCompletions: vi.fn() }))
 
-function Input() {
+function Input(props: Partial<ComponentProps<typeof Composer>>) {
   const [draft, setDraft] = useState('')
   return (
     <Composer
@@ -26,7 +27,10 @@ function Input() {
       withdrawing={false}
       indicator={null}
       operationSince={null}
+      runningProcesses={0}
+      onProcesses={() => {}}
       focusSignal={0}
+      {...props}
     />
   )
 }
@@ -68,5 +72,25 @@ describe('composer completion', () => {
     expect(pathCompletions).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     expect(pathCompletions).toHaveBeenCalledExactlyOnceWith('s1', 'e')
+  })
+})
+
+describe('composer status strip', () => {
+  it('shows running background processes while idle', () => {
+    const onProcesses = vi.fn()
+    render(<Input runningProcesses={2} onProcesses={onProcesses} />)
+    fireEvent.click(screen.getByText('2 running'))
+    expect(onProcesses).toHaveBeenCalled()
+  })
+
+  it('hides when idle without processes', () => {
+    const { container } = render(<Input />)
+    expect(container.querySelector('.status-strip')).toBeNull()
+  })
+
+  it('shows the live output rate while streaming', () => {
+    const indicator = { label: 'Working', input_tokens: 10, output_tokens: 2, tps: 42.5, receivedAt: Date.now() }
+    render(<Input busy indicator={indicator} operationSince={Date.now() / 1000} />)
+    expect(screen.getByText('~42.5 tok/s')).toBeTruthy()
   })
 })

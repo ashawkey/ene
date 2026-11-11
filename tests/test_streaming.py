@@ -51,6 +51,34 @@ def test_consume_stream_reports_first_token_once_on_real_output():
     assert seen.count("first") == 1 and seen.index("first") == 2
 
 
+def test_consume_stream_reports_generated_chars_including_tool_arguments():
+    sizes = []
+    stream = [
+        _chunk(_delta(role="assistant")),
+        _chunk(_delta(reasoning_content="think")),
+        _chunk(_delta(content="Hi")),
+        _chunk(_delta(tool_calls=[_tc(0, id="c1", name="write_file", args='{"a":')])),
+        _chunk(delta=None, usage=_usage(total_tokens=3, prompt_tokens=1, completion_tokens=2)),
+    ]
+    consume_stream(stream, on_output=sizes.append)
+    assert sizes == [5, 2, 5]
+
+
+def test_responses_stream_reports_generated_chars():
+    from ene.providers.responses import ResponsesCompletionStream
+
+    events = [
+        {"type": "response.reasoning_summary_text.delta", "delta": "abc"},
+        {"type": "response.output_text.delta", "delta": "hello"},
+        {"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "{}"},
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    sizes = []
+    stream = ResponsesCompletionStream(iter(events), "m", lambda: None, lambda: None)
+    stream.consume(on_output=sizes.append)
+    assert sizes == [3, 5, 2]
+
+
 def test_consume_stream_accumulates_content_and_calls_back():
     parts = []
     stream = [

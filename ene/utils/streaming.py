@@ -97,12 +97,15 @@ def consume_stream(
     on_thinking: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_first_token: Callable[[], None] | None = None,
+    on_output: Callable[[int], None] | None = None,
 ) -> tuple[Message, Any, str | None]:
     """Fold a stream into ``(message, usage, finish_reason)``.
 
     Callbacks fire synchronously as chunks arrive. If *should_stop* returns
     true, cancellation is raised so a partial response cannot enter context.
     *on_first_token* fires once, on the first text, reasoning, or tool-call delta.
+    *on_output* receives the character count of every generated delta (text,
+    reasoning, and tool-call arguments), for live throughput estimates.
     """
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -148,6 +151,14 @@ def consume_stream(
             content_parts.append(delta.content)
             if on_content is not None:
                 on_content(delta.content)
+
+        if on_output is not None:
+            generated = len(thinking or "") + len(delta.content or "")
+            for tc_delta in delta.tool_calls or ():
+                function = getattr(tc_delta, "function", None)
+                generated += len(getattr(function, "arguments", None) or "")
+            if generated:
+                on_output(generated)
 
         if delta.tool_calls:
             for tc_delta in delta.tool_calls:

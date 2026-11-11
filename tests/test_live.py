@@ -1904,6 +1904,14 @@ def test_active_indicator_uses_latest_suffix_update():
     ]) == {"label": "Batch", "suffix": "2/3"}
 
 
+def test_active_indicator_keeps_latest_output_rate():
+    assert _active_indicator([
+        {"type": "thinking_start", "data": {"label": "Working", "suffix": "ctx"}},
+        {"type": "thinking_update", "data": {"tps": 12.5}},
+        {"type": "thinking_update", "data": {"tps": 40.0}},
+    ]) == {"label": "Working", "suffix": "ctx", "tps": 40.0}
+
+
 def test_active_indicator_ignores_completed_historical_status():
     active = {"label": "Executing", "started_at": 123.0}
     assert _active_indicator([

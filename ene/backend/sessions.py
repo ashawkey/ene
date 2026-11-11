@@ -742,13 +742,15 @@ class SessionMixin:
         from ene.context import SUMMARY_MARKER
         from ene.replay import HiddenMessages, compact_replay, hidden_message
 
+        def is_summary(msg) -> bool:
+            return msg.is_user and msg.text.startswith(SUMMARY_MARKER)
+
         msgs = compact_replay(
             self.context.messages,
             is_user=lambda msg: (
-                (msg.is_user_input or msg.is_inbox)
-                and not msg.text.startswith(SUMMARY_MARKER)
+                (msg.is_user_input or msg.is_inbox) and not is_summary(msg)
             ),
-            is_assistant=lambda msg: msg.is_assistant,
+            is_assistant=lambda msg: msg.is_assistant or is_summary(msg),
             has_text=lambda msg: bool(msg.text.strip()),
         )
         if not msgs:
@@ -758,6 +760,13 @@ class SessionMixin:
         for msg in msgs:
             if isinstance(msg, HiddenMessages):
                 self.console.system(hidden_message(msg.count))
+            elif is_summary(msg):
+                # Only one handoff is ever in context; show the model-written
+                # part, as it was shown when the compaction ran.
+                summary = self.context.compaction_state.summary
+                self.console.response(
+                    summary or msg.text.removeprefix(SUMMARY_MARKER).strip()
+                )
             elif msg.is_inbox:
                 self.console.user_input(msg.display, source="inbox")
             elif msg.is_user:

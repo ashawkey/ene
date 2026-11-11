@@ -88,9 +88,11 @@ class CompletionStream(ABC):
         on_thinking: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         on_first_token: Callable[[], None] | None = None,
+        on_output: Callable[[int], None] | None = None,
     ) -> CompletionResult:
         """Fold the stream into a result. *on_first_token* fires once, when
-        the first generated output (text, reasoning, or tool call) arrives."""
+        the first generated output (text, reasoning, or tool call) arrives.
+        *on_output* receives the character count of each generated delta."""
 
     @abstractmethod
     def close(self) -> None:

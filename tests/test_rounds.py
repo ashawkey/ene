@@ -8,6 +8,7 @@ from ene.backend import LLMAgent
 from ene.messages import Message, ToolCall
 from ene.providers import CompletionResult, ProviderUsage
 from ene.session_store import SessionStore
+from ene.backend.rounds import OutputRateMeter
 from ene.ui import AgentConsole
 from ene.utils.io import EventHub
 
@@ -189,5 +190,51 @@ def test_rounds_time_real_model_calls_and_tools(monkeypatch, tmp_path):
         assert record["model_time"] >= 0 and record["tool_time"] >= 0
         assert record["model_time"] + record["tool_time"] <= record["duration"] + 0.01
         assert record["ttft"] is None  # blocking requests have no first-token time
+    finally:
+        agent.close()
+
+
+def test_output_rate_meter_throttles_and_estimates_tokens_per_second():
+    now = [100.0]
+    published = []
+    meter = OutputRateMeter(lambda chars: chars // 4, published.append, clock=lambda: now[0])
+    meter.add(40)            # first delta starts the clock
+    now[0] = 100.3
+    meter.add(40)            # under MIN_SECONDS: too early to judge
+    now[0] = 101.0
+    meter.add(120)           # 200 chars -> 50 tokens over 1s
+    now[0] = 101.2
+    meter.add(40)            # throttled by INTERVAL
+    meter.add(0)
+    assert published == [50.0]
+    now[0] = 102.0
+    meter.add(40)            # 280 chars -> 70 tokens over 2s
+    assert published == [50.0, 35.0]
+
+
+def test_streaming_request_publishes_live_output_rate(monkeypatch, tmp_path):
+    events = EventHub()
+    agent = make_agent(monkeypatch, tmp_path, [], events=events)
+
+    class Stream:
+        def consume(self, *, on_content=None, on_output=None, **_):
+            for _ in range(3):
+                on_content("abcd")
+                on_output(4)
+            return CompletionResult(Message.assistant("abcdabcdabcd"), usage(10, 3), "stop")
+
+        def close(self):
+            pass
+
+    agent.provider.open_stream = lambda request: Stream()
+    agent.stream = True
+    monkeypatch.setattr(OutputRateMeter, "MIN_SECONDS", 0.0)
+    monkeypatch.setattr(OutputRateMeter, "INTERVAL", 0.0)
+    agent.console.events = events
+    try:
+        agent._initialize_chat_session()
+        run(agent, "hi")
+        rates = [e.data["tps"] for e in events.snapshot() if e.type == "thinking_update" and "tps" in e.data]
+        assert rates and all(rate > 0 for rate in rates)
     finally:
         agent.close()

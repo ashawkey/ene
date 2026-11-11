@@ -151,6 +151,18 @@ describe('session reducer', () => {
     expect(done.indicator).toBeNull()
   })
 
+  it('keeps the live output rate across indicator updates', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'thinking_start', { label: 'Working', suffix: 'ctx' }),
+      ev(2, 'thinking_update', { tps: 42.5 }),
+      ev(3, 'thinking_update', { suffix: 'ctx 2' }),
+    ])
+    expect(view.indicator).toMatchObject({ suffix: 'ctx 2', tps: 42.5 })
+    const next = run([ev(4, 'thinking_stop'), ev(5, 'thinking_start', { label: 'Working' })], view).view
+    expect(next.indicator?.tps).toBeNull()
+  })
+
   it('prefers the wide form of printed output', () => {
     const { view } = run([state(), ev(1, 'output', { text: 'a...', ansi: 'a...', wide_text: 'abcdef', wide_ansi: 'abcdef' })])
     expect(view.items[0]).toMatchObject({ kind: 'output', text: 'abcdef', ansi: 'abcdef' })

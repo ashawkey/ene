@@ -47,6 +47,7 @@ from ene.live import (
     _atomic_write,
     kill_session,
     list_records,
+    merge_indicator_update,
     start_session,
 )
 from ene.terminal import AtFileCompleter
@@ -442,9 +443,7 @@ class RemoteSession:
         elif etype == "thinking_start":
             self.active_indicator = dict(data)
         elif etype == "thinking_update" and self.active_indicator is not None:
-            suffix = data.get("suffix")
-            if isinstance(suffix, str):
-                self.active_indicator["suffix"] = suffix
+            merge_indicator_update(self.active_indicator, data)
         elif etype == "thinking_stop":
             self.active_indicator = None
         elif etype == "commands":

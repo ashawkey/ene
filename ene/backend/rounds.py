@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from ene.messages import ORIGIN_INBOX, ROLE_USER
 
@@ -33,6 +33,49 @@ _TOKEN_KEYS = (
     ("output_tokens", "completion"),
     ("reasoning_tokens", "reasoning"),
 )
+
+
+class OutputRateMeter:
+    """Live output tokens/s estimate for one streaming model request.
+
+    Providers report exact usage only when a stream ends, so the live rate
+    converts streamed characters (text, reasoning, tool-call arguments) to
+    estimated tokens, averaged since the first generated delta. *publish*
+    receives the rate at most every :attr:`INTERVAL` seconds.
+    """
+
+    INTERVAL = 0.5
+    # Below this, one buffered burst would read as an absurd rate.
+    MIN_SECONDS = 0.5
+
+    def __init__(
+        self,
+        chars_to_tokens: Callable[[int], int],
+        publish: Callable[[float], None],
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._chars_to_tokens = chars_to_tokens
+        self._publish = publish
+        self._clock = clock
+        self._chars = 0
+        self._first: float | None = None
+        self._published = 0.0
+
+    def add(self, chars: int) -> None:
+        if chars <= 0:
+            return
+        now = self._clock()
+        if self._first is None:
+            self._first = self._published = now
+        self._chars += chars
+        elapsed = now - self._first
+        if elapsed <= 0 or elapsed < self.MIN_SECONDS or now - self._published < self.INTERVAL:
+            return
+        self._published = now
+        try:
+            self._publish(round(self._chars_to_tokens(self._chars) / elapsed, 1))
+        except Exception:
+            pass  # a display side channel must never fail the stream
 
 
 def _message_preview(message: Any) -> tuple[str, str]:

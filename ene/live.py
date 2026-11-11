@@ -163,6 +163,16 @@ def update_identity(
         return record
 
 
+def merge_indicator_update(indicator: dict[str, Any], update: dict[str, Any]) -> None:
+    """Fold a ``thinking_update`` event into the active indicator snapshot."""
+    suffix = update.get("suffix")
+    if isinstance(suffix, str):
+        indicator["suffix"] = suffix
+    tps = update.get("tps")
+    if isinstance(tps, (int, float)) and not isinstance(tps, bool):
+        indicator["tps"] = tps
+
+
 def send_frame(sock: socket.socket, message: dict[str, Any]) -> None:
     payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(payload) > MAX_FRAME_BYTES:

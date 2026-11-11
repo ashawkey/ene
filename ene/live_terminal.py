@@ -529,7 +529,8 @@ class LiveTerminal:
             )
             self.indicator.__enter__()
         elif kind == "thinking_update" and self.indicator is not None:
-            self.indicator.set_status_suffix(str(data.get("suffix", "")))
+            if "suffix" in data:
+                self.indicator.set_status_suffix(str(data.get("suffix", "")))
         elif kind == "thinking_stop" and self.indicator is not None:
             self.indicator.__exit__(None, None, None)
             self.indicator = None

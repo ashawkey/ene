@@ -287,6 +287,11 @@ class ThinkingIndicator:
             )
             self._events.publish("thinking_update", suffix=suffix)
 
+    def set_output_rate(self, tps: float) -> None:
+        """Publish the live output tokens/s of a streaming request (web only)."""
+        if self._events is not None and self._running:
+            self._events.publish("thinking_update", tps=tps)
+
     def __exit__(self, *args) -> None:
         self._running = False
         # Wake the tick thread so exit does not wait out its sleep interval.

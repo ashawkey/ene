@@ -168,11 +168,6 @@ export function SessionPane({
                   <GitBranch size={12} /><span className="clamp">{branch.branch}</span>
                 </button>
               ) : null}
-              {view.processes.running ? (
-                <button type="button" className="chip chip-procs" onClick={() => onInspector('tasks')} data-tip="Background processes">
-                  <span className="proc-dot" />{view.processes.running} running
-                </button>
-              ) : null}
               {model ? <span className="chip chip-model" data-tip="Model">{view.context?.model_icon ? <span>{view.context.model_icon}</span> : <Cpu size={12} />}{model}</span> : null}
             </div>
           </div>
@@ -256,6 +251,8 @@ export function SessionPane({
             withdrawing={session.withdrawing}
             indicator={view.indicator}
             operationSince={view.operationSince}
+            runningProcesses={view.processes.running}
+            onProcesses={() => onInspector('tasks')}
             focusSignal={focusSignal}
           />
         </div>

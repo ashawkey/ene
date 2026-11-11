@@ -14,7 +14,7 @@ import type { KeyboardEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { pathCompletions } from '../lib/api'
-import { compactNumber, duration } from '../lib/format'
+import { compactNumber, duration, tokenRate } from '../lib/format'
 import type { LiveIndicator } from '../lib/session'
 import type { PendingMessage } from '../lib/protocol'
 import type { OutboxEntry } from '../lib/useSession'
@@ -46,6 +46,8 @@ export function Composer({
   withdrawing,
   indicator,
   operationSince,
+  runningProcesses,
+  onProcesses,
   focusSignal,
 }: {
   sessionId: string
@@ -63,6 +65,9 @@ export function Composer({
   withdrawing: boolean
   indicator: LiveIndicator | null
   operationSince: number | null
+  /** Background processes still running; shown until they all exit. */
+  runningProcesses: number
+  onProcesses: () => void
   focusSignal: number
 }) {
   const field = useRef<HTMLTextAreaElement>(null)
@@ -277,6 +282,8 @@ export function Composer({
         indicator={indicator}
         busy={busy}
         since={operationSince}
+        processes={runningProcesses}
+        onProcesses={onProcesses}
       />
       {outbox.length || pending ? (
         <div className="queue">
@@ -375,13 +382,17 @@ function StatusStrip({
   indicator,
   busy,
   since,
+  processes,
+  onProcesses,
 }: {
   indicator: LiveIndicator | null
   busy: boolean
   since: number | null
+  processes: number
+  onProcesses: () => void
 }) {
   const now = useNow(busy)
-  if (!busy) return null
+  if (!busy && !processes) return null
   const started = indicator?.started_at ?? since
   const elapsed = started ? now / 1000 - started : 0
   const countdown = indicator?.countdown
@@ -398,8 +409,16 @@ function StatusStrip({
           {indicator && indicator.input_tokens ? (
             <span className="muted">↑{compactNumber(indicator.input_tokens)} ↓{compactNumber(indicator.output_tokens ?? 0)}</span>
           ) : indicator?.suffix ? <span className="muted clamp">{indicator.suffix}</span> : null}
+          {indicator?.tps ? (
+            <span className="muted" data-tip="Estimated output speed of the streaming response">~{tokenRate(indicator.tps)}</span>
+          ) : null}
           <span className="muted kbd">esc</span>
         </span>
+      ) : null}
+      {processes ? (
+        <button type="button" className="status-procs" onClick={onProcesses} data-tip="Background processes">
+          <span className="proc-dot" />{processes} running
+        </button>
       ) : null}
     </div>
   )

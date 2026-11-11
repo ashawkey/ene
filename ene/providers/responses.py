@@ -255,6 +255,16 @@ def response_result(
     return CompletionResult(message, _response_usage(response), finish_reason)
 
 
+# Delta events carrying generated output, counted for live throughput.
+_GENERATED_DELTAS = frozenset({
+    "response.output_text.delta",
+    "response.refusal.delta",
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_text.delta",
+    "response.function_call_arguments.delta",
+})
+
+
 class ResponsesCompletionStream(CompletionStream):
     def __init__(
         self, events: Iterable[dict[str, Any]], model: str,
@@ -270,6 +280,7 @@ class ResponsesCompletionStream(CompletionStream):
 
     def consume(
         self, *, on_content=None, on_thinking=None, should_stop=None, on_first_token=None,
+        on_output=None,
     ) -> CompletionResult:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -288,6 +299,10 @@ class ResponsesCompletionStream(CompletionStream):
             if on_first_token is not None and isinstance(kind, str) and kind.endswith(".delta"):
                 on_first_token()
                 on_first_token = None
+            if on_output is not None and kind in _GENERATED_DELTAS:
+                generated = len(event.get("delta") or "")
+                if generated:
+                    on_output(generated)
             if kind == "response.output_item.added":
                 item = event.get("item")
                 if isinstance(item, dict):

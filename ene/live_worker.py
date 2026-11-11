@@ -21,6 +21,7 @@ from ene.live import (
     TERMINAL_IDLE_TIMEOUT,
     WORKER_API_KEY_ENV,
     LiveError,
+    merge_indicator_update,
     read_record,
     recv_frame,
     record_path,
@@ -115,9 +116,7 @@ def _active_indicator(events: list[dict[str, Any]]) -> dict[str, Any] | None:
             active = dict(event.get("data") or {})
             for later in events[index + 1:]:
                 if later.get("type") == "thinking_update":
-                    suffix = (later.get("data") or {}).get("suffix")
-                    if isinstance(suffix, str):
-                        active["suffix"] = suffix
+                    merge_indicator_update(active, later.get("data") or {})
             return active
     return None
 
@@ -280,9 +279,8 @@ class Worker:
                 self._active_indicator = dict(event.data or {})
                 return
             if event.type == "thinking_update":
-                suffix = (event.data or {}).get("suffix")
-                if self._active_indicator is not None and isinstance(suffix, str):
-                    self._active_indicator["suffix"] = suffix
+                if self._active_indicator is not None:
+                    merge_indicator_update(self._active_indicator, event.data or {})
                 return
             if event.type == "thinking_stop":
                 self._active_indicator = None
