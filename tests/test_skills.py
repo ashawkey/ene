@@ -85,6 +85,7 @@ class _SummaryAgent(SkillCommandsMixin):
         self.persona = SimpleNamespace(
             tools=None, bundled_skills=None, local_skills=True
         )
+        self.exec_mode = False
         self.token_estimator = TokenEstimator()
 
 
@@ -104,6 +105,16 @@ def test_bundled_skills_are_discovered(tmp_path, monkeypatch):
         skill["source"] == "bundled" and not skill["warnings"]
         for skill in skills.values()
     )
+
+
+def test_skill_creator_rule_requires_advertised_skill_creator():
+    without = build_skills_prompt_section({"alpha": {"description": "Use for alpha."}})
+    with_creator = build_skills_prompt_section(
+        {"skill-creator": {"description": "Create skills."}}
+    )
+
+    assert "skill-creator" not in without
+    assert "Apply **skill-creator** the same way" in with_creator
 
 
 def test_skills_summary_counts_only_registry_in_persona_prompt():

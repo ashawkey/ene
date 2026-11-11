@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ from ene.tools import ToolCallDescription
 
 _MAX_OUTPUT_CHARS = 20_000
 _DEFAULT_CDP_URL = "http://127.0.0.1:9222"
+_LOAD_TIMEOUT_SECONDS = 15.0
 
 
 class CDPConnection:
@@ -262,18 +265,48 @@ def browser_status(executor, cdp_url: str | None = None) -> dict[str, Any]:
     )
 
 
+def _navigate(connection: CDPConnection, url: str) -> str:
+    """Navigate the selected tab and wait for the new document to finish loading.
+
+    Returns the last observed ``document.readyState``. The outgoing document is
+    tagged first, because it can still answer (often as ``complete``) right
+    after ``Page.navigate`` returns; observing it would report a stale page.
+    """
+    token = json.dumps(uuid.uuid4().hex)
+    try:
+        connection.evaluate(f"window.__eneNavigation = {token}")
+    except RuntimeError:
+        pass  # An untaggable page still navigates; readiness then relies on readyState.
+    result = connection.send("Page.navigate", {"url": url}, connection.session(), timeout=30)
+    if result.get("errorText"):
+        raise RuntimeError(result["errorText"])
+    if "loaderId" not in result:
+        # A same-document navigation, such as a fragment change, loads nothing.
+        return connection.evaluate("document.readyState")
+
+    deadline = time.monotonic() + _LOAD_TIMEOUT_SECONDS
+    while True:
+        try:
+            state = connection.evaluate(
+                f"window.__eneNavigation === {token} ? 'loading' : document.readyState"
+            )
+        except RuntimeError:
+            state = "loading"  # The outgoing document is being torn down.
+        if state == "complete" or time.monotonic() >= deadline:
+            return state
+        time.sleep(0.1)
+
+
 def browser_open(executor, url: str, new_tab: bool = False) -> dict[str, Any]:
-    """Navigate the selected tab or create a visible tab."""
+    """Navigate the selected tab or a new one and wait for the page to load."""
     connection = _connection(executor)
     if new_tab:
-        target_id = connection.send("Target.createTarget", {"url": url})["targetId"]
+        target_id = connection.send("Target.createTarget", {"url": "about:blank"})["targetId"]
         connection.select(target_id)
     else:
         target_id = connection.current_target()["targetId"]
-        result = connection.send("Page.navigate", {"url": url}, connection.session(), timeout=30)
-        if result.get("errorText"):
-            raise RuntimeError(result["errorText"])
-    return _ok(tab_id=target_id, url=url, new_tab=new_tab)
+    ready_state = _navigate(connection, url)
+    return _ok(tab_id=target_id, url=url, new_tab=new_tab, ready_state=ready_state)
 
 
 _OBSERVE_SCRIPT = r"""
@@ -606,9 +639,9 @@ def _describe_status_output(result: dict[str, Any]) -> str:
 
 
 def _describe_open_output(result: dict[str, Any]) -> str:
-    if result.get("new_tab"):
-        return f"Opened new tab: {_label(result['url'])}"
-    return f"Navigated current tab: {_label(result['url'])}"
+    action = "Opened new tab" if result.get("new_tab") else "Navigated current tab"
+    suffix = "" if result.get("ready_state") == "complete" else " (still loading)"
+    return f"{action}: {_label(result['url'])}{suffix}"
 
 
 def _describe_observe_output(result: dict[str, Any]) -> str:
@@ -702,7 +735,8 @@ TOOLS = [
         "describe_output": _describe_open_output,
         "schema": _schema(
             "browser_open",
-            "Navigate the current visible browser tab or open a new visible tab.",
+            "Navigate the current browser tab or open a new tab, then wait up to 15 seconds "
+            "for the page to load. ready_state reports the page's final document.readyState.",
             {"url": {"type": "string"}, "new_tab": {"type": "boolean", "default": False}},
             ["url"],
         ),

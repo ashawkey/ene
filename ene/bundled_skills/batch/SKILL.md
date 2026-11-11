@@ -70,15 +70,12 @@ Example shape:
 2. Use bounded parallelism. The default is 4 and the maximum is 16. Set
    `concurrency=1` only for strict rate limits or when independent requests must
    be serialized.
-3. Watch the live status for completed, succeeded, failed, and active items.
-   Completion advances only after the corresponding JSONL record is flushed.
-4. Reissue the same call to resume after interruption. Successful items are
+3. Reissue the same call to resume after interruption. Successful items are
    skipped and failed or unfinished items are retried. Resuming with a changed
    `instruction` is refused; choose a new `name` or use `resume=false`. Use
-   `resume=false` only
-   to intentionally restart every item; the old file is retained as
-   `<name>.jsonl.bak`.
-5. Report summary counts and the output path. Do not repeat all item results
+   `resume=false` only to intentionally restart every item; the old file is
+   retained as `<name>.jsonl.bak`.
+4. Report summary counts and the output path. Do not repeat all item results
    unless the user asks. Convert the JSONL afterwards when another format is
    required.
 

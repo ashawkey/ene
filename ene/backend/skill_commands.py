@@ -53,7 +53,11 @@ class SkillCommandsMixin:
         from ene.skills import build_skills_prompt_section
 
         can_load = self.persona.tools is None or "load_skill" in self.persona.tools
-        advertised = filter_persona_skills(self.persona, self.skills) if can_load else {}
+        advertised = (
+            filter_persona_skills(self.persona, self.skills, exec_mode=self.exec_mode)
+            if can_load
+            else {}
+        )
         skills_section = build_skills_prompt_section(advertised)
         # A persona template may omit {{ene:skills}} entirely, in which case
         # nothing is advertised however permissive its skill policy is; report

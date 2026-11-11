@@ -23,6 +23,8 @@ Built-in tools (availability depends on the model and persona):
 
 `web_fetch` honors `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `SOCKS_PROXY`, and `NO_PROXY`.
 
+Commands run by `exec_command` and `start_process` receive `ENE_PYTHON`, the interpreter running Ene. Bundled skill scripts run with it, so they work when `python` on `PATH` lacks Ene.
+
 ## Images
 
 - `read_image` retains images across turns and saved sessions; the original file is not needed to resume.

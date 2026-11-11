@@ -1,6 +1,6 @@
 ---
 name: lean
-description: Use for requested brevity, minimal implementations, or avoiding over-engineering.
+description: Use when the user asks for terse answers, a minimal implementation, or less over-engineering.
 ---
 
 # Lean Mode

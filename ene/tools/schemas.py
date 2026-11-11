@@ -109,7 +109,8 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                 "name": "read_file",
                 "description": (
                     f"Read file text, returning at most {MAX_READ_LINES:,} lines. "
-                    "Use grep_files first and offset/limit for focused reads."
+                    "Read small files whole; in large files, locate lines with grep_files, "
+                    "then read a range with offset/limit."
                 ),
                 "parameters": {
                     "type": "object",
@@ -140,7 +141,10 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Create or overwrite a file with content. Creates parent directories automatically.",
+                "description": (
+                    "Create or overwrite a file with content. Creates parent directories "
+                    "automatically. To change an existing file, prefer edit_file or multi_edit."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -208,7 +212,7 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                 "description": (
                     "List the contents of a directory (non-recursive). Shows entry names, "
                     "type (file/dir) and size. Respects .gitignore and skips noise dirs by default. "
-                    "Use glob_files with a narrow pattern when possible. "
+                    "Use glob_files with a narrow pattern when possible."
                 ),
                 "parameters": {
                     "type": "object",
@@ -226,6 +230,9 @@ _BUILTIN_TOOL_SCHEMAS_LIST = [
                 "name": "exec_command",
                 "description": (
                     "Run a non-interactive foreground shell command and stream its merged stdout/stderr. "
+                    "Each call starts a fresh shell with stdin closed: directory changes and exported "
+                    "variables do not persist (use cwd), and commands cannot read input, so pass "
+                    "non-interactive flags. "
                     "The command times out after 300 seconds by default; set timeout=null to disable the timeout. "
                     "Returns the output followed by exit, interruption, and timeout status. Large output is "
                     "compacted with full capture available in an artifact."

@@ -1,19 +1,11 @@
 ---
 name: monitor
-description: Run and actively monitor long-lived jobs, services, or health checks.
+description: Keep watching long-running jobs, services, or health checks when the user asks for ongoing monitoring, periodic checks, or follow-up when something finishes or fails.
 ---
 
 # Background Processes and Monitoring
 
-These built-in tools are available when the active persona permits them:
-
-- `start_process`: launch a managed background process with file-backed combined output; the harness notifies you when it exits or emits selected output;
-- `inspect_processes`: return one immediate status snapshot and an optional bounded log tail;
-- `stop_process`: terminate one managed process and its process tree without notifying.
-
-Loading this skill adds the active-monitoring workflow below.
-
-Use `exec_command` for non-interactive foreground commands expected to finish reliably. Its default timeout is 300 seconds; set `timeout=null` only when no timeout is intentionally required. Use managed processes for servers, long-running commands, and observers.
+This skill adds an active-monitoring workflow on top of the built-in `start_process`, `inspect_processes`, and `stop_process` tools.
 
 ## How notifications work
 

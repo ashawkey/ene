@@ -60,7 +60,7 @@ Do not invent paths, line numbers, behavior, or test results. Label incomplete e
 
 ## Output
 
-Start with **Findings**, ordered by severity and impact. Keep findings concise; do not silently omit actionable findings solely to meet a count limit. Put unresolved concerns in a separate block when material, not among confirmed defects.
+If the request specifies a response format, follow it while keeping each finding's details above. Otherwise, start with **Findings**, ordered by severity and impact. Keep findings concise; do not silently omit actionable findings solely to meet a count limit. Put unresolved concerns in a separate block when material, not among confirmed defects.
 
 End with a brief **Summary** stating the reviewed scope/baseline, coverage (reviewed versus total items and any unreviewed items with reasons), checks actually run, overall risk, and the most important next step. Do not dump the full checklist when everything was reviewed.
 

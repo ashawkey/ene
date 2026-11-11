@@ -137,6 +137,12 @@ def test_agent_process_env_injects_model_identity(monkeypatch):
     assert "ENE_REASONING_EFFORT" not in only_alias
 
 
+def test_agent_process_env_names_ene_interpreter(monkeypatch):
+    monkeypatch.setenv("ENE_PYTHON", "/stale/python")
+
+    assert process_utils.agent_process_env()["ENE_PYTHON"] == sys.executable
+
+
 def test_exec_command_injects_model_identity_env(tmp_path):
     te = ToolExecutor(
         console=_SilentConsole(), work_dir=str(tmp_path),
@@ -530,6 +536,93 @@ def test_browser_connection_reused_for_same_cdp_server(monkeypatch, tmp_path):
     )
 
     assert browser_tools._connection(te, "http://127.0.0.1:9222") is connection
+
+
+class _NavigationConnection:
+    """Fake CDP connection replaying readiness answers after Page.navigate."""
+
+    endpoint = "ws://127.0.0.1:9222/devtools/browser/session-id"
+
+    def __init__(self, states, *, loader_id=True):
+        self.states = list(states)
+        self.loader_id = loader_id
+        self.sent = []
+
+    def current_target(self):
+        return {"targetId": "tab-1"}
+
+    def session(self):
+        return "session-1"
+
+    def select(self, target_id):
+        self.sent.append(("select", target_id))
+
+    def send(self, method, params=None, session_id=None, timeout=15):
+        self.sent.append((method, params))
+        if method == "Target.createTarget":
+            return {"targetId": "tab-2"}
+        assert method == "Page.navigate"
+        return {"frameId": "frame", **({"loaderId": "loader"} if self.loader_id else {})}
+
+    def evaluate(self, expression, *, await_promise=False):
+        if expression.startswith("window.__eneNavigation = "):
+            return None  # Tagging the outgoing document.
+        state = self.states.pop(0)
+        if isinstance(state, Exception):
+            raise state
+        return state
+
+
+def _browser_executor(tmp_path, connection):
+    te = ToolExecutor(console=_SilentConsole(), work_dir=str(tmp_path))
+    te._browser_connection = connection
+    return te
+
+
+def test_browser_open_waits_for_the_new_document_to_load(monkeypatch, tmp_path):
+    monkeypatch.setattr(browser_tools.time, "sleep", lambda _: None)
+    # Outgoing document, a torn-down context, then the new document loading.
+    connection = _NavigationConnection(
+        ["loading", RuntimeError("Uncaught"), "interactive", "complete"]
+    )
+
+    result = browser_tools.browser_open(
+        _browser_executor(tmp_path, connection), "http://localhost:5173/"
+    )
+
+    assert result["ready_state"] == "complete"
+    assert connection.states == []
+    assert browser_tools._describe_open_output(result) == (
+        "Navigated current tab: http://localhost:5173/"
+    )
+
+
+def test_browser_open_returns_last_state_when_load_times_out(monkeypatch, tmp_path):
+    monkeypatch.setattr(browser_tools, "_LOAD_TIMEOUT_SECONDS", 0)
+    connection = _NavigationConnection(["interactive"])
+
+    result = browser_tools.browser_open(
+        _browser_executor(tmp_path, connection), "http://localhost:5173/"
+    )
+
+    assert result["success"] and result["ready_state"] == "interactive"
+    assert browser_tools._describe_open_output(result).endswith("(still loading)")
+
+
+def test_browser_open_same_document_and_new_tab(tmp_path):
+    fragment = _NavigationConnection(["complete"], loader_id=False)
+    result = browser_tools.browser_open(_browser_executor(tmp_path, fragment), "#details")
+    assert result["ready_state"] == "complete"
+
+    tab = _NavigationConnection(["complete"])
+    result = browser_tools.browser_open(
+        _browser_executor(tmp_path, tab), "http://localhost:5173/", new_tab=True
+    )
+    assert result["tab_id"] == "tab-2" and result["ready_state"] == "complete"
+    assert tab.sent[:2] == [
+        ("Target.createTarget", {"url": "about:blank"}),
+        ("select", "tab-2"),
+    ]
 
 
 # ----- apply_edit ----------------------------------------------------------

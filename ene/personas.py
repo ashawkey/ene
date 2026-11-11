@@ -7,6 +7,7 @@ import platform
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from ene.utils.frontmatter import split_frontmatter
@@ -41,6 +42,8 @@ You are running autonomously with no user available to respond.
 _EXEC_MODE_DELEGATION_LIMIT = """## Delegation Limit
 Do not invoke the `subagent` skill, call `run_agent`, or otherwise launch another
 agent. Delegation depth is limited to one."""
+# Skills the delegation limit forbids; autonomous runs do not advertise them.
+_DELEGATION_SKILLS = frozenset({"subagent"})
 
 @dataclass(frozen=True)
 class PersonaContext:
@@ -254,32 +257,43 @@ def render_persona(persona: PersonaInfo, ctx: PersonaContext) -> str:
     expansions = {
         "autonomous-mode": _AUTONOMOUS_MODE if ctx.exec_mode else "",
         "skills": (
-            build_skills_prompt_section(filter_persona_skills(persona, ctx.skills or {}))
+            build_skills_prompt_section(
+                filter_persona_skills(persona, ctx.skills or {}, exec_mode=ctx.exec_mode)
+            )
             if _allows(persona, "load_skill")
             else ""
         ),
         "project-instructions": _build_project_section(ctx.work_dir),
         "current-context": _build_context_section(ctx.work_dir),
     }
-    rendered = []
+    rendered: list[str] = []
     for line in persona.template.splitlines():
         match = _MARKER_RE.fullmatch(line.strip())
-        rendered.append(expansions[match.group(1)] if match else line)
+        if not match:
+            rendered.append(line)
+        elif expansion := expansions[match.group(1)]:
+            rendered.append(expansion)
+        elif rendered and not rendered[-1].strip():
+            # An empty section also drops its separator, leaving no blank gap.
+            rendered.pop()
     if ctx.exec_mode:
         rendered.extend(("", _EXEC_MODE_DELEGATION_LIMIT))
     return "\n".join(rendered).strip()
 
 
 def filter_persona_skills(
-    persona: PersonaInfo, skills: dict[str, dict]
+    persona: PersonaInfo, skills: dict[str, dict], *, exec_mode: bool = False
 ) -> dict[str, dict]:
     """Return skills this persona advertises through ``{{ene:skills}}``.
 
     Omitted skills remain discoverable for explicit ``/skills <name>`` loads;
     this policy only controls progressive-disclosure metadata in the prompt.
+    Autonomous runs omit the delegation skills their prompt forbids.
     """
     selected = {}
     for name, info in skills.items():
+        if exec_mode and name in _DELEGATION_SKILLS:
+            continue
         if info.get("source") == "bundled":
             if persona.bundled_skills is None or name in persona.bundled_skills:
                 selected[name] = info
@@ -325,7 +339,12 @@ def _build_context_section(work_dir: str | None) -> str:
             "\n- Shell: Windows PowerShell (not bash: '&&', '||', 'tail', 'grep', "
             "'ls -l' are unavailable; chain with ';' and use PowerShell cmdlets)"
         )
-    return f"## Current Context\n- Working Directory: {cwd}\n{os_line}{git_info}"
+    return (
+        "## Current Context\n"
+        "Captured at session start and may be out of date.\n"
+        f"- Working Directory: {cwd}\n{os_line}\n"
+        f"- Date: {date.today().isoformat()}{git_info}"
+    )
 
 
 def _get_git_context(cwd: str) -> str:

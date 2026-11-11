@@ -175,6 +175,7 @@ else:
 - Content filtering stops tool execution and automatic continuation.
 - Any final partial text remains in `response`.
 - The run stays open while a background process can still [notify](tools.md#one-shot-runs) the agent, up to an idle `notify_timeout`.
+- The agent cannot launch further agents: the `subagent` skill is not offered.
 
 ## Persistent live sessions
 

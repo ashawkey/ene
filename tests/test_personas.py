@@ -1,5 +1,6 @@
 """Tests for declarative persona parsing, discovery, and rendering."""
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,7 @@ def test_bundled_personas_are_declarative():
         }
     )
     assert personas["orchestrator"].bundled_skills == frozenset(
-        {"subagent", "monitor", "code-review"}
+        {"subagent", "code-review"}
     )
     assert personas["orchestrator"].local_skills is False
     assert "{{ene:autonomous-mode}}" not in personas["orchestrator"].template
@@ -182,6 +183,68 @@ def test_exec_mode_forbids_nested_subagents(tmp_path):
     assert "subagent" not in interactive_prompt
     assert "Do not invoke the `subagent` skill" in exec_prompt
     assert "Delegation depth is limited to one" in exec_prompt
+
+
+def test_exec_mode_omits_delegation_skills(tmp_path):
+    path = _write_persona(
+        tmp_path,
+        "custom",
+        tools="[load_skill]",
+        skills="skills:\n  bundled: all\n  local: false\n",
+        body="{{ene:skills}}",
+    )
+    skills = {
+        "subagent": {"description": "Delegate work", "source": "bundled"},
+        "monitor": {"description": "Monitor jobs", "source": "bundled"},
+    }
+    persona = read_persona(path)
+
+    interactive_prompt = persona.build(PersonaContext(skills=skills))
+    exec_prompt = persona.build(PersonaContext(exec_mode=True, skills=skills))
+
+    assert "**subagent**" in interactive_prompt
+    assert "**subagent**" not in exec_prompt
+    assert "**monitor**" in exec_prompt
+
+
+def test_empty_markers_leave_no_blank_gap(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    path = _write_persona(
+        tmp_path / "personas",
+        "custom",
+        tools="[]",
+        body=(
+            "Intro.\n\n{{ene:autonomous-mode}}\n\n## Rules\n- one\n\n"
+            "{{ene:skills}}\n\n{{ene:project-instructions}}"
+        ),
+    )
+
+    prompt = read_persona(path).build(PersonaContext(work_dir=str(work)))
+
+    assert prompt == "Intro.\n\n## Rules\n- one"
+
+
+def test_bundled_coder_renders_without_blank_gaps(tmp_path):
+    coder = discover_personas(tmp_path)["coder"]
+
+    for exec_mode in (False, True):
+        prompt = coder.build(PersonaContext(exec_mode=exec_mode, work_dir=str(tmp_path)))
+        assert "\n\n\n" not in prompt
+
+
+def test_context_includes_session_start_date(monkeypatch):
+    class _FixedDate:
+        @staticmethod
+        def today():
+            return date(2026, 1, 2)
+
+    monkeypatch.setattr(personas_module, "date", _FixedDate)
+
+    section = personas_module._build_context_section(None)
+
+    assert "Captured at session start" in section
+    assert "- Date: 2026-01-02" in section
 
 
 def test_render_expands_markers_once(tmp_path):

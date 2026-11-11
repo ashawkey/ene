@@ -12,7 +12,7 @@ Run `ene lib` with `exec_command` from the project working directory. Skills are
 1. Determine the resource kind, names, and requested operation. Use `ene lib list [pattern]` when the user is searching or the exact remote name is unknown.
 2. Run the narrowest matching command below. Do not manually edit library Git state or committed `.ene-lib.json` metadata.
 3. Check the command result before continuing. If `ene lib update` reports changes on both sides, do not force either copy immediately. Inspect the local and remote changes, merge both into the project-local resource, and validate it. Ask the user when the intended resolution is unclear.
-4. Report the affected resources and outcome. After an install or update, reload the changed resource in an active ene session.
+4. Report the affected resources and outcome.
 
 ## Commands
 
@@ -40,4 +40,4 @@ Use `ene lib --verbose <command> ...` only when normal output is insufficient to
 - `remove` deletes remote resources; `--local` deletes only project copies.
 - The library repository is configured by `ene_lib` in `~/.ene.yaml` and uses the current Git/SSH authentication environment.
 
-After installing or updating a skill, tell the user to run `/skills reload`; after changing a persona, tell them to run `/persona reload`. Then load an installed skill when it matches the current task.
+After installing or updating a skill, tell the user to run `/skills reload`; after changing a persona, tell them to run `/persona reload`. A newly installed skill cannot be loaded until that reload.

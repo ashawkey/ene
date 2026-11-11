@@ -19,11 +19,13 @@ Parse PDFs into Markdown, structured page-aware JSON, tables, formulas, and imag
 After locating the PDF, run the bundled wrapper directly; it searches `PATH`, `.ene/mineru-venv`, `.venv`, and `venv` for MinerU.
 
 ```bash
-python <skill-dir>/scripts/parse_pdf.py <document.pdf> \
+"$ENE_PYTHON" <skill-dir>/scripts/parse_pdf.py <document.pdf> \
   --output .ene/pdf-cache --backend pipeline
 ```
 
-Resolve `<skill-dir>` to the absolute directory shown when this skill loads. The wrapper reuses valid output unless `--force` is supplied and prints a JSON manifest describing the generated files and validation counts.
+Resolve `<skill-dir>` to the absolute directory shown when this skill loads. `$ENE_PYTHON` is the interpreter running Ene (`& $env:ENE_PYTHON` in PowerShell). The wrapper reuses valid output unless `--force` is supplied and prints a JSON manifest describing the generated files and validation counts.
+
+Parsing can outlast `exec_command`'s 300-second default, especially on CPU or on the first run while MinerU loads its models. Pass a larger `timeout`, or run the wrapper with `start_process` when that tool is available.
 
 Use `pipeline` by default because it supports CPU text, formula, table, and image extraction. Choose another backend only when the task requires it and the environment supports it:
 

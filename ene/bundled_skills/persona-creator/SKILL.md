@@ -27,6 +27,7 @@ tools:
   - read_file
   - grep_files
   - exec_command
+  - load_skill
 skills:
   bundled:
     - code-review
@@ -36,6 +37,7 @@ You are a correctness-first Python reviewer.
 
 Review requested changes without modifying files. Report actionable findings first.
 
+{{ene:skills}}
 {{ene:project-instructions}}
 {{ene:current-context}}
 ```
@@ -51,24 +53,24 @@ Review requested changes without modifying files. Report actionable findings fir
 Available whole-line markers are:
 
 - `{{ene:autonomous-mode}}`: autonomous execution rules; empty in interactive mode.
-- `{{ene:skills}}`: skills selected by the persona's `skills` policy when `load_skill` is allowed.
+- `{{ene:skills}}`: skills selected by the persona's `skills` policy when `load_skill` is allowed; autonomous runs omit `subagent`.
 - `{{ene:project-instructions}}`: the working directory's `AGENTS.md`, when present.
-- `{{ene:current-context}}`: working directory, operating system, and Git branch/status.
+- `{{ene:current-context}}`: working directory, operating system, date, and Git branch/status, captured at session start.
 
-Each marker may appear at most once and must occupy its own line. There is no persona inheritance or arbitrary templating. Write all static safety, workflow, output, and style requirements explicitly so the file remains understandable before rendering.
+Each marker may appear at most once and must occupy its own line. A marker that expands to nothing also removes the blank line before it. There is no persona inheritance or arbitrary templating. Write all static safety, workflow, output, and style requirements explicitly so the file remains understandable before rendering.
 
 ## Validate
 
-Run from the project root:
+Run from the project root with `$ENE_PYTHON`, the interpreter running Ene (`& $env:ENE_PYTHON` in PowerShell):
 
 ```bash
-python -c "from ene.personas import read_persona; print(read_persona(r'.ene/personas/<name>'))"
+"$ENE_PYTHON" -c "from ene.personas import read_persona; print(read_persona(r'.ene/personas/<name>'))"
 ```
 
 If runtime marker behavior matters, also render it with a representative context:
 
 ```bash
-python -c "from ene.personas import PersonaContext, read_persona; p=read_persona(r'.ene/personas/<name>'); print(p.build(PersonaContext(work_dir='.')))"
+"$ENE_PYTHON" -c "from ene.personas import PersonaContext, read_persona; p=read_persona(r'.ene/personas/<name>'); print(p.build(PersonaContext(work_dir='.')))"
 ```
 
 Report the created path and validation run. Tell the user to run `/persona reload` in an active ene session; changing the active persona restarts the conversation.

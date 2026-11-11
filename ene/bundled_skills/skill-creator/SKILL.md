@@ -33,9 +33,12 @@ Call out any material assumption that remains unverified.
 
 ### 3. Write a focused skill
 
-Create the skill as project-local state under `.ene/skills/<skill-name>/`. 
-Use the `ene lib` library workflow to share or synchronize skills: `ene lib upload <skill-name>` publishes a local skill, `ene lib install <skill-name>` installs it in another project, and `ene lib update <skill-name>` synchronizes an installed copy. 
-Do not try to track the skill in git.
+Create the skill under `.ene/skills/<skill-name>/` in the project, or under
+`~/.ene/skills/<skill-name>/` when the user wants it in every project. Ene keeps
+`.ene/` out of Git, so do not try to track the skill there. Share or synchronize
+it with the `ene lib` workflow instead: `ene lib upload <skill-name>` publishes a
+local skill, `ene lib install <skill-name>` installs it in another project, and
+`ene lib update <skill-name>` synchronizes an installed copy.
 
 Choose one kebab-case name and one coherent responsibility. Read
 `references/skill-format.md` for the required format. Start from
@@ -74,12 +77,13 @@ For native tools, read `references/native-tools.md` first.
 Run:
 
 ```bash
-python scripts/validate_skill.py <path-to-skill>
+"$ENE_PYTHON" scripts/validate_skill.py <path-to-skill>
 ```
 
 Resolve the script against the absolute skill-creator directory shown when this
-skill loaded. Fix reported errors. Run focused checks for any bundled scripts or
-native tools.
+skill loaded. `$ENE_PYTHON` is the interpreter running Ene, which the validator
+imports (`& $env:ENE_PYTHON` in PowerShell). Fix reported errors. Run focused
+checks for any bundled scripts or native tools.
 
 The validator checks structure and loadability. It does not prove that the
 instructions are factually correct or useful.

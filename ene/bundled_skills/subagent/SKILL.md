@@ -41,30 +41,30 @@ lifetime: you cannot launch siblings, answer the user, or react to other
 notifications until it returns. A managed child runs alongside you, and the user
 can follow its conversation live from `/ps` or the Web UI's background tasks.
 
-1. Load the `monitor` skill.
-2. For each child, write its complete prompt to a unique, descriptively named
+1. For each child, write its complete prompt to a unique, descriptively named
    file under `.ene/scratch/subagents/` and pass it with `--task-file`, even when
    the prompt is short. Never place credentials in a delegated prompt.
-3. Resolve `scripts/run_subagent.py` against the absolute skill directory shown
+2. Resolve `scripts/run_subagent.py` against the absolute skill directory shown
    when this skill was loaded, and start it with `start_process` in the intended
-   project `cwd`:
+   project `cwd`. Run it with `$ENE_PYTHON`, the interpreter running Ene
+   (`& $env:ENE_PYTHON` in PowerShell), because the runner imports Ene:
 
    ```bash
-   python <skill-dir>/scripts/run_subagent.py --task-file .ene/scratch/subagents/parser-root-cause.md
+   "$ENE_PYTHON" <skill-dir>/scripts/run_subagent.py --task-file .ene/scratch/subagents/parser-root-cause.md
    ```
 
    Give each child a concise, distinct `label` describing the delegated task, so
    it is identifiable in `/ps` and the status bar. Keep the default
    `notify=exit`. Retain each process ID, log path, and task-file path. If
    `start_process` itself fails, do not count that child as active.
-4. Start every independent child before waiting, then end your turn with a short
+3. Start every independent child before waiting, then end your turn with a short
    status. Each child's exit arrives as an inbox notification that starts your
    next round, and you stay responsive to the user meanwhile.
-5. When a child exits, inspect that process with a bounded log tail and parse its
+4. When a child exits, inspect that process with a bounded log tail and parse its
    final `ENE_SUBAGENT_RESULT=` line. Read the log file directly only if needed.
    Remove its task file once the result is read, and end your turn again while
    other children are still running.
-6. If abandoning a child because of a deadline, failure, or user request, call
+5. If abandoning a child because of a deadline, failure, or user request, call
    `stop_process` for it, confirm it stopped, then remove its task file.
 
 Do not poll with `inspect_processes`, do not start children with `notify=none`,

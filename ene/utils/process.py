@@ -100,9 +100,12 @@ def agent_process_env(
     locale-based output decoding. When a model identity is known it is stamped
     into ``ENE_MODEL_ALIAS`` / ``ENE_REASONING_EFFORT``, which the subagent
     runner inherits so a delegated agent runs with the same model and effort as
-    the parent session.
+    the parent session. ``ENE_PYTHON`` names the interpreter running ene: a
+    ``python`` found on ``PATH`` may lack ene (pipx, uv tool, or an inactive
+    venv), so bundled skill scripts that import it run with this one.
     """
     env = windows_utf8_process_env() if sys.platform == "win32" else os.environ.copy()
+    env["ENE_PYTHON"] = sys.executable
     # Do not accidentally inherit an outer agent's identity when this executor
     # has no owning model (or intentionally uses a different partial identity).
     env.pop("ENE_MODEL_ALIAS", None)

@@ -13,6 +13,7 @@ one-shot commands.
 | `schema` | yes | OpenAI function schema. |
 | `run` | yes | Callable invoked as `run(executor, **arguments)`. |
 | `describe` | no | Callable receiving the argument dict and returning `ToolCallDescription`. |
+| `describe_output` | no | Callable receiving a successful result dict and returning a one-line summary string. |
 
 ```python
 from ene.tools import ToolCallDescription

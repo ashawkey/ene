@@ -11,7 +11,7 @@ This is repository-context synthesis, not a general code review or a global brev
 
 ## Workflow
 
-1. Establish whether the user wants creation, refinement, validation, or recommendations only. Inspect Git status and the existing `AGENTS.md` diff before editing so user changes are preserved. Ene currently loads only `<work_dir>/AGENTS.md`; do not create nested instruction files unless the user explicitly targets a harness that supports them.
+1. Establish whether the user wants creation, refinement, validation, or recommendations only. Inspect Git status and the existing `AGENTS.md` diff before editing so user changes are preserved. Ene loads `<work_dir>/AGENTS.md` unless `<work_dir>/.ene/AGENTS.md` exists; that local override replaces the root file and includes it only through a line containing exactly `@AGENTS.md`. Edit the root file, and tell the user when an override keeps the edits from reaching Ene. Do not create nested instruction files unless the user explicitly targets a harness that supports them.
 2. Gather evidence with focused reads and searches. Start with package/build manifests, lockfiles, CI workflows, test configuration, top-level source/test layout, README or contributor docs, ignore rules, and the implementation of any claimed non-obvious contract. Prefer manifests and code over prose when they disagree.
 3. Extract only information that is repository-specific, verified, durable, and likely to change an agent's implementation or verification choices:
    - supported runtimes, package managers, and installation modes;

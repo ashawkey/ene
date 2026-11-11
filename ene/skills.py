@@ -233,7 +233,8 @@ def build_skills_prompt_section(skills: dict[str, dict]) -> str:
     """Build a concise skills registry section for the system prompt.
 
     Advertises each skill's name + description (progressive disclosure stage 1)
-    and how to activate it via the load_skill tool.
+    and how to activate it via the load_skill tool. The skill-creator rule is
+    included only when skill-creator itself is advertised.
     """
     active_skills = {
         name: info for name, info in skills.items() if info.get("active", True)
@@ -244,14 +245,17 @@ def build_skills_prompt_section(skills: dict[str, dict]) -> str:
     lines = [
         "## Skills",
         "",
-        "Before acting, match the request against the skills below and follow matching",
-        "skills' instructions. Reuse full instructions already in context; call",
-        "**load_skill** only when they are missing or incomplete (for example, after",
-        "context compaction). Do not reload a skill merely because it matches a new turn.",
-        "Always apply **skill-creator** before creating or modifying a skill, using",
-        "the same loading rule. Resolve referenced",
-        "files (for example, `references/...` or `scripts/...`) relative to the skill",
-        "directory and access them with the standard file or execution tools.",
+        "Before acting, check whether a skill below matches the request and follow its",
+        "instructions. Load them with **load_skill** unless they are already fully in",
+        "context; compaction can remove them.",
+    ]
+    if "skill-creator" in active_skills:
+        lines.append(
+            "Apply **skill-creator** the same way before creating or modifying any skill."
+        )
+    lines += [
+        "Resolve relative paths such as `references/...` or `scripts/...` against the",
+        "skill directory.",
         "",
     ]
 
@@ -273,9 +277,9 @@ def load_skill_tools(skill_dir: str | Path) -> list[dict[str, Any]]:
 
     A skill may ship a ``tools.py`` at its root exposing a module-level
     ``TOOLS`` list. Each entry must provide an OpenAI function ``schema``, a
-    ``run`` callable (invoked as ``run(executor, **arguments)``), plus an
-    optional ``describe`` callable. A descriptor owns that skill tool's
-    semantic UI label.
+    ``run`` callable (invoked as ``run(executor, **arguments)``), plus optional
+    ``describe`` and ``describe_output`` callables, which own that skill tool's
+    semantic UI call label and result summary.
 
     Since these tools become callable in-process, this is only appropriate for
     trusted (user-authored and bundled) skills. The module is imported under a

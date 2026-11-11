@@ -1,10 +1,12 @@
 ---
 name: browser
-description: Use for requested live Chrome or Chromium browser interaction through CDP.
+description: Operate the user's own running Chrome or Chromium through CDP when they ask, for example to use a logged-in session. Verify web changes with web-verify instead.
 compatibility: Requires a Chromium-based browser with remote debugging enabled and the websockets package provided by ene.
 ---
 
 # Browser Control
+
+Use this skill when the user asks you to operate their own browser, for example with a logged-in session, their profile, or extensions. Every step costs a model round trip and acts on their real tabs, so verify web changes with `web-verify`; it also attaches these tools to an isolated headless instance for multi-step checks.
 
 Loading this skill enables:
 
@@ -24,17 +26,17 @@ Loading this skill enables:
 2. Call `browser_status`. It uses `ENE_BROWSER_CDP_URL` when set, otherwise checks Chrome's `DevToolsActivePort` file and `http://127.0.0.1:9222`.
 3. If discovery fails, ask the user for the HTTP or WebSocket CDP endpoint and pass it as `cdp_url` to `browser_status`.
 
-The connection and active-tab selection persist on the Ene tool executor across calls. Never launch, restart, or kill the user's browser. `browser_stop` closes only Ene's CDP connection.
+The connection and active-tab selection persist on the Ene tool executor across calls. Never launch, restart, or kill the user's browser; an isolated instance you started for `web-verify` is yours to stop. `browser_stop` closes only Ene's CDP connection.
 
 ## Operate
 
-1. Call `browser_observe` before interacting. Element indexes belong to that observation and may become stale after navigation or dynamic page updates.
+1. Call `browser_observe` before interacting. Element indexes belong to that observation and may become stale after navigation or dynamic page updates. `browser_open` waits up to 15 seconds for the page to load; if its `ready_state` is not `complete`, the page may still change after you observe it.
 2. Use `browser_click`, `browser_type`, or `browser_scroll` with an observed index.
 3. Observe again after every action that can materially change the page. Do not reuse an index after navigation.
 4. Use `browser_extract` for larger text reads; use `browser_observe` for choosing interactive elements.
 5. Use `browser_tabs(action="list")` only when tab details beyond `browser_status` are needed. Switch explicitly if the intended tab is not current.
 
-The tools interact with the live visible browser. Treat clicks, typing, navigation, and tab closure as real user actions. Before consequential actions such as purchases, submissions, messages, account changes, or destructive operations, follow the user's authorization and Ene's permission policy.
+The tools interact with the live visible browser. Treat clicks, typing, navigation, and tab closure as real user actions. Before consequential actions such as purchases, submissions, messages, account changes, or destructive operations, ask the user unless they clearly authorized that action.
 
 ## Limitations
 
