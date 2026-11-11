@@ -19,6 +19,8 @@ import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'r
 import { stripAnsi } from '../lib/ansi'
 import { errorMessage, stopProcess } from '../lib/api'
 import { bytes, compactNumber, duration } from '../lib/format'
+import type { JsonToken } from '../lib/jsonLine'
+import { jsonLineTokens } from '../lib/jsonLine'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 import type { LogWindow, SubagentResult } from '../lib/processOutput'
 import { logLines, logStart, logText, useProcessEvents, useProcessLog } from '../lib/processOutput'
@@ -251,8 +253,54 @@ function ChatView({
   )
 }
 
+const JSON_CLASSES: Record<JsonToken['kind'], string> = {
+  key: 'hljs-attr', string: 'hljs-string', number: 'hljs-number', literal: 'hljs-literal', punct: 'json-punct', plain: '',
+}
+
+function JsonLine({ tokens }: { tokens: JsonToken[] }) {
+  return (
+    <>
+      {tokens.map((token, index) =>
+        JSON_CLASSES[token.kind] ? <span className={JSON_CLASSES[token.kind]} key={index}>{token.text}</span> : token.text,
+      )}
+    </>
+  )
+}
+
+type LogSegment = { json: false; text: string } | { json: true; tokens: JsonToken[] }
+
+/** Group a block's lines into runs of plain (ANSI) text and single JSON records. */
+export function logSegments(text: string): LogSegment[] {
+  const segments: LogSegment[] = []
+  let plain: string[] = []
+  const flush = (more: boolean) => {
+    if (plain.length) segments.push({ json: false, text: plain.join('\n') + (more ? '\n' : '') })
+    plain = []
+  }
+  const lines = text.split('\n')
+  lines.forEach((line, index) => {
+    const tokens = jsonLineTokens(line)
+    const more = index < lines.length - 1
+    if (!tokens) {
+      plain.push(line)
+      return
+    }
+    flush(true)
+    segments.push({ json: true, tokens: more ? [...tokens, { kind: 'plain', text: '\n' }] : tokens })
+  })
+  flush(false)
+  return segments
+}
+
 const LogBlock = memo(function LogBlock({ text }: { text: string }) {
-  return <pre className="log-block ansi"><AnsiText text={text} /></pre>
+  const segments = useMemo(() => logSegments(text), [text])
+  return (
+    <pre className="log-block ansi">
+      {segments.map((segment, index) =>
+        segment.json ? <JsonLine tokens={segment.tokens} key={index} /> : <AnsiText text={segment.text} key={index} />,
+      )}
+    </pre>
+  )
 })
 
 function LogView({

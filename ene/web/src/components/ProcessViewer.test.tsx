@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { ProcessCommand } from './ProcessViewer'
+import { logSegments, ProcessCommand } from './ProcessViewer'
 
 describe('ProcessCommand', () => {
   it('shows one line folded and the full command unfolded', () => {
@@ -13,5 +13,15 @@ describe('ProcessCommand', () => {
     fireEvent.click(screen.getByRole('button', { expanded: false }))
     expect(container.querySelector('.proc-command-full')?.textContent).toBe(`$ ${command}`)
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeTruthy()
+  })
+})
+
+describe('logSegments', () => {
+  it('splits JSON records from plain runs and keeps the exact text', () => {
+    const text = 'start\nmore\n{"a": 1}\n{"b": [true]}\nend'
+    const segments = logSegments(text)
+    expect(segments.map((segment) => segment.json)).toEqual([false, true, true, false])
+    const joined = segments.map((segment) => segment.json ? segment.tokens.map((token) => token.text).join('') : segment.text).join('')
+    expect(joined).toBe(text)
   })
 })

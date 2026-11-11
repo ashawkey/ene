@@ -134,6 +134,7 @@ The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal,
 Open a process from **Processes** or from the link under its `start_process` call in the conversation.
 
 - **Log:** the full log, tail first, following live output (including a progress line still being redrawn). Load earlier output from the top, filter lines, toggle wrapping, or copy the loaded text.
+- **JSON lines:** lines holding a JSON object or array (JSONL output, optionally after a prefix such as a timestamp) are syntax-highlighted.
 - **Conversation:** a [subagent](bundled-skills.md) opens as a read-only conversation: its task, replies, tool calls, and final result. Switch to **Log** for the raw output.
 - Output follows live while scrolled to the bottom. The viewer fetches only new bytes, when the pushed process status reports growth; there is no polling.
 - The last 20 exited processes stay listed. Reading requires the session to be attached here.

@@ -1202,6 +1202,7 @@ button.step-head:hover { background: var(--hover); }
 .log-filter:focus-within { border-color: var(--accent); }
 .log-scroller { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 0; background: var(--code-bg); }
 .log-block { margin: 0; padding: 0 16px; font: 12px/1.55 var(--mono); white-space: pre; content-visibility: auto; contain-intrinsic-size: auto 2400px; }
+.log-block .json-punct { color: var(--text-3); }
 .log-scroller.wrap .log-block { white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-earlier { display: flex; align-items: center; justify-content: center; gap: 6px; width: calc(100% - 32px); margin: 0 16px 10px; padding: 6px; border: 1px dashed var(--line); border-radius: 9px; background: transparent; color: var(--text-2); font-size: 12.5px; }
 .log-earlier:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
