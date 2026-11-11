@@ -973,6 +973,12 @@ def test_attached_session_reports_done_when_idle():
 
     session.ingest({"type": "pending_set", "data": {"id": "p1", "text": "queued"}})
     assert session.summary()["state"] == "waiting"
+    assert session.pending["steer"] is True and session.pending["ready_at"] is None
+    session.ingest({
+        "type": "pending_set",
+        "data": {"id": "p1", "text": "queued", "steer": False, "ready_at": 123.0},
+    })
+    assert session.pending["steer"] is False and session.pending["ready_at"] == 123.0
 
     session.ingest({"type": "pending_cleared", "data": {"id": "p1"}})
     assert session.summary()["state"] == "done"

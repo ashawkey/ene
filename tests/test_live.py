@@ -629,6 +629,7 @@ def test_live_worker_status_includes_pending_submission_and_operation_id():
         source="terminal",
         action_id=None,
         steer=False,
+        ready_at_wall=None,
         appendable=True,
     ))
     worker.prompts = SimpleNamespace(active=None)
@@ -645,6 +646,7 @@ def test_live_worker_status_includes_pending_submission_and_operation_id():
         "source": "terminal",
         "action_id": None,
         "steer": False,
+        "ready_at": None,
         "appendable": True,
     }
 

@@ -198,6 +198,20 @@ def _registry_digest(records: list[dict]) -> list[tuple]:
     ]
 
 
+def _pending_summary(data: dict) -> dict:
+    """The queued-message fields the browser needs, from a status or event."""
+    ready_at = data.get("ready_at")
+    return {
+        "id": data.get("id", ""),
+        "text": data.get("text", ""),
+        "source": data.get("source", ""),
+        "action_id": data.get("action_id"),
+        "appendable": bool(data.get("appendable")),
+        "steer": data.get("steer") is not False,
+        "ready_at": ready_at if isinstance(ready_at, (int, float)) else None,
+    }
+
+
 def _process_snapshot(value: object) -> dict:
     """Normalize structured process activity received from a live worker."""
     if not isinstance(value, dict):
@@ -381,17 +395,7 @@ class RemoteSession:
             else None
         )
         pending = status.get("pending")
-        self.pending = (
-            {
-                "id": pending.get("id", ""),
-                "text": pending.get("text", ""),
-                "source": pending.get("source", ""),
-                "action_id": pending.get("action_id"),
-                "appendable": bool(pending.get("appendable")),
-            }
-            if isinstance(pending, dict)
-            else None
-        )
+        self.pending = _pending_summary(pending) if isinstance(pending, dict) else None
         preview = status.get("last_user_message")
         if isinstance(preview, str) and preview:
             self.meta["preview"] = preview[:PREVIEW_LIMIT]
@@ -418,13 +422,7 @@ class RemoteSession:
         elif etype == "prompt_resolved":
             self.prompt = None
         elif etype == "pending_set":
-            self.pending = {
-                "id": data.get("id", ""),
-                "text": data.get("text", ""),
-                "source": data.get("source", ""),
-                "action_id": data.get("action_id"),
-                "appendable": bool(data.get("appendable")),
-            }
+            self.pending = _pending_summary(data)
         elif etype == "pending_cleared":
             if self.pending is not None and self.pending["id"] == data.get("id"):
                 self.pending = None

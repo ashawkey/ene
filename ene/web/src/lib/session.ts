@@ -550,6 +550,8 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
         source: str(data.source),
         action_id: actionId,
         appendable: data.appendable === true,
+        steer: data.steer !== false,
+        ready_at: optionalNum(data.ready_at),
       }
       if (actionId) signals.push({ kind: 'ack', actionId })
       break

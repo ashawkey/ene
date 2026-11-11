@@ -103,7 +103,7 @@ class AgentCommandsMixin:
         "effort": "Show or set reasoning effort (/effort <level>)",
         "skills": "List skills; /skills <name> to load one, /skills reload to re-scan",
         "persona": "List/switch personas by name or prefix; /persona reload to re-scan",
-        "wait": "Send a prompt after a delay (/wait <30s|5m|1h> <prompt>)",
+        "wait": "Send a prompt after the current round, optionally delayed (/wait [30s|5m|1h] <prompt>)",
         "rewind": "Return to before a user prompt, edit it, then branch",
         "fork": "Fork from before a user prompt into a new session (/fork [name])",
         "resume": "Save current, then resume a previous session (/resume [session_id])",

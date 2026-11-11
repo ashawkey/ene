@@ -32,6 +32,10 @@ export type PendingMessage = {
   source: string
   action_id?: string | null
   appendable?: boolean
+  /** False for `/wait` messages, which run after the current round instead of joining it. */
+  steer?: boolean
+  /** Epoch seconds when a delayed `/wait` message becomes ready. */
+  ready_at?: number | null
 }
 
 export type ProcessActivity = {

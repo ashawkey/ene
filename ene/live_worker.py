@@ -395,6 +395,7 @@ class Worker:
                 "source": submission.source,
                 "action_id": submission.action_id,
                 "steer": submission.steer,
+                "ready_at": submission.ready_at_wall,
                 "appendable": submission.appendable,
             }
         prompt = self.prompts.active

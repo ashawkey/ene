@@ -138,7 +138,7 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 | `/skills` | List installed skills; `/skills reload` to re-scan; `/skills <name>` to load one |
 | `/<skill-name> [task]` | Invoke a skill for an optional task; without one, run its declared default or ask what to do |
 | `/persona` | List personas; `/persona <name>` to switch (restarts the conversation) |
-| `/wait <duration> <prompt>` | Queue a prompt for later using seconds, minutes, or hours, e.g. `/wait 1h check whether the other agent finished` |
+| `/wait [duration] <prompt>` | Queue a prompt to run after the current round instead of joining it; an optional delay in seconds, minutes, or hours holds it longer, e.g. `/wait 1h check whether the other agent finished` |
 | `/detach` | Detach the terminal without stopping the live session (also Ctrl+D) |
 | `/switch` | Switch live sessions (also Ctrl+S); Cancel or Ctrl+C keeps the current attachment |
 | `/new [name]` | Detach and start a new live session, optionally with a name |
@@ -212,7 +212,8 @@ Prefix a command with `!` to run it directly without involving the model:
 
 ## Working while a round is active
 
-- Submit a queued message, shown as `pending: … · runs next`; it starts after the current round.
+- Submit a queued message, shown as `pending: … · runs next`; it joins the current round at its next step.
+- Use `/wait <prompt>` to run it after the current round instead.
 - Further messages append to the queued one, from the terminal or the Web UI. Commands, `!` shell input, and `/wait` messages are never combined; they wait until the queue is empty.
 - Press `Up` at an empty prompt to edit the queued message.
 - [Inbox notifications](tools.md#inbox-notifications) queue separately and run after your messages.

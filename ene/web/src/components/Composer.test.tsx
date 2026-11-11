@@ -3,10 +3,10 @@ import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { pathCompletions } from '../lib/api'
+import { pathCompletions, sessionOptions } from '../lib/api'
 import { Composer } from './Composer'
 
-vi.mock('../lib/api', () => ({ pathCompletions: vi.fn() }))
+vi.mock('../lib/api', () => ({ pathCompletions: vi.fn(), sessionOptions: vi.fn() }))
 
 function Input(props: Partial<ComponentProps<typeof Composer>>) {
   const [draft, setDraft] = useState('')
@@ -30,6 +30,9 @@ function Input(props: Partial<ComponentProps<typeof Composer>>) {
       runningProcesses={0}
       onProcesses={() => {}}
       focusSignal={0}
+      cwd="/work"
+      model="fast"
+      onModel={() => {}}
       {...props}
     />
   )
@@ -38,6 +41,8 @@ function Input(props: Partial<ComponentProps<typeof Composer>>) {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.mocked(pathCompletions).mockResolvedValue(['@ene/'])
+  // Model choices load only in the picker tests, so other updates stay inside act().
+  vi.mocked(sessionOptions).mockReturnValue(new Promise(() => {}))
 })
 
 afterEach(() => {
@@ -92,5 +97,50 @@ describe('composer status strip', () => {
     const indicator = { label: 'Working', input_tokens: 10, output_tokens: 2, tps: 42.5, receivedAt: Date.now() }
     render(<Input busy indicator={indicator} operationSince={Date.now() / 1000} />)
     expect(screen.getByText('~42.5 tok/s')).toBeTruthy()
+  })
+})
+
+describe('queued message chip', () => {
+  it('marks a plain queued message as joining the round', () => {
+    const { container } = render(<Input pending={{ id: 'p', text: 'hi', source: 'web', steer: true }} />)
+    expect(container.querySelector('.queue-chip.steering')).not.toBeNull()
+    expect(container.querySelector('.queue-delay')).toBeNull()
+  })
+
+  it('marks a /wait message and shows its remaining delay', () => {
+    vi.setSystemTime(new Date(1_000_000))
+    const { container, rerender } = render(
+      <Input pending={{ id: 'p', text: 'later', source: 'web', steer: false, ready_at: 1000 + 90 }} />,
+    )
+    expect(container.querySelector('.queue-chip.waiting')).not.toBeNull()
+    expect(screen.getByText('(1m 30s)')).toBeTruthy()
+    rerender(<Input pending={{ id: 'p', text: 'later', source: 'web', steer: false, ready_at: null }} />)
+    expect(container.querySelector('.queue-chip.waiting')).not.toBeNull()
+    expect(container.querySelector('.queue-delay')).toBeNull()
+  })
+})
+
+describe('model picker', () => {
+  beforeEach(() => {
+    vi.mocked(sessionOptions).mockResolvedValue({ models: ['fast', 'smart'], default_model: 'fast', personas: [], reasoning_efforts: [] })
+  })
+
+  it('switches models through the select', async () => {
+    const onModel = vi.fn()
+    render(<Input onModel={onModel} modelDetail="openai/gpt-fast" />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const select = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement
+    expect(select.value).toBe('fast')
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(['fast', 'smart'])
+    fireEvent.change(select, { target: { value: 'smart' } })
+    expect(onModel).toHaveBeenCalledWith('smart')
+  })
+
+  it('keeps an unlisted current model and locks during a round', async () => {
+    render(<Input model="custom" busy />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const select = screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(['custom', 'fast', 'smart'])
+    expect(select.disabled).toBe(true)
   })
 })

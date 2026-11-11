@@ -1,10 +1,13 @@
 import {
   ArrowUp,
   AtSign,
+  ChevronDown,
   Clock,
   CornerDownLeft,
+  Cpu,
   FileText,
   Folder,
+  ListEnd,
   ListPlus,
   SquareSlash,
   Square,
@@ -13,7 +16,7 @@ import {
 import type { KeyboardEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { pathCompletions } from '../lib/api'
+import { pathCompletions, sessionOptions } from '../lib/api'
 import { compactNumber, duration, tokenRate } from '../lib/format'
 import type { LiveIndicator } from '../lib/session'
 import type { PendingMessage } from '../lib/protocol'
@@ -49,6 +52,11 @@ export function Composer({
   runningProcesses,
   onProcesses,
   focusSignal,
+  cwd,
+  model,
+  modelDetail,
+  modelIcon,
+  onModel,
 }: {
   sessionId: string
   draft: string
@@ -69,6 +77,15 @@ export function Composer({
   runningProcesses: number
   onProcesses: () => void
   focusSignal: number
+  /** Session workspace, for listing configured models. */
+  cwd: string
+  /** Current model alias. */
+  model: string
+  /** Resolved `provider/model`, shown as the picker's tooltip. */
+  modelDetail?: string
+  modelIcon?: string
+  /** Switch models; same as `/model <alias>`. */
+  onModel: (alias: string) => void
 }) {
   const field = useRef<HTMLTextAreaElement>(null)
   const [cursor, setCursor] = useState(draft.length)
@@ -294,18 +311,12 @@ export function Composer({
             </div>
           ))}
           {pending ? (
-            <div className="queue-chip">
-              <Clock size={13} />
-              <span className="clamp" data-tip="Queued — runs after the current round">{pending.text}</span>
-              <IconButton
-                icon={Undo2}
-                size="sm"
-                label="Edit queued message"
-                busy={withdrawing}
-                disabled={!connected || withdrawing || hasText}
-                onClick={onWithdraw}
-              />
-            </div>
+            <PendingChip
+              pending={pending}
+              withdrawing={withdrawing}
+              canWithdraw={connected && !withdrawing && !hasText}
+              onWithdraw={onWithdraw}
+            />
           ) : null}
         </div>
       ) : null}
@@ -360,6 +371,14 @@ export function Composer({
           <IconButton icon={SquareSlash} label="Commands" size="sm" onClick={() => insertToken('/')} />
           <IconButton icon={AtSign} label="Mention a file" size="sm" onClick={() => insertToken('@')} />
           <span className="grow" />
+          <ModelPicker
+            cwd={cwd}
+            model={model}
+            detail={modelDetail}
+            icon={modelIcon}
+            disabled={!connected || busy}
+            onModel={onModel}
+          />
           {showStop ? (
             <IconButton icon={Square} label="Stop (Esc)" tone="danger" className="send" disabled={!connected} onClick={onCancel} />
           ) : (
@@ -421,5 +440,99 @@ function StatusStrip({
         </button>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * The queued message. A plain message (clock) joins the running round at its
+ * next step; a `/wait` message (list-end) waits for the round to finish, plus
+ * any remaining delay, shown in parentheses.
+ */
+function PendingChip({
+  pending,
+  withdrawing,
+  canWithdraw,
+  onWithdraw,
+}: {
+  pending: PendingMessage
+  withdrawing: boolean
+  canWithdraw: boolean
+  onWithdraw: () => void
+}) {
+  const waits = pending.steer === false
+  const readyAt = pending.ready_at ?? null
+  const now = useNow(readyAt !== null)
+  const remaining = readyAt === null ? 0 : readyAt - now / 1000
+  const delay = remaining > 0 ? duration(Math.ceil(remaining)) : null
+  const tip = waits
+    ? delay
+      ? `Waiting — runs after the current round, in ${delay} at the earliest`
+      : 'Waiting — runs after the current round'
+    : 'Queued — joins the current round at its next step'
+  return (
+    <div className={`queue-chip ${waits ? 'waiting' : 'steering'}`}>
+      {waits ? <ListEnd size={13} aria-label="Waits for the round" /> : <Clock size={13} aria-label="Joins the round" />}
+      <span className="clamp" data-tip={tip}>{pending.text}</span>
+      {delay ? <span className="queue-delay">({delay})</span> : null}
+      <IconButton
+        icon={Undo2}
+        size="sm"
+        label="Edit queued message"
+        busy={withdrawing}
+        disabled={!canWithdraw}
+        onClick={onWithdraw}
+      />
+    </div>
+  )
+}
+
+/**
+ * The session's model, as a compact select. Choosing another configured
+ * model sends `/model <alias>`; switching is unavailable mid-round.
+ */
+function ModelPicker({
+  cwd,
+  model,
+  detail,
+  icon,
+  disabled,
+  onModel,
+}: {
+  cwd: string
+  model: string
+  detail?: string
+  icon?: string
+  disabled: boolean
+  onModel: (alias: string) => void
+}) {
+  const [models, setModels] = useState<string[]>([])
+  const load = useCallback(() => {
+    sessionOptions(cwd).then((options) => setModels(options.models), () => {})
+  }, [cwd])
+  useEffect(load, [load])
+
+  const choices = model && !models.includes(model) ? [model, ...models] : models
+  if (!choices.length) return null
+  const tip = disabled
+    ? `${detail || model} — switch models between rounds`
+    : `${detail || model} — switch model`
+  return (
+    <label className={`model-picker ${disabled ? 'disabled' : ''}`} data-tip={tip}>
+      {icon ? <span className="model-icon">{icon}</span> : <Cpu size={13} />}
+      <span className="clamp">{model || 'model'}</span>
+      <ChevronDown size={12} className="model-caret" />
+      <select
+        value={model}
+        aria-label="Model"
+        disabled={disabled}
+        onFocus={load}
+        onChange={(event) => {
+          const next = event.target.value
+          if (next && next !== model) onModel(next)
+        }}
+      >
+        {choices.map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    </label>
   )
 }

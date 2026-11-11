@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Cpu, Folder, GitBranch, PanelLeft, Pencil, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Folder, GitBranch, PanelLeft, Pencil, PanelRightClose, PanelRightOpen, Search, Unlink, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { gitBranch } from '../lib/api'
@@ -140,7 +140,6 @@ export function SessionPane({
   }, [view.context])
 
   const title = sessionTitle(summary)
-  const model = view.context?.model || summary.model
 
   return (
     <SessionIdContext.Provider value={summary.id}>
@@ -150,25 +149,22 @@ export function SessionPane({
         <header className="pane-header glass">
           <IconButton icon={PanelLeft} label="Sessions" className="menu-btn" onClick={onMenu} />
           <div className="pane-title">
-            <div className="pane-name">
-              <StateIcon state={busy ? 'working' : summary.state} />
-              <SessionName
-                name={summary.name}
-                fallback={title}
-                disabled={!connected}
-                onRename={(name) => session.command(`/name ${name}`)}
-              />
-            </div>
+            <StateIcon state={busy ? 'working' : summary.state} />
+            <SessionName
+              name={summary.name}
+              fallback={title}
+              disabled={!connected}
+              onRename={(name) => session.command(`/name ${name}`)}
+            />
             <div className="pane-chips">
               <button type="button" className="chip" onClick={() => onInspector('files')} data-tip={summary.cwd}>
-                <Folder size={12} />{basename(summary.cwd)}
+                <Folder size={12} /><span className="clamp">{basename(summary.cwd)}</span>
               </button>
               {branch ? (
                 <button type="button" className="chip chip-branch" onClick={() => onInspector('files')} data-tip={branch.detached ? 'Detached HEAD' : 'Git branch'}>
                   <GitBranch size={12} /><span className="clamp">{branch.branch}</span>
                 </button>
               ) : null}
-              {model ? <span className="chip chip-model" data-tip="Model">{view.context?.model_icon ? <span>{view.context.model_icon}</span> : <Cpu size={12} />}{model}</span> : null}
             </div>
           </div>
           <span className="grow" />
@@ -254,6 +250,11 @@ export function SessionPane({
             runningProcesses={view.processes.running}
             onProcesses={() => onInspector('tasks')}
             focusSignal={focusSignal}
+            cwd={summary.cwd}
+            model={summary.model}
+            modelDetail={view.context?.model}
+            modelIcon={view.context?.model_icon}
+            onModel={(alias) => session.command(`/model ${alias}`)}
           />
         </div>
       </div>

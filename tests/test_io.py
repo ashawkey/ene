@@ -98,13 +98,17 @@ def test_input_broker_rejects_oversized_combined_message():
         ("/wait 30s check status", 30, "check status"),
         ("/WAIT 2min do it", 120, "do it"),
         ("/wait 1.5hours finish task", 5400, "finish task"),
+        ("/wait check status", 0, "check status"),
+        ("/wait  run tests\nthen report", 0, "run tests\nthen report"),
     ],
 )
 def test_parse_wait_command(text, seconds, prompt):
     assert parse_wait_command(text) == (seconds, prompt)
 
 
-@pytest.mark.parametrize("text", ["/wait", "/wait 1d prompt", "/wait 0s prompt"])
+@pytest.mark.parametrize(
+    "text", ["/wait", "/wait ", "/wait 1d prompt", "/wait 0s prompt", "/wait 30 prompt", "/wait 5m"]
+)
 def test_parse_wait_command_rejects_invalid_input(text):
     with pytest.raises(ValueError):
         parse_wait_command(text)
@@ -131,6 +135,31 @@ def test_wait_submission_is_hidden_until_ready_and_is_non_steering():
         time.sleep(0.01)
     assert broker.ready
     assert broker.get_nowait() == submission
+
+
+def test_undelayed_wait_submission_is_ready_but_non_steering_and_standalone():
+    hub = EventHub()
+    broker = InputBroker(hub)
+
+    submission = broker.submit("/wait check status", source="web")
+    assert submission.text == "check status"
+    assert not submission.steer
+    assert submission.ready
+    assert not submission.appendable
+    assert submission.ready_at_wall is None
+    with pytest.raises(ValueError, match="already pending"):
+        broker.submit("follow-up", source="web")
+    assert broker.get_nowait() == submission
+
+
+def test_delayed_wait_submission_publishes_wall_clock_ready_time():
+    hub = EventHub()
+    broker = InputBroker(hub)
+    before = time.time()
+    broker.submit("/wait 1h later", source="web")
+    event = [e for e in hub.after(0) if e.type == "pending_set"][-1]
+    assert event.data["steer"] is False
+    assert before + 3590 < event.data["ready_at"] < time.time() + 3610
 
 
 def test_withdrawing_wait_submission_cancels_ready_notification():

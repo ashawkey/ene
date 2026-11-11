@@ -47,19 +47,30 @@ _WAIT_UNITS = {
     "hours": 3600,
 }
 _WAIT_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)([a-z]+)$", re.IGNORECASE)
+# A leading token shaped like a duration (a number, optionally with a unit)
+# is parsed as one, so typos such as ``5x`` or ``30`` fail loudly instead of
+# becoming part of the prompt.
+_WAIT_DURATION_LIKE_RE = re.compile(r"^\d+(?:\.\d+)?[a-z]*$", re.IGNORECASE)
 
 
 def parse_wait_command(text: str) -> tuple[float, str] | None:
-    """Parse ``/wait <duration> <prompt>`` or return ``None`` for other input."""
+    """Parse ``/wait [duration] <prompt>`` or return ``None`` for other input.
+
+    Without a duration the prompt waits only for the current round to finish.
+    """
     if not re.match(r"^/wait(?:\s|$)", text, re.IGNORECASE):
         return None
-    parts = text.split(maxsplit=2)
-    if len(parts) != 3:
+    parts = text.split(maxsplit=1)
+    rest = parts[1] if len(parts) > 1 else ""
+    if not rest:
         raise ValueError(
-            "Usage: /wait <duration> <prompt> "
-            "(for example, /wait 1h check the job)"
+            "Usage: /wait [duration] <prompt> "
+            "(for example, /wait check the job or /wait 1h check the job)"
         )
-    match = _WAIT_DURATION_RE.fullmatch(parts[1])
+    head = rest.split(maxsplit=1)[0]
+    if not _WAIT_DURATION_LIKE_RE.fullmatch(head):
+        return 0.0, rest.strip()
+    match = _WAIT_DURATION_RE.fullmatch(head)
     unit = match.group(2).lower() if match else ""
     if match is None or unit not in _WAIT_UNITS:
         raise ValueError(
@@ -69,7 +80,7 @@ def parse_wait_command(text: str) -> tuple[float, str] | None:
     delay = float(match.group(1)) * _WAIT_UNITS[unit]
     if not math.isfinite(delay) or delay <= 0:
         raise ValueError("Wait duration must be greater than zero.")
-    prompt = parts[2].strip()
+    prompt = rest[len(head):].strip()
     if not prompt:
         raise ValueError("A prompt is required after the wait duration.")
     return delay, prompt
@@ -257,8 +268,19 @@ class UserSubmission:
 
     @property
     def appendable(self) -> bool:
-        """Whether plain follow-up messages may join this one while it is pending."""
-        return self.ready_at is None and not is_local_query(self.text)
+        """Whether plain follow-up messages may join this one while it is pending.
+
+        ``/wait`` messages (non-steering or delayed) stand alone, so a plain
+        follow-up never silently inherits their deferred delivery.
+        """
+        return self.steer and self.ready_at is None and not is_local_query(self.text)
+
+    @property
+    def ready_at_wall(self) -> float | None:
+        """Wall-clock time at which a delayed message becomes ready."""
+        if self.ready_at is None:
+            return None
+        return time.time() + max(0.0, self.ready_at - time.monotonic())
 
 
 
@@ -377,6 +399,7 @@ class InputBroker:
                 source=item.source,
                 action_id=item.action_id,
                 delay=delay,
+                ready_at=item.ready_at_wall,
                 steer=item.steer,
                 appendable=item.appendable,
             )

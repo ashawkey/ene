@@ -57,7 +57,7 @@ The sidebar groups every live session on the machine:
 - **Scroll position:** each session keeps its place when you switch away; one that was following the latest output stays at the bottom.
 - **Rename:** click the session name in the header; Enter saves (same as `/name <name>`), Escape cancels.
 - **Detach:** the unlink icon in the session header or on an "Open here" sidebar row; one click. The worker keeps running.
-- **Git branch:** in a Git workspace, a header chip shows the current branch (or short commit when detached); it refreshes after each round.
+- **Git branch:** in a Git workspace, a header chip next to the session name shows the current branch (or short commit when detached); it refreshes after each round.
 - **End:** the power icon on a sidebar row; click twice to confirm. Terminal-owned sessions cannot be ended from the browser.
 - **State icon:** spinner = working (model call or command); hourglass = idle in the foreground while background processes run or queued input remains; check = waiting for your input. A blue dot marks sessions that finished while you were elsewhere.
 - **Hub name:** the sidebar header and browser tab title show the hub machine's hostname, so tabs from different hubs stay distinguishable.
@@ -84,7 +84,9 @@ The sidebar groups every live session on the machine:
 - Up/Down without suggestions: recall earlier input.
 - `!` at the start runs the rest as a one-off shell command in the workspace, shown in the conversation. For an interactive shell, use the [Terminal](#terminal) panel.
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
+- The queued chip shows a clock for a message that joins the running round and a list-end icon for a `/wait` message that runs after it, with any remaining delay in parentheses.
 - Escape or the stop button stops the round.
+- **Model:** the picker next to the send button shows the current model; choosing another sends `/model <name>`. It is locked while a round runs.
 - **Status line:** above the composer while the agent works: activity, elapsed time, session tokens, and, while a reply streams, an estimated output speed (`~42 tok/s`).
 - **Background processes:** an "N running" chip in the status line stays visible, even while idle, until every background process exits; click it to open Processes.
 
