@@ -31,6 +31,19 @@ export function clockTime(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+/** Time of day, prefixed with the date when it is not today. */
+export function messageClock(epochSeconds: number, now = Date.now()): string {
+  const date = new Date(epochSeconds * 1000)
+  const time = clockTime(epochSeconds)
+  if (date.toDateString() === new Date(now).toDateString()) return time
+  return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
+}
+
+/** Full local date and time, for tooltips. */
+export function fullTime(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleString()
+}
+
 export function relativeTime(epochSeconds: number, now = Date.now() / 1000): string {
   const delta = Math.max(0, now - epochSeconds)
   if (delta < 60) return 'just now'

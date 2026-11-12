@@ -69,6 +69,7 @@ The sidebar groups every live session on the machine:
 - **Timeline:** messages, reasoning, and tool calls. A tool call holds its command output, diffs, and result.
 - **History:** opening or reloading a session shows the newest turns; scrolling up loads earlier ones, back to the start of the conversation. Full detail covers the latest 2,000 events; before a marked point, only messages are kept, without tool activity.
 - **Folding:** every step folds by its chevron. Results longer than 12 lines start folded; failures and running calls start open. Three or more consecutive tool calls fold into one row.
+- **Message times:** each message and notification shows when it was sent (replies: when they started), with the date for earlier days; hover for the full time. Sessions saved before message timestamps existed show none.
 - **Reasoning:** folded; while streaming it previews the newest lines. Unfold it at any time to read the whole thought so far.
 - **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
 - **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time split into model and tool time, mean time to first token (TTFT), output speed (tokens/s), tokens, cache hit rate, and tool calls; click it for statistics.
@@ -88,7 +89,7 @@ The sidebar groups every live session on the machine:
 - The queued chip shows a clock for a message that joins the running round and a list-end icon for a `/wait` message that runs after it, with any remaining delay in parentheses.
 - Escape or the stop button stops the round.
 - **Model:** the picker next to the send button shows the current model as `alias (model name)`; choosing another sends `/model <name>`. It is locked while a round runs.
-- **Status line:** above the composer while the agent works: activity, elapsed time, session tokens, and, while a reply streams, an estimated output speed (`~42 tok/s`).
+- **Status line:** above the composer while the agent works: activity, elapsed time, session tokens, and, while a reply streams, its time to first token (`TTFT 1.8s`) and estimated output speed (`~42 tok/s`).
 - **Background processes:** an "N running" chip in the status line stays visible, even while idle, until every background process exits; click it to open Processes.
 
 ## Inspector

@@ -799,6 +799,10 @@ class LLMAgent(
             raise RequestInterrupted()
 
         message = result.message
+        if message.created_at is None:
+            message.created_at = time.time()
+        if message.model is None:
+            message.model = self.model
         usage = result.usage or self._estimate_usage(message)
         if message.reasoning_content or usage.reasoning_tokens:
             self._reasoning_observed = True
@@ -1026,8 +1030,23 @@ class LLMAgent(
 
     def _stream_completion(self, request: CompletionRequest):
         """Stream a provider request to the terminal and web sinks."""
-        with self.console.stream_response(show_thinking=self.show_thinking) as sink:
+        model = getattr(self, "model", None)
+        with self.console.stream_response(
+            show_thinking=self.show_thinking, model=model
+        ) as sink:
             meter: OutputRateMeter | None = None
+            indicator = None
+            first_token_at: list[float] = []
+
+            def on_first_token() -> None:
+                if not first_token_at:
+                    first_token_at.append(time.time())
+                mark = getattr(self, "_mark_first_token", None)
+                if mark is not None:
+                    mark()
+                set_first_token = getattr(indicator, "set_first_token", None)
+                if set_first_token is not None:
+                    set_first_token()
 
             def consume():
                 stream = None
@@ -1036,7 +1055,7 @@ class LLMAgent(
                     return stream.consume(
                         on_content=sink.on_content,
                         on_thinking=sink.on_thinking,
-                        on_first_token=getattr(self, "_mark_first_token", None),
+                        on_first_token=on_first_token,
                         on_output=meter.add if meter is not None else None,
                         should_stop=lambda: (
                             self.cancellation is not None
@@ -1051,9 +1070,22 @@ class LLMAgent(
                 publish = getattr(indicator, "set_output_rate", None)
                 if publish is not None:
                     meter = OutputRateMeter(self.token_estimator.chars_to_tokens, publish)
-                return run_interruptible(
+                result = run_interruptible(
                     consume, self.cancellation, on_cancel=self.provider.cancel
                 )
+            # Stamp the reply with the moment its header was shown, so a
+            # replayed session shows the same time as the live one.
+            message = getattr(result, "message", None)
+            if isinstance(message, Message):
+                if message.created_at is None:
+                    message.created_at = (
+                        getattr(sink, "created_at", None)
+                        or (first_token_at[0] if first_token_at else None)
+                        or time.time()
+                    )
+                if message.model is None:
+                    message.model = model
+            return result
 
     def _estimate_usage(self, message) -> ProviderUsage:
         """Build rough provider-neutral usage when an API omits it."""
@@ -1306,13 +1338,19 @@ class LLMAgent(
         except queue.Empty:
             return injected
 
+        created_at = time.time()
+        # Framed by rules like any other message, even mid-round.
+        self.console.rule()
         self.console.user_input(
             query,
             source=submission.source,
             submission_id=submission.id,
             steer=True,
+            with_rule=False,
+            created_at=created_at,
         )
-        self.context.add(Message.user(query))
+        self.console.rule()
+        self.context.add(Message.user(query, created_at=created_at))
         return True
 
     def _inject_inbox(self, *, steer: bool = True) -> bool:
@@ -1334,12 +1372,18 @@ class LLMAgent(
             and not self.tool_executor.has_pending_notifications()
         )
         text, display = format_inbox_message(events, dropped, final=final)
+        # Framed by rules like a user message, whether it starts a round or
+        # arrives mid-round.
+        self.console.rule()
         if not steer:
-            self.console.rule()
             # Announced before the notifications so they stay last.
             self._maybe_announce_peers()
-        self.console.user_input(display, source="inbox", steer=steer, with_rule=False)
-        self.context.add(Message.inbox(text, display_content=display))
+        created_at = time.time()
+        self.console.user_input(
+            display, source="inbox", steer=steer, with_rule=False, created_at=created_at
+        )
+        self.console.rule()
+        self.context.add(Message.inbox(text, display_content=display, created_at=created_at))
         return True
 
     def get_response(self):
@@ -1403,7 +1447,9 @@ class LLMAgent(
                 # The stream sink renders buffered Markdown and emits the final
                 # event on close, so avoid printing it twice here.
                 if not self.stream:
-                    self.console.response(content)
+                    self.console.response(
+                        content, created_at=message.created_at, model=message.model
+                    )
 
             finish_reason = self._last_finish_reason
             if finish_reason == "content_filter":
@@ -1824,7 +1870,6 @@ class LLMAgent(
         if not self._inject_inbox(steer=False):
             return False
         self.round_id += 1
-        self.console.rule()
         with AgentCommandsMixin._round_timer(self):
             with self._operation("agent response"):
                 self.get_response()
@@ -1902,11 +1947,13 @@ class LLMAgent(
         if not query:
             return False
         self.console.rule()
+        submitted_at = time.time()
         self.console.user_input(
             query,
             source=submission.source,
             submission_id=submission.id,
             with_rule=False,
+            created_at=submitted_at,
         )
         if query.lower() in ("exit", "quit"):
             return True
@@ -1949,6 +1996,7 @@ class LLMAgent(
         self.context.add(Message.user(
             model_query,
             display_content=query if model_query != query else None,
+            created_at=submitted_at,
         ))
         self.round_id += 1
         self.console.rule()
@@ -2159,7 +2207,7 @@ class LLMAgent(
             return None
 
         self._maybe_announce_peers()
-        user_message = Message.user(query)
+        user_message = Message.user(query, created_at=time.time())
         self.context.add(user_message)
 
         self.console.rule()

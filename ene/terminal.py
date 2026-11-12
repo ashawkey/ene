@@ -18,6 +18,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion, merge_completers
 from prompt_toolkit.filters import is_searching
+from prompt_toolkit.formatted_text.utils import fragment_list_width
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.search import accept_search
 from prompt_toolkit.history import FileHistory
@@ -522,6 +523,26 @@ class SessionSwitch(EOFError):
     """The terminal requested a different persistent session."""
 
 
+def _justify(
+    left: list[tuple[str, str]],
+    candidates: list[list[tuple[str, str]]],
+    width: int,
+) -> list[tuple[str, str]]:
+    """Put *left* and the first right-hand candidate that fits on one line,
+    the right flush with the edge. When none fits beside *left*, the line
+    keeps *left* alone; without *left*, the first candidate that fits."""
+    used = fragment_list_width(left)
+    for right in candidates:
+        gap = width - used - fragment_list_width(right)
+        if not left and gap >= 0:
+            return list(right)
+        if gap >= 2:
+            return [*left, ("", " " * gap), *right]
+    if not left:
+        return list(candidates[-1]) if candidates else []
+    return list(left)
+
+
 class TerminalInput:
     TITLE_ANIMATION_INTERVAL = 0.7
     TITLE_ANIMATION_FRAMES = ("◐", "◑")
@@ -564,6 +585,8 @@ class TerminalInput:
             "status.spinner": "bold ansigreen",
             "status.text": "ansiwhite",
             "status.detail": "ansibrightblack",
+            "status.model_name": "ansiwhite",
+            "status.rate": "ansibrightblack",
             "status.pending": "ansimagenta",
             "status.process": "ansibrightblack",
             "status.progress": "ansicyan",
@@ -866,34 +889,48 @@ class TerminalInput:
     def _message(self):
         pending = self._pending_text() if self._pending_text is not None else None
         with self._status_lock:
-            status = list(self._status)
+            activity = list(self._status)
             context_status = getattr(self, "_context_status", None)
             process_status = self._process_status
             session_label = self._session_label
-        has_context = any(style.startswith("class:status.context.") for style, _ in status)
-        if context_status is not None and not has_context:
-            context_fragments = context_status.prompt_fragments()
-            if status:
-                status.extend([("", " · "), *context_fragments])
-            else:
-                status = context_fragments
-        if self._busy and not status:
-            status = [
+        width = max(1, self._session.app.output.get_size().columns - 1)
+
+        # Left: model and what is happening now. Right: context usage, session.
+        if self._busy and not activity:
+            activity = [
                 ("class:status.spinner", "⠋ "),
                 ("class:status.text", "Working..."),
             ]
-        if session_label:
-            session_fragment = ("class:status.detail", session_label)
-            if status:
-                status.extend([("", " · "), session_fragment])
-            else:
-                status = [session_fragment]
-        if process_status:
-            process_fragment = ("class:status.process", process_status)
-            if status:
-                status.extend([("", " · "), process_fragment])
-            else:
-                status = [process_fragment]
+        process_lines = process_status.split("\n") if process_status else []
+        if process_lines:
+            process_fragment = ("class:status.process", process_lines[0])
+            activity = [*activity, ("", " · "), process_fragment] if activity else [process_fragment]
+        if context_status is not None and context_status.model:
+            # The marker and the name it stands for stay together, first.
+            model = [
+                ("class:status.model", f"{model_icon(context_status.model)} "),
+                ("class:status.model_name", context_status.model),
+            ]
+            activity = [*model, ("", " · "), *activity] if activity else model
+
+        # Right-hand forms, most detailed first; the first that fits is used.
+        has_context = any(style.startswith("class:status.context.") for style, _ in activity)
+        contexts: list[list[tuple[str, str]]] = [[]]
+        if context_status is not None and not has_context:
+            contexts = [
+                context_status.prompt_fragments(),
+                context_status.prompt_fragments(compact=True),
+            ]
+        candidates = []
+        for context in contexts:
+            if session_label:
+                session_fragment = ("class:status.detail", session_label)
+                candidates.append([*context, ("", " · "), session_fragment] if context else [session_fragment])
+            if context:
+                candidates.append(context)
+        status = _justify(activity, candidates, width)
+        for line in process_lines[1:]:
+            status.append(("class:status.process", f"\n{line}"))
         if pending is not None:
             preview = pending.replace("\n", " ")
             if len(preview) > 20:
@@ -903,9 +940,6 @@ class TerminalInput:
                 status.append(("class:status.pending", f"\n{label}"))
             else:
                 status = [("class:status.pending", label)]
-        if context_status is not None and context_status.model:
-            status.insert(0, ("class:status.model", f"{model_icon(context_status.model)} "))
-        width = max(1, self._session.app.output.get_size().columns - 1)
         separator = (
             "class:separator.busy" if self._busy else "class:separator",
             "─" * width,

@@ -17,7 +17,7 @@ import type { KeyboardEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { pathCompletions, sessionOptions } from '../lib/api'
-import { compactNumber, duration, tokenRate } from '../lib/format'
+import { compactNumber, duration, latency, tokenRate } from '../lib/format'
 import type { LiveIndicator } from '../lib/session'
 import type { PendingMessage } from '../lib/protocol'
 import type { OutboxEntry } from '../lib/useSession'
@@ -428,6 +428,9 @@ function StatusStrip({
           {indicator && indicator.input_tokens ? (
             <span className="muted">↑{compactNumber(indicator.input_tokens)} ↓{compactNumber(indicator.output_tokens ?? 0)}</span>
           ) : indicator?.suffix ? <span className="muted clamp">{indicator.suffix}</span> : null}
+          {typeof indicator?.ttft === 'number' ? (
+            <span className="muted" data-tip="Time to first token of the streaming response">TTFT {latency(indicator.ttft)}</span>
+          ) : null}
           {indicator?.tps ? (
             <span className="muted" data-tip="Estimated output speed of the streaming response">~{tokenRate(indicator.tps)}</span>
           ) : null}

@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING, Callable, Iterator
 import questionary
 from markdown_it import MarkdownIt
 from markdown_it.common.utils import normalizeReference
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
+from rich.segment import Segment
 from rich.status import Status
 from rich.table import Table
 from rich.text import Text
@@ -54,6 +56,16 @@ _CROSS = "\u2717"    # ✗
 # four-diamond logo mark. It prefixes model replies so agent speech reads
 # distinctly from the •-prefixed system/tool lines.
 _BRAND = "💠"  # 💠
+_USER = "\u276f"     # ❯ user message header
+_INBOX = "\u00bb"    # » harness notification header
+_BRANCH = "\u2514"   # └ tool result under its call
+_GUTTER = "\u250a"   # ┊ reasoning text
+_WARN = "!"
+# Headers start at column 0; everything inside a turn is indented under them.
+_BODY = "  "
+# Sentinel: stamp a live message with the current time. ``None`` means the
+# message has no recorded time (sessions saved before timestamps existed).
+_NOW: object = object()
 _REFERENCE_LINK_RE = re.compile(
     r"(?<!\\)\[([^\]\n]+)\]\[([^\]\n]*)\]"
 )
@@ -86,7 +98,82 @@ AGENT_THEME = Theme({
     "tool_meta": "color(244)",
     "tool_ok": "dim green",
     "tool_fail": "dim red",
+    "header_meta": "color(244)",
+    "reply_label": "bold",
+    "round_summary": "color(242)",
 })
+
+
+def _clock(created_at: float | None) -> str:
+    """Local time of day, with the date when it is not today."""
+    if created_at is None:
+        return ""
+    local = time.localtime(created_at)
+    if time.strftime("%Y-%m-%d", local) == time.strftime("%Y-%m-%d"):
+        return time.strftime("%H:%M:%S", local)
+    return time.strftime("%Y-%m-%d %H:%M", local)
+
+
+def _stamp(created_at: object) -> float | None:
+    if created_at is _NOW:
+        return time.time()
+    if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+        return float(created_at)
+    return None
+
+
+def _header(
+    icon: str, label: str, label_style: str, created_at: float | None, *notes: str
+) -> Text:
+    """First line of a message: icon, who wrote it, time, and optional notes."""
+    line = Text(f"{icon} ", style=label_style)
+    line.append(label, style=label_style)
+    for part in (_clock(created_at), *notes):
+        if part:
+            line.append(f" · {part}", style="header_meta")
+    return line
+
+
+class _Gutter:
+    """Render a renderable beside a fixed prefix, so wrapped lines stay indented.
+
+    *first* prefixes the first rendered line and *rest* (blank by default)
+    every continuation, including soft-wrapped ones.
+    """
+
+    def __init__(self, renderable, first: str, rest: str | None = None, style: str = ""):
+        self.renderable = renderable
+        self.first = first
+        self.rest = " " * cell_len(first) if rest is None else rest
+        self.style = style
+
+    def __rich_console__(self, console, options):
+        width = max(cell_len(self.first), cell_len(self.rest))
+        inner = options.update(width=max(1, options.max_width - width))
+        lines = console.render_lines(self.renderable, inner, pad=False)
+        style = console.get_style(self.style, default="") if self.style else None
+        for index, line in enumerate(lines):
+            prefix = self.first if index == 0 else self.rest
+            line = _strip_padding(line)
+            yield Segment(prefix if line else prefix.rstrip(" "), style)
+            yield from line
+            yield Segment.line()
+
+
+def _strip_padding(line: list[Segment]) -> list[Segment]:
+    """Drop trailing layout padding (keeping painted backgrounds, such as code
+    blocks), so copied text and terminal reflow carry no trailing blanks."""
+    line = list(line)
+    while line:
+        last = line[-1]
+        if last.control or (last.style is not None and last.style.bgcolor is not None):
+            break
+        text = last.text.rstrip(" ")
+        if text:
+            line[-1] = Segment(text, last.style)
+            break
+        line.pop()
+    return line
 
 
 def _compact_tokens(value: int) -> str:
@@ -97,12 +184,18 @@ def _compact_tokens(value: int) -> str:
     return str(value)
 
 
-def _print_markdown_response(console: Console, content: str) -> None:
-    row = Table.grid(padding=0, expand=True)
-    row.add_column(width=3, no_wrap=True)
-    row.add_column(ratio=1, overflow="fold")
-    row.add_row(Text(f"{_BRAND} "), Markdown(content))
-    console.print(row)
+def _response_header(created_at: float | None, model: str | None = None) -> Text:
+    return _header(_BRAND, model or "Assistant", "reply_label", created_at)
+
+
+def _print_markdown_response(
+    console: Console,
+    content: str,
+    created_at: float | None = None,
+    model: str | None = None,
+) -> None:
+    console.print(_response_header(created_at, model))
+    console.print(_Gutter(_CompactMarkdown(content), _BODY))
 
 
 @dataclass(frozen=True)
@@ -147,7 +240,10 @@ class ContextStatus:
             "cached_tokens": self.cached_tokens,
         }
 
-    def prompt_fragments(self, width: int = 14) -> list[tuple[str, str]]:
+    def prompt_fragments(
+        self, width: int = 14, *, compact: bool = False
+    ) -> list[tuple[str, str]]:
+        """Usage bar and details; *compact* keeps only the bar and percentage."""
         if self.limit <= 0:
             return [("class:status.detail", self.plain())]
         complete = round(width * self.fraction)
@@ -161,7 +257,7 @@ class ContextStatus:
         return [
             (f"class:status.context.{color}", "━" * complete),
             ("class:status.track", "━" * (width - complete)),
-            ("class:status.detail", f" · {self.plain()}"),
+            ("class:status.detail", f" {self.fraction:.0%}" if compact else f" · {self.plain()}"),
         ]
 
     def render(self) -> Table | Text:
@@ -198,6 +294,12 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {seconds:02d}s"
     return f"{seconds}s"
+
+
+def _format_latency(seconds: float) -> str:
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    return f"{seconds:.1f}s"
 
 
 def _format_round_duration(seconds: float) -> str:
@@ -248,6 +350,8 @@ class ThinkingIndicator:
         self._thread: threading.Thread | None = None
         self._indicator_stack = indicator_stack
         self._indicator_lock = indicator_lock
+        self._tps: float | None = None
+        self._ttft: float | None = None
 
     def __enter__(self) -> "ThinkingIndicator":
         self._start_time = time.monotonic() - self._initial_elapsed
@@ -288,9 +392,20 @@ class ThinkingIndicator:
             self._events.publish("thinking_update", suffix=suffix)
 
     def set_output_rate(self, tps: float) -> None:
-        """Publish the live output tokens/s of a streaming request (web only)."""
+        """Show and publish the live output tokens/s of a streaming request."""
+        self._tps = tps
         if self._events is not None and self._running:
             self._events.publish("thinking_update", tps=tps)
+
+    def set_first_token(self, ttft: float | None = None) -> None:
+        """Record the time to first token (by default, the elapsed time now)."""
+        if ttft is None:
+            if self._ttft is not None or not self._running:
+                return
+            ttft = time.monotonic() - self._start_time
+        self._ttft = max(0.0, ttft)
+        if self._events is not None and self._running:
+            self._events.publish("thinking_update", ttft=round(self._ttft, 3))
 
     def __exit__(self, *args) -> None:
         self._running = False
@@ -395,17 +510,26 @@ class ThinkingIndicator:
                 ("class:status.progress", "━" * pulse),
                 ("class:status.track", "━" * (width - start - pulse)),
             ])
-        elif isinstance(self._status_suffix, ContextStatus):
-            fragments.append(("", " "))
-            fragments.extend(self._status_suffix.prompt_fragments(width))
+        # Context usage is drawn by the prompt itself (right-aligned), so a
+        # ContextStatus suffix adds nothing here.
         if self._status_suffix and not isinstance(self._status_suffix, ContextStatus):
             fragments.append(("class:status.detail", f" · {self._status_suffix}"))
+        for rate in self._rate_parts():
+            fragments.append(("class:status.rate", f" · {rate}"))
         if self._round_elapsed is not None:
             fragments.append((
                 "class:status.detail",
-                f" · {_format_round_duration(self._round_elapsed)}",
+                f" · round {_format_round_duration(self._round_elapsed)}",
             ))
         return fragments
+
+    def _rate_parts(self) -> list[str]:
+        parts = []
+        if self._ttft is not None:
+            parts.append(f"TTFT {_format_latency(self._ttft)}")
+        if self._tps is not None:
+            parts.append(f"{self._tps:.0f} tok/s")
+        return parts
 
     def _label_plain(self, elapsed: float) -> str:
         parts = [self._base_label(elapsed)]
@@ -415,48 +539,35 @@ class ThinkingIndicator:
                 if isinstance(self._status_suffix, ContextStatus)
                 else str(self._status_suffix)
             )
+        parts.extend(self._rate_parts())
         if self._round_elapsed is not None:
-            parts.append(_format_round_duration(self._round_elapsed))
+            parts.append(f"round {_format_round_duration(self._round_elapsed)}")
         return " · ".join(parts)
 
     def _label(self, elapsed: float) -> str | Table:
         base = self._base_label(elapsed)
+        cells: list = []
         if self._progress:
-            row = Table.grid(padding=(0, 1))
-            cells = [
-                Text(base),
-                ProgressBar(total=None, pulse=True, width=14, pulse_style="cyan"),
-            ]
-            if self._status_suffix:
-                cells.extend([
-                    Text("·", style="dim"),
-                    Text(str(self._status_suffix), style="dim"),
-                ])
-            if self._round_elapsed is not None:
-                cells.extend([
-                    Text("·", style="dim"),
-                    Text(_format_round_duration(self._round_elapsed), style="dim"),
-                ])
-            row.add_row(*cells)
-            return row
-        if not self._status_suffix:
-            if self._round_elapsed is None:
-                return base
-            return f"{base} · {_format_round_duration(self._round_elapsed)}"
-        if isinstance(self._status_suffix, str):
-            suffix = f"{base} · {self._status_suffix}"
-            if self._round_elapsed is not None:
-                suffix += f" · {_format_round_duration(self._round_elapsed)}"
-            return suffix
-
-        row = Table.grid(padding=(0, 1))
-        cells = [Text(base), Text("·", style="dim"), self._status_suffix.render()]
+            cells.append(ProgressBar(total=None, pulse=True, width=14, pulse_style="cyan"))
+        if isinstance(self._status_suffix, ContextStatus):
+            cells.append(self._status_suffix.render())
+        elif self._status_suffix:
+            cells.append(Text(str(self._status_suffix), style="dim"))
+        cells.extend(Text(rate, style="dim") for rate in self._rate_parts())
         if self._round_elapsed is not None:
-            cells.extend([
-                Text("·", style="dim"),
-                Text(_format_round_duration(self._round_elapsed), style="dim"),
-            ])
-        row.add_row(*cells)
+            cells.append(Text(
+                f"round {_format_round_duration(self._round_elapsed)}", style="dim"
+            ))
+        if not cells:
+            return base
+        row = Table.grid(padding=(0, 1))
+        separated: list = [Text(base)]
+        for index, cell in enumerate(cells):
+            # The progress bar sits directly beside the label.
+            if index or not self._progress:
+                separated.append(Text("·", style="dim"))
+            separated.append(cell)
+        row.add_row(*separated)
         return row
 
     def _tick(self) -> None:
@@ -507,23 +618,29 @@ class _TerminalTextStream:
     unterminated fragment would be overwritten by the redraw.
     """
 
-    def __init__(self, console: Console, style: str):
+    def __init__(self, console: Console, style: str, prefix: str = f"{_BODY}{_GUTTER} "):
         self._console = console
         self._style = style
+        self._prefix = prefix
         self._pending = ""
+
+    def _print_line(self, line: str) -> None:
+        self._console.print(_Gutter(
+            Text(line, style=self._style),
+            self._prefix,
+            self._prefix,
+            style=self._style,
+        ))
 
     def feed(self, text: str) -> None:
         self._pending += text
         while "\n" in self._pending:
             line, self._pending = self._pending.split("\n", 1)
-            self._console.print(
-                Text(line.removesuffix("\r"), style=self._style),
-                soft_wrap=True,
-            )
+            self._print_line(line.removesuffix("\r"))
 
     def flush(self) -> None:
         if self._pending:
-            self._console.print(Text(self._pending, style=self._style), soft_wrap=True)
+            self._print_line(self._pending)
             self._pending = ""
 
     def abort(self) -> None:
@@ -553,6 +670,9 @@ class _TerminalMarkdownStream:
         self._buffer = ""
         self._references: dict[str, dict] = {}
         self._started = False
+        # Wall-clock time and model shown in the response header.
+        self.created_at: float | None = None
+        self.model: str | None = None
         # Re-parsing the whole uncommitted block on every line is quadratic
         # for a long list, table or fence. After a parse that commits nothing,
         # wait for a structural hint or geometric growth before trying again.
@@ -560,13 +680,10 @@ class _TerminalMarkdownStream:
         self._next_parse_len = 0
 
     def _print(self, renderable) -> None:
-        row = Table.grid(padding=0, expand=True)
-        row.add_column(width=3, no_wrap=True)
-        row.add_column(ratio=1, overflow="fold")
-        prefix = f"{_BRAND} " if not self._started else ""
-        row.add_row(Text(prefix), renderable)
-        self._console.print(row)
-        self._started = True
+        if not self._started:
+            self._console.print(_response_header(self.created_at, self.model))
+            self._started = True
+        self._console.print(_Gutter(renderable, _BODY))
 
     def _parse(self, source: str):
         env: dict = {}
@@ -761,10 +878,12 @@ class ResponseStream:
         *,
         show_thinking: bool = False,
         render_terminal: bool = True,
+        model: str | None = None,
     ):
         self._console = console
         self._events = events
         self._show_thinking = show_thinking
+        self.model = model
         # A quiet console discards output only after Rich has fully rendered
         # it, so skip the (incremental Markdown) rendering work altogether.
         self._render_terminal = render_terminal
@@ -781,6 +900,7 @@ class ResponseStream:
         self._delta_chars = 0
         self._delta_published_at = 0.0
         self._delta_timer: threading.Timer | None = None
+        self.created_at: float | None = None
 
     def __enter__(self) -> "ResponseStream":
         return self
@@ -793,7 +913,10 @@ class ResponseStream:
             self._delta_timer.cancel()
             self._delta_timer = None
         if self._delta_parts and self._events is not None:
-            self._events.publish(self._delta_type, text="".join(self._delta_parts))
+            data = {"text": "".join(self._delta_parts)}
+            if self._delta_type == "assistant_delta" and self.model:
+                data["model"] = self.model
+            self._events.publish(self._delta_type, **data)
             self._delta_published_at = time.monotonic()
         self._delta_type = None
         self._delta_parts = []
@@ -823,7 +946,12 @@ class ResponseStream:
             self._delta_timer.daemon = True
             self._delta_timer.start()
 
-    def on_content(self, text: str) -> None:
+    def on_content(
+        self, text: str, *, at: float | None = None, model: str | None = None
+    ) -> None:
+        """Feed reply text. *at* and *model* override the time and model the
+        reply header shows when this fragment is the first visible one
+        (relayed history)."""
         with self._lock:
             if self._closed:
                 return
@@ -832,6 +960,10 @@ class ResponseStream:
                 if not text.strip():
                     return
                 self._content_visible = True
+                self.created_at = time.time() if at is None else at
+                self.model = model or self.model
+                self._terminal.created_at = self.created_at
+                self._terminal.model = self.model
                 text = "".join(self._content_parts)
             if self._thinking_visible:
                 if self._render_terminal:
@@ -875,7 +1007,40 @@ class ResponseStream:
             if thinking:
                 self._events.publish("thinking", text=thinking)
             if content:
-                self._events.publish("assistant_message", text=content)
+                self._events.publish(
+                    "assistant_message",
+                    text=content,
+                    created_at=self.created_at,
+                    model=self.model,
+                )
+
+
+def format_round_summary(record: dict) -> str:
+    """One-line summary of a ``round_stats`` record, or "" for a round with
+    no model call (a command, or a failure before any request)."""
+
+    def number(key: str) -> float:
+        value = record.get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+    if not number("model_calls"):
+        return ""
+    cancelled = bool(record.get("cancelled"))
+    parts = [f"{'■ stopped' if cancelled else _CHECK} {_format_duration(number('duration'))}"]
+    tools = int(number("tool_calls"))
+    if tools:
+        failures = int(number("tool_failures"))
+        label = f"{tools} tool{'s' if tools != 1 else ''}"
+        parts.append(f"{label} ({failures} failed)" if failures else label)
+    if isinstance(record.get("ttft"), (int, float)):
+        parts.append(f"TTFT {_format_latency(float(record['ttft']))}")
+    if isinstance(record.get("tps"), (int, float)):
+        parts.append(f"{float(record['tps']):.0f} tok/s")
+    input_tokens = int(number("input_tokens"))
+    parts.append(f"↑{_compact_tokens(input_tokens)} ↓{_compact_tokens(int(number('output_tokens')))}")
+    if input_tokens > 0:
+        parts.append(f"{number('cached_tokens') / input_tokens:.0%} cached")
+    return " · ".join(parts)
 
 
 class AgentConsole:
@@ -1040,7 +1205,9 @@ class AgentConsole:
             indicator_lock=self._indicator_lock,
         )
 
-    def stream_response(self, *, show_thinking: bool = False) -> ResponseStream:
+    def stream_response(
+        self, *, show_thinking: bool = False, model: str | None = None
+    ) -> ResponseStream:
         """Return an append-only terminal sink for a streamed assistant turn.
 
         Usage::
@@ -1053,6 +1220,7 @@ class AgentConsole:
             self.events if not self.quiet else None,
             show_thinking=show_thinking,
             render_terminal=not self._console.quiet,
+            model=model,
         )
 
     # -- raw pass-through (for rich markup, tables, etc.) -------------------
@@ -1197,26 +1365,21 @@ class AgentConsole:
 
     # -- block helper -------------------------------------------------------
 
-    def _block(self, msg: str, style: str, *, prefix: str, markup: bool = False):
-        """Print a block: first line with *prefix*, continuation lines indented."""
+    def _block(self, msg: str, style: str, *, icon: str = _DOT):
+        """Print an indented block: *icon* on the first line, continuation
+        (and wrapped) lines aligned after it."""
         if not self.render_terminal:
             return
-        lines = msg.splitlines()
-        indent = " " * len(prefix)
-        if not lines:
-            self._console.print(prefix.rstrip(), style=style)
-            return
-        out = [f"{prefix}{lines[0]}"] + [f"{indent}{line}" for line in lines[1:]]
-        self._console.print("\n".join(out), style=style, markup=markup)
+        self._console.print(_Gutter(Text(msg, style=style), f"{_BODY}{icon} ", style=style))
 
     # -- typed log helpers --------------------------------------------------
 
     def system(self, msg: str):
-        self._block(msg, style="system", prefix=f"{_DOT} ")
+        self._block(msg, style="system")
         self._emit("system", text=msg)
 
     def debug(self, msg: str):
-        self._block(msg, style="debug", prefix=f"{_DOT} ")
+        self._block(msg, style="debug")
         self._emit("debug", text=msg)
 
     def error(self, msg: str):
@@ -1224,11 +1387,11 @@ class AgentConsole:
         # reports only "no response" to its caller, so this is the sole account
         # of what actually went wrong.
         with self.visible():
-            self._block(msg, style="error", prefix=f"{_DOT} ")
+            self._block(msg, style="error", icon=_CROSS)
             self._emit("error", text=msg)
 
     def warn(self, msg: str, *, exc_info: bool = False):
-        self._block(msg, style="warning", prefix=f"{_DOT} ")
+        self._block(msg, style="warning", icon=_WARN)
         self._emit("warning", text=msg)
         if exc_info:
             self._console.print_exception()
@@ -1244,17 +1407,17 @@ class AgentConsole:
         """Render a tool call, using semantic spans when structured data is available."""
         qualifiers = qualifiers or []
         if name is None:
-            self._block(msg, style="tool", prefix=f"{_DOT} ")
+            self._block(msg, style="tool")
             self._emit("tool_start", text=msg)
             return
 
-        line = Text(f"{_DOT} ", style="tool")
-        line.append(name, style="tool_name")
+        line = Text(name, style="tool_name")
         if primary:
             line.append(f" {primary}", style="tool_primary")
         for qualifier in qualifiers:
             line.append(f" · {qualifier}", style="tool_meta")
-        self._console.print(line, markup=False, highlight=False)
+        if self.render_terminal:
+            self._console.print(_Gutter(line, f"{_BODY}{_DOT} ", style="tool"))
         self._emit(
             "tool_start",
             text=msg,
@@ -1266,13 +1429,10 @@ class AgentConsole:
     def tool_result(self, msg: str, success: bool = True, image: dict[str, str] | None = None):
         style = "tool_ok" if success else "tool_fail"
         icon = _CHECK if success else _CROSS
-        prefix = f"{_DOT} {icon} "
-        lines = msg.splitlines()
-        indent = " " * len(prefix)
-        first = prefix + (lines[0] if lines else "")
-        rest = "\n".join(indent + line for line in lines[1:])
-        output = first + ("\n" + rest if rest else "")
-        self._console.print(output, style=style, markup=False)
+        if self.render_terminal:
+            self._console.print(_Gutter(
+                Text(msg, style=style), f"{_BODY}  {_BRANCH} {icon} ", style=style
+            ))
         # Web clients render *image* (a local path and media type) as a
         # preview; the bytes themselves stay out of the event stream.
         if image:
@@ -1397,7 +1557,7 @@ class AgentConsole:
         else:
             header = f"{path}"
 
-        prefix = f"{_DOT} {icon} "
+        prefix = f"{_BODY}  {_BRANCH} {icon} "
         self._console.print(f"{prefix}{header}", style=style)
         self._emit(
             "diff",
@@ -1471,6 +1631,15 @@ class AgentConsole:
                 indent, pad_to, language, start_line,
             )
 
+    def round_summary(self, record: dict) -> None:
+        """Print one dim line closing a round (terminal only; web clients
+        render the ``round_stats`` event themselves)."""
+        if not self.render_terminal or self.quiet:
+            return
+        line = format_round_summary(record)
+        if line:
+            self._console.print(_Gutter(Text(line, style="round_summary"), _BODY))
+
     def thinking_message(self, msg: str):
         """Render a completed reasoning block outside the streaming path."""
         stream = _TerminalTextStream(self._console, "thinking")
@@ -1478,9 +1647,22 @@ class AgentConsole:
         stream.flush()
         self._emit("thinking", text=msg)
 
-    def response(self, msg: str):
-        _print_markdown_response(self._console, msg)
-        self._emit("assistant_message", text=msg)
+    def response(
+        self,
+        msg: str,
+        *,
+        created_at: float | None | object = _NOW,
+        model: str | None = None,
+    ):
+        """Print a complete reply under a 💠 header naming *model*.
+
+        *created_at* stamps the header; the default is now, and ``None`` (a
+        message saved before timestamps existed) omits the time.
+        """
+        stamp = _stamp(created_at)
+        if self.render_terminal:
+            _print_markdown_response(self._console, msg, stamp, model)
+        self._emit("assistant_message", text=msg, created_at=stamp, model=model)
 
     def user_input(
         self,
@@ -1490,25 +1672,26 @@ class AgentConsole:
         submission_id: str | None = None,
         steer: bool = False,
         with_rule: bool = True,
+        created_at: float | None | object = _NOW,
     ):
-        """Print user input with a horizontal rule for visual separation.
+        """Print user input under a header with its time (see :meth:`response`).
 
         Single emission point for ``user_message`` events — callers must not
         publish the event themselves.
         """
         if with_rule:
             self._console.rule(style="dim color(240)")
-        lines = msg.splitlines()
-        if not lines:
+        if not msg.splitlines():
             return
-        prefix = "> "
-        indent = " " * len(prefix)
-        out_lines = []
-        for i, line in enumerate(lines):
-            content = prefix + line if i == 0 else indent + line
-            out_lines.append(content)
-        self._console.print("\n".join(out_lines), style="input", markup=False)
-        data = {"text": msg, "source": source}
+        stamp = _stamp(created_at)
+        if self.render_terminal:
+            if source == "inbox":
+                header = _header(_INBOX, "Notifications", "system", stamp)
+            else:
+                header = _header(_USER, "You", "input", stamp, *(("steer",) if steer else ()))
+            self._console.print(header)
+            self._console.print(_Gutter(Text(msg, style="input"), _BODY))
+        data = {"text": msg, "source": source, "created_at": stamp}
         if submission_id is not None:
             data["submission_id"] = submission_id
         if steer:

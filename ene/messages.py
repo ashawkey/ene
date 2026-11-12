@@ -177,6 +177,10 @@ class Message:
     replayed verbatim on continuation requests. ``origin`` marks a user-role
     message the harness wrote (``ORIGIN_INBOX`` for delivered notifications);
     it is sent to the model as an ordinary user message but is not user input.
+    ``created_at`` is the local wall-clock time a user message was submitted or
+    an assistant reply started, and ``model`` the API model that wrote an
+    assistant reply. Both are display metadata, never sent to a model, and
+    ``None`` for synthetic messages and sessions saved before they existed.
     """
 
     role: str
@@ -187,6 +191,9 @@ class Message:
     provider_state: dict[str, Any] | None = None
     reasoning_content: str | None = None
     origin: str | None = None
+    # Display metadata: excluded from equality like a timestamp should be.
+    created_at: float | None = field(default=None, compare=False)
+    model: str | None = field(default=None, compare=False)
     extra: dict[str, Any] = field(default_factory=dict)
 
     # -- constructors -------------------------------------------------------
@@ -202,20 +209,31 @@ class Message:
         content: str | list[ContentPart] | None,
         *,
         display_content: str | None = None,
+        created_at: float | None = None,
     ) -> Message:
         """Build a user message, optionally with a user-facing display form."""
         return cls(
-            role=ROLE_USER, content=content, display_content=display_content
+            role=ROLE_USER,
+            content=content,
+            display_content=display_content,
+            created_at=created_at,
         )
 
     @classmethod
-    def inbox(cls, content: str, *, display_content: str | None = None) -> Message:
+    def inbox(
+        cls,
+        content: str,
+        *,
+        display_content: str | None = None,
+        created_at: float | None = None,
+    ) -> Message:
         """Build a user-role message delivering asynchronous notifications."""
         return cls(
             role=ROLE_USER,
             content=content,
             display_content=display_content,
             origin=ORIGIN_INBOX,
+            created_at=created_at,
         )
 
     @classmethod
@@ -349,6 +367,10 @@ class Message:
             wire["reasoning_content"] = self.reasoning_content
         if self.origin is not None:
             wire["origin"] = self.origin
+        if self.created_at is not None:
+            wire["created_at"] = self.created_at
+        if self.model is not None:
+            wire["model"] = self.model
         wire.update(self.extra)
         return wire
 
@@ -385,6 +407,14 @@ class Message:
                 message.reasoning_content = value
             elif key == "origin" and isinstance(value, str):
                 message.origin = value
+            elif (
+                key == "created_at"
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                message.created_at = float(value)
+            elif key == "model" and isinstance(value, str):
+                message.model = value
             else:
                 message.extra[key] = value
         return message

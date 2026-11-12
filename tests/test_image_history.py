@@ -214,7 +214,7 @@ def test_image_payload_is_hidden_from_replay_recap_and_live_preview(tmp_path):
     agent = _agent(tmp_path)
     _read_batch(agent)
     users = []
-    agent.console = NS(system=lambda _: None, user_input=users.append, response=lambda _: None)
+    agent.console = NS(system=lambda _: None, user_input=lambda text, **kwargs: users.append(text), response=lambda *args, **kwargs: None)
     SessionMixin._replay_context(agent)
     assert users == ['Inspect this image.']
     assert AgentCommandsMixin._recap_input(agent) == 'Opening request:\nInspect this image.'

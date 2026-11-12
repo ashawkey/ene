@@ -246,6 +246,9 @@ class RoundStatsMixin:
         events = getattr(self, "events", None)
         if events is not None:
             events.publish("round_stats", **record)
+        summary = getattr(getattr(self, "console", None), "round_summary", None)
+        if summary is not None:
+            summary(record)
 
     # -- persistence --------------------------------------------------------
 

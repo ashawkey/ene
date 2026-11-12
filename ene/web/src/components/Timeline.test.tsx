@@ -135,3 +135,27 @@ describe('Timeline history', () => {
     expect(container.textContent).toContain('Loading earlier history')
   })
 })
+
+describe('message times', () => {
+  it('shows a time only for messages that have one', () => {
+    const items: TimelineItem[] = [
+      { kind: 'user', key: 'u1', seq: 1, ts: 0, at: null, text: 'saved', source: 'replay', steer: false },
+      { kind: 'assistant', key: 'a2', seq: 2, ts: 0, at: null, text: 'old reply', streaming: false },
+      { kind: 'assistant', key: 'a3', seq: 3, ts: 0, at: Date.now() / 1000, text: 'new reply', streaming: false },
+    ]
+    const { container } = render(
+      <Timeline
+        view={{ ...initialView(), items }}
+        active
+        handle={createRef<TimelineHandle>()}
+        query=""
+        matchIndex={0}
+        onMatches={() => {}}
+        onOpenFile={() => {}}
+        onOpenStats={() => {}}
+      />,
+    )
+    expect(container.querySelectorAll('.msg-time')).toHaveLength(0)
+    expect(container.querySelectorAll('.reply-time')).toHaveLength(1)
+  })
+})

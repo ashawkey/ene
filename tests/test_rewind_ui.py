@@ -321,7 +321,7 @@ def test_replay_shows_compaction_summary_as_a_response(tmp_path: Path):
         Message.user("next prompt"),
     ]
     responses = []
-    console.response = responses.append
+    console.response = lambda text, **kwargs: responses.append(text)
 
     SessionMixin._replay_context(agent)
 

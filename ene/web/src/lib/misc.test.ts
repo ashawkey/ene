@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { parseAnsi, stripAnsi } from './ansi'
-import { compactNumber, duration } from './format'
+import { compactNumber, duration, messageClock } from './format'
 import type { TimelineItem } from './session'
 import { backoffDelay } from './socket'
 import { groupItems } from './timeline'
@@ -24,6 +24,16 @@ describe('format', () => {
     expect(compactNumber(2_500_000)).toBe('2.5M')
     expect(duration(3.25)).toBe('3.3s')
     expect(duration(75)).toBe('1m 15s')
+  })
+})
+
+describe('message clock', () => {
+  it('adds the date only for earlier days', () => {
+    const noon = new Date(2026, 10, 11, 12, 0).getTime()
+    const today = messageClock(new Date(2026, 10, 11, 9, 5).getTime() / 1000, noon)
+    const earlier = messageClock(new Date(2026, 10, 9, 9, 5).getTime() / 1000, noon)
+    expect(earlier.endsWith(today)).toBe(true)
+    expect(earlier.length).toBeGreaterThan(today.length)
   })
 })
 

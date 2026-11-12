@@ -1,5 +1,6 @@
 import io
 import time
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -118,7 +119,7 @@ def test_terminal_keeps_context_status_when_activity_stops(monkeypatch, session_
         *context.prompt_fragments(),
     ])
     thinking = "".join(text for _, text in terminal._message())
-    assert f"75% hit · {session_label}" in thinking
+    assert "75% hit" in thinking and thinking.count("75% hit") == 1
     assert thinking.count(session_label) == 1
 
     terminal.set_status(None)
@@ -164,7 +165,10 @@ def test_terminal_updates_session_label_before_multiline_process_status():
     terminal.set_session_label(" new\n\x1bname ")
 
     text = "".join(text for _, text in terminal._message())
-    assert "0% hit · new name · 1 process running\n└ reading files" in text
+    lines = text.splitlines()
+    assert lines[1].startswith("1 process running ")
+    assert lines[1].endswith("0% hit · new name")
+    assert lines[2] == "└ reading files"
     assert "old name" not in text
     terminal.close_title()
 
@@ -224,10 +228,12 @@ def test_thinking_indicator_shows_frozen_accumulated_round_time():
     )
 
     assert indicator._label_plain(12) == (
-        "Working... (12s) · 13% · ↑226K · ↓5K · 80% hit · 5m"
+        "Working... (12s) · 13% · ↑226K · ↓5K · 80% hit · round 5m"
     )
     status = "".join(text for _, text in indicator._prompt_status("⠋", 12))
-    assert status.endswith(" · 5m")
+    assert status.endswith(" · round 5m")
+    # The prompt draws context usage itself, right-aligned.
+    assert "80% hit" not in status
 
 
 def test_console_freezes_round_time_when_each_indicator_starts(monkeypatch):
@@ -291,8 +297,9 @@ def test_response_stream_keeps_streamed_list_items_compact():
     stream.close()
 
     lines = output.getvalue().splitlines()
-    assert [line.strip() for line in lines] == [
-        "💠  • first", "• second", "• third",
+    assert lines[0].startswith("💠 ")
+    assert [line.strip() for line in lines[1:]] == [
+        "• first", "• second", "• third",
     ]
 
 
@@ -513,10 +520,10 @@ def test_response_stream_commits_complete_thinking_lines():
     assert output.getvalue() == ""
 
     stream.on_thinking(" completed\nsecond partial")
-    assert output.getvalue() == "first partial completed\n"
+    assert output.getvalue() == "  ┊ first partial completed\n"
 
     stream.on_content("answer")
-    assert output.getvalue() == "first partial completed\nsecond partial\n"
+    assert output.getvalue() == "  ┊ first partial completed\n  ┊ second partial\n"
 
     stream.close()
     assert "answer" in output.getvalue()
@@ -530,7 +537,7 @@ def test_response_stream_discards_pending_thinking_on_abort():
     stream.on_thinking("complete\npending")
     stream.close(render_terminal=False)
 
-    assert output.getvalue() == "complete\n"
+    assert output.getvalue() == "  ┊ complete\n"
 
 
 def test_completed_thinking_message_renders_and_emits_event():
@@ -545,7 +552,7 @@ def test_completed_thinking_message_renders_and_emits_event():
 
     console.thinking_message("first line\nsecond line")
 
-    assert output.getvalue() == "first line\nsecond line\n"
+    assert output.getvalue() == "  ┊ first line\n  ┊ second line\n"
     event = events.after(0)[-1]
     assert event.type == "thinking"
     assert event.data["text"] == "first line\nsecond line"
@@ -671,3 +678,173 @@ def test_thinking_indicator_exits_without_waiting_for_tick():
         with console.thinking():
             pass
     assert time.monotonic() - start < 0.4
+
+
+def _plain_console():
+    from ene.ui import AGENT_THEME, AgentConsole
+    from ene.utils.io import EventHub
+
+    output = io.StringIO()
+    console = AgentConsole()
+    console._console = Console(file=output, width=60, no_color=True, theme=AGENT_THEME)
+    console.events = EventHub()
+    return output, console
+
+
+def test_user_and_response_headers_carry_message_time():
+    stamp = float(int(time.time()) - 120)
+    clock = lambda value: time.strftime("%H:%M:%S", time.localtime(value))  # noqa: E731
+    if time.strftime("%Y-%m-%d", time.localtime(stamp + 60)) != time.strftime("%Y-%m-%d"):
+        pytest.skip("too close to midnight for a same-day timestamp")
+    output, console = _plain_console()
+
+    console.user_input("first line\nsecond", with_rule=False, created_at=stamp)
+    console.response("Answer **here**", created_at=stamp + 60, model="gpt-5.5")
+    console.user_input("from an old session", with_rule=False, created_at=None)
+    console.response("old reply", created_at=None)
+
+    assert output.getvalue().splitlines() == [
+        f"❯ You · {clock(stamp)}",
+        "  first line",
+        "  second",
+        f"💠 gpt-5.5 · {clock(stamp + 60)}",
+        "  Answer here",
+        "❯ You",
+        "  from an old session",
+        "💠 Assistant",
+        "  old reply",
+    ]
+    events = console.events.after(0)
+    assert [event.data["created_at"] for event in events] == [stamp, stamp + 60, None, None]
+    assert events[1].data["model"] == "gpt-5.5"
+
+
+def test_response_header_shows_date_for_earlier_days():
+    output, console = _plain_console()
+    console.response("old", created_at=time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1)))
+    assert output.getvalue().splitlines()[0] == "💠 Assistant · 2026-01-02 12:00"
+
+
+def test_tool_lines_nest_results_and_wrap_under_their_indent():
+    output, console = _plain_console()
+
+    console.tool("read", name="read", primary="ene/ui.py", qualifiers=["1-200"])
+    console.tool_result("exit 1\nFAILED tests/test_x.py", success=False)
+    console.warn("careful " * 12)
+
+    lines = output.getvalue().splitlines()
+    assert lines[0] == "  • read ene/ui.py · 1-200"
+    assert lines[1] == "    └ ✗ exit 1"
+    assert lines[2] == "        FAILED tests/test_x.py"
+    assert lines[3].startswith("  ! careful")
+    assert len(lines) > 4 and all(line.startswith("    careful") for line in lines[4:])
+    assert all(line == line.rstrip() for line in lines)
+
+
+def test_streamed_reply_is_stamped_when_its_first_text_arrives():
+    from ene.utils.io import EventHub
+
+    output = io.StringIO()
+    hub = EventHub()
+    stream = ResponseStream(Console(file=output, width=60, no_color=True), hub, model="m1")
+
+    started = time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))
+    stream.on_content("\n", at=started - 60)  # invisible: does not start the reply
+    stream.on_content("Hello\n\n", at=started)
+    stream.close()
+
+    assert stream.created_at == started
+    assert output.getvalue().splitlines()[0] == "💠 m1 · 2026-01-02 12:00"
+    final = [event for event in hub.after(0) if event.type == "assistant_message"]
+    assert final[-1].data["created_at"] == started
+    assert final[-1].data["model"] == "m1"
+
+    published = []
+    recorder = SimpleNamespace(publish=lambda kind, **data: published.append((kind, data)))
+    relay = ResponseStream(Console(file=io.StringIO()), recorder, model="m1")
+    relay.on_content("Hi\n")
+    relay.close()
+    assert ("assistant_delta", {"text": "Hi\n", "model": "m1"}) in published
+
+
+def test_round_summary_reports_timing_and_tokens():
+    from ene.ui import format_round_summary
+
+    record = {
+        "model_calls": 3, "duration": 95, "tool_calls": 6, "tool_failures": 1,
+        "ttft": 0.85, "tps": 52.3, "input_tokens": 120_000,
+        "output_tokens": 3_400, "cached_tokens": 99_600, "cancelled": False,
+    }
+    assert format_round_summary(record) == (
+        "✓ 1m 35s · 6 tools (1 failed) · TTFT 850ms · 52 tok/s · ↑120K ↓3K · 83% cached"
+    )
+    assert format_round_summary({**record, "cancelled": True}).startswith("■ stopped 1m 35s")
+    assert format_round_summary({**record, "model_calls": 0}) == ""
+
+    output, console = _plain_console()
+    console.round_summary(record)
+    assert output.getvalue().startswith("  ✓ 1m 35s")
+    # Terminal only: web clients render the round_stats event themselves.
+    assert console.events.after(0) == []
+
+
+def test_thinking_indicator_shows_time_to_first_token_and_output_rate(monkeypatch):
+    times = iter([100.0, 101.8])
+    monkeypatch.setattr("ene.ui.time.monotonic", lambda: next(times))
+    events = []
+
+    class Hub:
+        def publish(self, kind, **data):
+            events.append((kind, data))
+
+    indicator = ThinkingIndicator(
+        Console(file=io.StringIO(), no_color=True), events=Hub(), render_terminal=False
+    )
+    indicator.__enter__()
+    indicator.set_first_token()
+    indicator.set_first_token()  # only the first token counts
+    indicator.set_output_rate(52.4)
+    status = "".join(text for _, text in indicator._prompt_status("⠋", 12))
+    indicator.__exit__(None, None, None)
+
+    assert status == "⠋ Working... (12s) · TTFT 1.8s · 52 tok/s"
+    assert ("thinking_update", {"ttft": 1.8}) in events
+    assert sum(kind == "thinking_update" and "ttft" in data for kind, data in events) == 1
+
+
+def test_terminal_status_right_aligns_model_and_context():
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.application.current import create_app_session
+
+    with create_app_session(output=DummyOutput()):
+        terminal = TerminalInput(session_label="demo")
+    terminal._session = SimpleNamespace(app=SimpleNamespace(
+        output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=101)),
+        is_running=False,
+    ))
+    terminal.set_context_status(ContextStatus(10, 100, 0, 0, model="gpt-5.5"))
+    terminal.set_status([("class:status.text", "Working...")])
+
+    line = "".join(text for _, text in terminal._message()).splitlines()[1]
+    from rich.cells import cell_len
+
+    assert cell_len(line) == 100  # flush with the separator above
+    # The model marker and name stay together on the left.
+    assert line.startswith("🔷 gpt-5.5 · Working...  ")
+    assert line.endswith(" ━━━━━━━━━━━━━━ · 10% · ↑0 · ↓0 · 0% hit · demo")
+
+    # Narrower: the right side drops details, then disappears, never wraps.
+    terminal._session.app.output.get_size = lambda: SimpleNamespace(columns=60)
+    medium = "".join(text for _, text in terminal._message()).splitlines()[1]
+    assert cell_len(medium) == 59  # flush with the separator
+    assert medium.endswith(" ━━━━━━━━━━━━━━ 10% · demo")
+
+    terminal._session.app.output.get_size = lambda: SimpleNamespace(columns=30)
+    narrow = "".join(text for _, text in terminal._message()).splitlines()[1]
+    assert narrow == "🔷 gpt-5.5 · Working..."
+
+    terminal._session.app.output.get_size = lambda: SimpleNamespace(columns=101)
+    terminal.set_status(None)
+    idle = "".join(text for _, text in terminal._message()).splitlines()[1]
+    assert idle.startswith("🔷 gpt-5.5  ")
+    terminal.close_title()

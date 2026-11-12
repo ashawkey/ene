@@ -142,7 +142,7 @@ class OpenAICompatibleProvider(LLMProvider):
             {
                 key: value
                 for key, value in message.to_wire().items()
-                if key not in {"provider_state", "display_content", "origin"}
+                if key not in {"provider_state", "display_content", "origin", "created_at", "model"}
             }
             for message in request.messages
         ]

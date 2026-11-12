@@ -655,6 +655,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 }
 .reply-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .reply-time { font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.inbox-time { margin-left: auto; flex: none; }
 
 .copy-btn {
   display: inline-grid;

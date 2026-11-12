@@ -394,3 +394,20 @@ def test_inbox_messages_reach_chat_providers_as_plain_user_messages():
     request = CompletionRequest(model="m", messages=[message])
     wire = OpenAICompatibleProvider(ProviderSettings())._kwargs(request)["messages"]
     assert wire == [{"role": "user", "content": "<event>done</event>"}]
+
+
+def test_message_timestamp_round_trips_on_disk_but_never_reaches_the_api():
+    message = Message.user("hi", created_at=1_700_000_000.5)
+    wire = message.to_wire()
+    assert wire["created_at"] == 1_700_000_000.5
+    restored = Message.from_wire(wire)
+    assert restored.created_at == 1_700_000_000.5
+    assert "created_at" not in restored.extra
+    # Display metadata does not affect message identity.
+    assert restored == Message.user("hi")
+    # Sessions saved before timestamps existed load without one.
+    assert Message.from_wire({"role": "user", "content": "hi"}).created_at is None
+
+    provider = OpenAICompatibleProvider(ProviderSettings(api_key="key", base_url="url"))
+    body = provider._kwargs(CompletionRequest(model="m", messages=[message], stream=False))
+    assert body["messages"] == [{"role": "user", "content": "hi"}]

@@ -184,11 +184,18 @@ Interactive sessions run in detached workers and survive closing the terminal or
 - Start with an optional name using `ene [name]` (equivalent to `ene new [name]`).
 - Detach without interruption using `/detach` or Ctrl+D.
 - Rename the session with `/name [name]`.
-- The terminal status bar shows the session name (or saved session ID if unnamed) after the cache-hit percentage.
 - List workers with `ene ls` (`ene l`).
 - Reattach with `ene attach [name]`, or choose with bare `ene attach` (`ene a`).
 - Switch sessions using `/switch` or Ctrl+S; cancelling the picker leaves the current attachment untouched.
 - Use `/resume` to activate a stopped conversation in the current live worker.
+
+### Terminal layout
+
+- **Messages:** a header names the author and the time sent (with the date for earlier days): `❯ You · 14:32:05`, or `💠 <model> · 14:32:41` for each model reply. The text starts on the next line.
+- **Activity:** reasoning (`┊`), tool calls (`•`), and their results (`└ ✓` / `└ ✗`) are indented with no header.
+- **Round summary:** a dim line ends each round with duration, tool calls, mean time to first token (TTFT), output speed, tokens, and cache hits.
+- **Status bar:** the model marker and name, then activity: elapsed time, TTFT and live tokens/s while a reply streams, and round time. Context usage and the session name (or saved session ID) are right-aligned and shorten to fit narrow terminals.
+- Sessions saved before message timestamps existed replay without times.
 
 ### Session lifecycle
 

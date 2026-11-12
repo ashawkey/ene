@@ -531,6 +531,12 @@ class LiveTerminal:
         elif kind == "thinking_update" and self.indicator is not None:
             if "suffix" in data:
                 self.indicator.set_status_suffix(str(data.get("suffix", "")))
+            tps = data.get("tps")
+            if isinstance(tps, (int, float)) and not isinstance(tps, bool):
+                self.indicator.set_output_rate(float(tps))
+            ttft = data.get("ttft")
+            if isinstance(ttft, (int, float)) and not isinstance(ttft, bool):
+                self.indicator.set_first_token(float(ttft))
         elif kind == "thinking_stop" and self.indicator is not None:
             self.indicator.__exit__(None, None, None)
             self.indicator = None
@@ -554,7 +560,8 @@ class LiveTerminal:
             buffer.cursor_position = len(buffer.text)
         if self.terminal is not None:
             self.terminal.set_busy(self.operation_id is not None)
-        self._render(kind, data)
+        at = event.get("timestamp")
+        self._render(kind, data, at if isinstance(at, (int, float)) else None)
 
     def _answer_prompt(self, data: dict[str, Any]) -> None:
         kind = data.get("kind")
@@ -588,28 +595,55 @@ class LiveTerminal:
         ):
             self.prompt = None
 
-    def _render(self, kind: str, data: dict[str, Any]) -> None:
+    def _render(self, kind: str, data: dict[str, Any], at: float | None = None) -> None:
         with self.render_lock:
-            self._render_unlocked(kind, data)
+            self._render_unlocked(kind, data, at)
 
-    def _render_unlocked(self, kind: str, data: dict[str, Any]) -> None:
+    @staticmethod
+    def _created_at(data: dict[str, Any], at: float | None) -> float | None:
+        """The message's own time; an explicit null means it has none (an old
+        session), while a worker that predates the field falls back to *at*."""
+        if "created_at" not in data:
+            return at
+        value = data["created_at"]
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return None
+
+    def _render_unlocked(self, kind: str, data: dict[str, Any], at: float | None = None) -> None:
         text = str(data.get("text", ""))
         if kind == "rule":
             self.console.rule()
         elif kind == "user_message":
-            self.console.user_input(text, with_rule=False)
+            self.console.user_input(
+                text,
+                source=str(data.get("source", "replay")),
+                steer=bool(data.get("steer", False)),
+                with_rule=False,
+                created_at=self._created_at(data, at),
+            )
         elif kind == "assistant_delta":
             if self.response_stream is None:
                 self.response_stream = self.console.stream_response(show_thinking=True)
-            self.response_stream.on_content(text)
+            model = data.get("model")
+            self.response_stream.on_content(
+                text, at=at, model=model if isinstance(model, str) else None
+            )
             self.assistant_streamed = True
         elif kind == "assistant_message":
             if self.response_stream is not None:
                 self.response_stream.close()
                 self.response_stream = None
             else:
-                self.console.response(text)
+                model = data.get("model")
+                self.console.response(
+                    text,
+                    created_at=self._created_at(data, at),
+                    model=model if isinstance(model, str) else None,
+                )
             self.assistant_streamed = False
+        elif kind == "round_stats":
+            self.console.round_summary(data)
         elif kind == "system":
             self.console.system(text)
         elif kind == "warning":

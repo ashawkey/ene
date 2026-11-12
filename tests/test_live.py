@@ -2312,3 +2312,29 @@ def test_live_worker_web_stop_terminates_the_managed_process(tmp_path):
         )
     finally:
         agent.tool_executor.shutdown_processes()
+
+
+def test_live_terminal_stamps_relayed_messages_with_their_own_time():
+    client = LiveTerminal({})
+    calls = []
+    client.console = SimpleNamespace(
+        user_input=lambda text, **kwargs: calls.append(("user", text, kwargs)),
+        response=lambda text, **kwargs: calls.append(("response", text, kwargs)),
+        round_summary=lambda record: calls.append(("round", record["duration"], {})),
+    )
+
+    client._render_unlocked("user_message", {"text": "new", "created_at": 10.0}, 99.0)
+    client._render_unlocked("user_message", {"text": "old", "created_at": None}, 99.0)
+    # A worker that predates the field: fall back to the event time.
+    client._render_unlocked("user_message", {"text": "legacy", "source": "inbox"}, 99.0)
+    client._render_unlocked("assistant_message", {"text": "reply", "created_at": 12.0}, 99.0)
+    client._render_unlocked("round_stats", {"duration": 5.0}, 99.0)
+
+    assert [(kind, text, kwargs.get("created_at")) for kind, text, kwargs in calls] == [
+        ("user", "new", 10.0),
+        ("user", "old", None),
+        ("user", "legacy", 99.0),
+        ("response", "reply", 12.0),
+        ("round", 5.0, None),
+    ]
+    assert calls[2][2]["source"] == "inbox"

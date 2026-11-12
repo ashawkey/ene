@@ -26,9 +26,10 @@ import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useS
 
 import { parseAnsi } from '../lib/ansi'
 import { rawFileUrl } from '../lib/api'
-import { clockTime, compactNumber, duration, latency, tokenRate } from '../lib/format'
+import { compactNumber, duration, fullTime, latency, messageClock, tokenRate } from '../lib/format'
 import { highlight, languageForPath } from '../lib/highlight'
 import type { DiffData, TimelineItem, ToolImage } from '../lib/session'
+import { messageTime } from '../lib/session'
 import { summarize } from '../lib/timeline'
 import type { ProcessActivity, RoundStats } from '../lib/protocol'
 import { CopyButton, Markdown, SessionIdContext } from './Markdown'
@@ -99,12 +100,20 @@ function OutputBlock({ text, ansi, follow = false }: { text: string; ansi?: stri
 const sourceIcon = (source: string) =>
   source === 'terminal' ? <Terminal size={12} /> : source === 'web' ? <Monitor size={12} /> : null
 
+/** When a message was sent; nothing for messages saved without a time. */
+function MessageTime({ item, className }: { item: { ts: number; at?: number | null }; className?: string }) {
+  const at = messageTime(item)
+  if (at === null) return null
+  return <span className={className} data-tip={fullTime(at)}>{messageClock(at)}</span>
+}
+
 export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<'user'> }) {
   if (item.source === 'inbox') {
     return (
       <div className="inbox-note">
         <Bell size={14} />
         <span className="clamp">{item.text}</span>
+        <MessageTime item={item} className="reply-time inbox-time" />
       </div>
     )
   }
@@ -117,7 +126,7 @@ export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<'u
       <div className="bubble-meta">
         {sourceIcon(item.source)}
         {item.steer ? <span className="pill-mini">steer</span> : null}
-        <span>{clockTime(item.ts)}</span>
+        <MessageTime item={item} className="msg-time" />
         <CopyButton text={item.text} label="Copy message" />
       </div>
     </div>
@@ -139,7 +148,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {!item.streaming && (item.text || round) ? (
         <div className="reply-foot">
           {item.text ? <CopyButton text={item.text} label="Copy reply" /> : null}
-          {item.text ? <span className="reply-time">{clockTime(item.ts)}</span> : null}
+          {item.text ? <MessageTime item={item} className="reply-time" /> : null}
           {round ? <RoundChip round={round} onOpen={onOpenStats} /> : null}
         </div>
       ) : null}

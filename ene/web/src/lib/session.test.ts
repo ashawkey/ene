@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ServerEvent, StateFrame } from './protocol'
 import type { SessionView, TimelineItem } from './session'
-import { applyHistory, initialView, reduce, totals } from './session'
+import { applyHistory, initialView, messageTime, reduce, totals } from './session'
 
 function state(overrides: Partial<StateFrame> = {}): ServerEvent {
   return {
@@ -200,6 +200,36 @@ describe('session reducer', () => {
     expect(view.indicator).toMatchObject({ suffix: 'ctx 2', tps: 42.5 })
     const next = run([ev(4, 'thinking_stop'), ev(5, 'thinking_start', { label: 'Working' })], view).view
     expect(next.indicator?.tps).toBeNull()
+  })
+
+  it('keeps the time to first token across indicator updates', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'thinking_start', { label: 'Working' }),
+      ev(2, 'thinking_update', { ttft: 1.8 }),
+      ev(3, 'thinking_update', { tps: 40 }),
+    ])
+    expect(view.indicator).toMatchObject({ ttft: 1.8, tps: 40 })
+    const next = run([ev(4, 'thinking_stop'), ev(5, 'thinking_start', { label: 'Working' })], view).view
+    expect(next.indicator?.ttft).toBeNull()
+  })
+
+  it('stamps messages with their own time rather than the event time', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'user_message', { text: 'new', source: 'web', created_at: 500 }),
+      ev(2, 'user_message', { text: 'old', source: 'replay', created_at: null }),
+      ev(3, 'user_message', { text: 'legacy', source: 'web' }),
+      ev(4, 'assistant_delta', { text: 'Hel' }),
+      ev(5, 'assistant_delta', { text: 'lo' }),
+      ev(6, 'assistant_message', { text: 'Hello', created_at: 503.5 }),
+      ev(7, 'assistant_delta', { text: 'Again' }),
+      ev(8, 'assistant_message', { text: 'Again' }),
+      ev(9, 'assistant_message', { text: 'saved', created_at: null }),
+    ])
+    // Missing created_at (an older worker) falls back to the event time; a
+    // streamed reply keeps the time its first text arrived.
+    expect(view.items.map(messageTime)).toEqual([500, null, 1003, 503.5, 1007, null])
   })
 
   it('prefers the wide form of printed output', () => {

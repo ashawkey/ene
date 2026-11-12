@@ -765,13 +765,18 @@ class SessionMixin:
                 # part, as it was shown when the compaction ran.
                 summary = self.context.compaction_state.summary
                 self.console.response(
-                    summary or msg.text.removeprefix(SUMMARY_MARKER).strip()
+                    summary or msg.text.removeprefix(SUMMARY_MARKER).strip(),
+                    created_at=None,
                 )
             elif msg.is_inbox:
-                self.console.user_input(msg.display, source="inbox")
+                self.console.user_input(
+                    msg.display, source="inbox", created_at=msg.created_at
+                )
             elif msg.is_user:
-                self.console.user_input(msg.display)
+                self.console.user_input(msg.display, created_at=msg.created_at)
             else:
-                self.console.response(msg.text)
+                self.console.response(
+                    msg.text, created_at=msg.created_at, model=msg.model
+                )
         self.console.system("── End of replay ──")
 

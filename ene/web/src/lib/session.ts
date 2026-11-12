@@ -12,6 +12,12 @@ import type {
 import { isPrompt } from './protocol'
 
 type Base = { key: string; seq: number; ts: number }
+/**
+ * When a message was sent (user) or started (reply), from its `created_at`.
+ * Null for messages saved before timestamps existed; absent means the event
+ * time (`ts`) applies.
+ */
+type Sent = { at?: number | null }
 
 /** An image a tool loaded (`read_image`); `path` is the agent's local path. */
 export type ToolImage = { path: string; mime: string }
@@ -27,8 +33,8 @@ export type DiffData = {
 }
 
 export type TimelineItem =
-  | (Base & { kind: 'user'; text: string; source: string; steer: boolean })
-  | (Base & { kind: 'assistant'; text: string; streaming: boolean })
+  | (Base & Sent & { kind: 'user'; text: string; source: string; steer: boolean })
+  | (Base & Sent & { kind: 'assistant'; text: string; streaming: boolean })
   | (Base & { kind: 'thinking'; text: string; streaming: boolean })
   | (Base & {
       kind: 'tool'
@@ -122,6 +128,20 @@ const optionalNum = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 const num = (value: unknown, fallback = 0) =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback
+
+/**
+ * A message's own time: `created_at` when the event carries it (null for a
+ * message saved without one), else *fallback* for workers that predate it.
+ */
+function sentAt(data: Record<string, unknown>, fallback: number | null): number | null {
+  if (!('created_at' in data)) return fallback
+  return optionalNum(data.created_at)
+}
+
+/** The time to show beside a message, or null when it has none. */
+export function messageTime(item: { ts: number; at?: number | null }): number | null {
+  return item.at === undefined ? item.ts : item.at
+}
 
 export function parseContext(data: Record<string, unknown> | null | undefined): ContextSnapshot | null {
   if (!data || typeof data.context_tokens !== 'number') return null
@@ -317,6 +337,7 @@ function indicatorFrom(data: Record<string, unknown>): LiveIndicator {
     output_tokens: num(data.output_tokens),
     cached_tokens: num(data.cached_tokens),
     tps: optionalNum(data.tps),
+    ttft: optionalNum(data.ttft),
     receivedAt: Date.now(),
   }
 }
@@ -435,7 +456,9 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
     case 'user_message': {
       const text = str(data.text)
       const source = str(data.source)
-      next.items = append(items, { kind: 'user', key, seq, ts, text, source, steer: data.steer === true })
+      next.items = append(items, {
+        kind: 'user', key, seq, ts, at: sentAt(data, ts), text, source, steer: data.steer === true,
+      })
       if (text && source !== 'inbox' && source !== 'replay') {
         next.history = [...next.history.filter((entry) => entry !== text), text].slice(-200)
       } else if (text && source === 'replay' && !next.history.includes(text)) {
@@ -454,7 +477,11 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
         copy[index] = { ...target, text: target.text + text }
         next.items = copy
       } else {
-        next.items = [...items, { kind, key: `s${key}`, seq, ts, text, streaming: true }]
+        // A reply is stamped when its first text arrives, like the agent does.
+        const item = kind === 'assistant'
+          ? { kind, key: `s${key}`, seq, ts, at: ts, text, streaming: true }
+          : { kind, key: `s${key}`, seq, ts, text, streaming: true }
+        next.items = [...items, item as TimelineItem]
       }
       break
     }
@@ -463,6 +490,10 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
       const kind = message.type === 'assistant_message' ? 'assistant' : 'thinking'
       const index = openStream(items, kind)
       const item = { kind, key, seq, ts, text: str(data.text), streaming: false } as TimelineItem
+      if (item.kind === 'assistant') {
+        const streamed = index >= 0 ? (items[index] as { at?: number | null }).at : undefined
+        item.at = sentAt(data, streamed ?? ts)
+      }
       if (index >= 0) {
         const copy = items.slice()
         copy[index] = { ...item, key: items[index].key }
@@ -570,6 +601,7 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
           ...next.indicator,
           suffix: str(data.suffix, next.indicator.suffix),
           tps: optionalNum(data.tps) ?? next.indicator.tps,
+          ttft: optionalNum(data.ttft) ?? next.indicator.ttft,
         }
       }
       break

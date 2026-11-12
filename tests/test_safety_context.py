@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from contextlib import nullcontext
 from types import SimpleNamespace as NS
 
@@ -491,9 +492,13 @@ def test_pending_message_steers_next_agentic_iteration():
         broker.submit("use @config.py instead", source="web")
         return False
 
+    printed = []
     console = NS(
-        response=lambda text: None,
-        user_input=lambda text, **kwargs: user_inputs.append((text, kwargs)),
+        response=lambda text, **kwargs: None,
+        user_input=lambda text, **kwargs: (
+            user_inputs.append((text, kwargs)), printed.append("message")
+        ),
+        rule=lambda: printed.append("rule"),
     )
     agent = NS(
         verbose=False,
@@ -519,6 +524,8 @@ def test_pending_message_steers_next_agentic_iteration():
     assert user_inputs[0][0] == "use config.py instead"
     assert user_inputs[0][1]["source"] == "web"
     assert user_inputs[0][1]["steer"] is True
+    # Framed by rules like any other message, even mid-round.
+    assert printed == ["rule", "message", "rule"]
     assert agent.round_id == 4
 
 
@@ -580,7 +587,7 @@ def test_interrupted_tool_iteration_does_not_consume_pending_message():
         context=context,
         input_broker=broker,
         _inject_inbox=lambda **kwargs: False,
-        console=NS(response=lambda text: None, system=lambda text: None),
+        console=NS(response=lambda text, **kwargs: None, system=lambda text: None),
         call_api=call_api,
         execute_tool_calls=execute_tool_calls,
         _last_interrupted=False,
@@ -728,7 +735,7 @@ def _unfinished_agent(context, warnings):
     agent = NS(
         console=NS(
             warn=lambda text: warnings.append(text),
-            response=lambda text: None,
+            response=lambda text, **kwargs: None,
             debug=lambda text: None,
             error=lambda text: None,
         ),
@@ -880,7 +887,7 @@ def _compaction_agent(token_readings):
     console = _Console()
     console.system = lambda *args, **kwargs: None
     console.responses = []
-    console.response = console.responses.append
+    console.response = lambda text, **kwargs: console.responses.append(text)
     context = ContextManager("system prompt")
     for i in range(10):
         context.add(Message.user(f"request {i} " + "x" * 6_000))
@@ -1135,6 +1142,78 @@ def test_stream_status_remains_active_while_body_is_consumed(monkeypatch):
     LLMAgent._stream_completion(agent, NS(stream=True))
 
     assert state["thinking"] is False
+
+
+def test_stream_stamps_reply_and_reports_first_token(monkeypatch):
+    from ene.ui import AgentConsole
+
+    marks = []
+
+    class Indicator:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def set_first_token(self):
+            marks.append("indicator")
+
+    class Console(AgentConsole):
+        def thinking(self, **kwargs):
+            return Indicator()
+
+    class Stream:
+        def consume(self, *, on_content, on_first_token, **kwargs):
+            on_first_token()
+            on_content("Hello\n")
+            return CompletionResult(Message.assistant("Hello"), None, "stop")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "ene.backend.run_interruptible",
+        lambda fn, cancellation, on_cancel=None: fn(),
+    )
+    console = Console(render_terminal=False)
+    agent = NS(
+        console=console,
+        cancellation=None,
+        show_thinking=False,
+        _status_suffix=lambda: "",
+        _mark_first_token=lambda: marks.append("agent"),
+        provider=NS(open_stream=lambda request: Stream(), cancel=lambda: None),
+    )
+
+    before = time.time()
+    result = LLMAgent._stream_completion(agent, NS(stream=True))
+
+    assert marks == ["agent", "indicator"]
+    assert before <= result.message.created_at <= time.time()
+
+
+@pytest.mark.parametrize("steer", [False, True])
+def test_notifications_are_framed_by_rules(steer):
+    printed = []
+    broker = InputBroker(EventHub())
+    broker.post_event("process 7 exited", "harness")
+    agent = NS(
+        input_broker=broker,
+        _one_shot=False,
+        tool_executor=NS(has_pending_notifications=lambda: False),
+        context=ContextManager("system"),
+        _maybe_announce_peers=lambda: printed.append("peers"),
+        console=NS(
+            rule=lambda: printed.append("rule"),
+            user_input=lambda text, **kwargs: printed.append(kwargs["source"]),
+        ),
+    )
+
+    assert LLMAgent._inject_inbox(agent, steer=steer) is True
+    expected = ["rule", "inbox", "rule"] if steer else ["rule", "peers", "inbox", "rule"]
+    assert printed == expected
+    assert agent.context.messages[-1].is_inbox
 
 
 def _tool_call_msg(name, args_json):
