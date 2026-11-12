@@ -67,6 +67,7 @@ The sidebar groups every live session on the machine:
 ## Conversation
 
 - **Timeline:** messages, reasoning, and tool calls. A tool call holds its command output, diffs, and result.
+- **History:** opening or reloading a session shows the newest turns; scrolling up loads earlier ones, back to the start of the conversation. Full detail covers the latest 2,000 events; before a marked point, only messages are kept, without tool activity.
 - **Folding:** every step folds by its chevron. Results longer than 12 lines start folded; failures and running calls start open. Three or more consecutive tool calls fold into one row.
 - **Reasoning:** folded; while streaming it previews the newest lines. Unfold it at any time to read the whole thought so far.
 - **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
@@ -74,7 +75,7 @@ The sidebar groups every live session on the machine:
 - **Diffs:** click the file name to open the file.
 - **Images:** a `read_image` call shows a thumbnail; click it to open the image in the file viewer. Unreadable or unsupported images show only the text result.
 - **Reply images:** Markdown images with a local raster path (for example `![plot](out/fig.png)`) render inline. Remote, SVG, or unreadable images show their alt text.
-- **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches.
+- **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches in the loaded history.
 - **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
 
 ### Composer

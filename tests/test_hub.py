@@ -220,8 +220,69 @@ def test_per_session_state_and_event_replay():
             assert state["process_status"] == "1/1 running processes"
             assert state["processes"]["processes"][0]["label"] == "tests"
             assert state["commands"] == {"help": "Show help"}
-            assert state["replay_truncated"] is True
+            assert state["detail_from"] == session.events.oldest_seq
+            assert state["history_before"] is None
             assert receive_type(sock, "system")["data"]["text"] == "ready"
+
+
+def test_browser_replays_newest_page_and_pages_back(monkeypatch):
+    monkeypatch.setattr("ene.hub.server.HISTORY_PAGE_EVENTS", 3)
+    hub = make_hub()
+    session = add_session(hub, "s1")
+    for turn in range(3):
+        session.events.publish("user_message", text=f"q{turn}", source="web")
+        session.events.publish("tool_start", name="read_file")
+        session.events.publish("tool_result", text="ok")
+        session.events.publish("assistant_message", text=f"a{turn}")
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect(
+            "/api/ws?session=s1&after=0", headers={"origin": "http://testserver"}
+        ) as sock:
+            state = receive_type(sock, "state")
+            # The newest page is extended back to its turn's user message.
+            assert state["replay_from"] == 9
+            assert state["history_before"] == 9
+            assert state["detail_from"] is None
+            assert receive_type(sock, "user_message")["data"]["text"] == "q2"
+            sock.send_json({"type": "history", "before": 9})
+            page = receive_type(sock, "history")
+            assert page["stream_id"] == session.events.stream_id
+            assert [event["seq"] for event in page["events"]] == [5, 6, 7, 8]
+            assert page["history_before"] == 5
+            sock.send_json({"type": "history", "before": 5})
+            page = receive_type(sock, "history")
+            assert [event["seq"] for event in page["events"]] == [1, 2, 3, 4]
+            assert page["history_before"] is None
+
+
+def test_browser_pages_back_into_the_transcript(monkeypatch):
+    monkeypatch.setattr("ene.hub.server.HISTORY_PAGE_EVENTS", 2)
+    hub = make_hub()
+    session = add_session(hub, "s1")
+    session.events = EventHub(max_events=3, keep_transcript=True)
+    for turn in range(3):
+        session.events.publish("user_message", text=f"q{turn}", source="web")
+        session.events.publish("tool_result", text="ok")
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect(
+            "/api/ws?session=s1&after=0", headers={"origin": "http://testserver"}
+        ) as sock:
+            state = receive_type(sock, "state")
+            assert state["replay_from"] == 5
+            assert state["history_before"] == 5
+            assert state["detail_from"] == 4
+            sock.send_json({"type": "history", "before": 5})
+            page = receive_type(sock, "history")
+            assert [event["data"]["text"] for event in page["events"]] == ["q1", "ok"]
+            assert page["history_before"] == 3
+            sock.send_json({"type": "history", "before": 3})
+            page = receive_type(sock, "history")
+            # The evicted tool result is gone; the question remains.
+            assert [event["data"]["text"] for event in page["events"]] == ["q0"]
+            assert page["history_before"] is None
+            assert page["detail_from"] == 4
 
 
 def test_browser_websockets_answer_heartbeats():

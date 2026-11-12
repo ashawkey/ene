@@ -422,3 +422,57 @@ def test_event_hub_reports_gap_only_for_capacity_eviction():
     assert hub.has_replay_gap(1)
     assert not hub.has_replay_gap(2)
     assert [event.seq for event in hub.after(3)] == [4, 5]
+
+
+def test_event_hub_pages_whole_turns_back_to_the_latest_reset():
+    hub = EventHub(max_events=100)
+    hub.publish("user_message", text="before reset")
+    reset = hub.publish("timeline_reset")
+    for turn in range(2):
+        hub.publish("user_message", text=str(turn))
+        hub.publish("tool_start", name="x")
+        hub.publish("tool_result", text="ok")
+
+    page = hub.page_before(hub.latest_seq + 1, 2)
+    assert [event.seq for event in page.events] == [6, 7, 8]
+    assert page.more and page.detail_from is None
+    page = hub.page_before(6, 2)
+    assert [event.seq for event in page.events] == [reset.seq + 1, 4, 5]
+    assert not page.more
+
+
+def test_event_hub_page_reports_evicted_history():
+    hub = EventHub(max_events=3)
+    for index in range(5):
+        hub.publish("system", text=str(index))
+    page = hub.page_before(hub.latest_seq + 1, 10)
+    assert [event.seq for event in page.events] == [3, 4, 5]
+    assert not page.more and page.detail_from == 3
+
+
+def test_event_hub_pages_continue_into_the_transcript():
+    hub = EventHub(max_events=4, keep_transcript=True)
+    for turn in range(3):
+        hub.publish("user_message", text=f"q{turn}")
+        hub.publish("tool_result", text="ok")
+        hub.publish("assistant_message", text=f"a{turn}")
+    # Retained: 6..9; the transcript keeps the evicted messages 1, 3, 4.
+    assert [e.seq for e in hub.transcript()] == [1, 3, 4, 6, 7, 9]
+
+    tail = hub.page_before(hub.latest_seq + 1, 2, condensed=False)
+    assert [e.seq for e in tail.events] == [7, 8, 9]
+    assert tail.more and tail.detail_from == 6
+    # Streaming pages stop at the buffer, but report the older transcript;
+    # condensed pages continue into it.
+    streaming = hub.page_before(7, 10, condensed=False)
+    assert [e.seq for e in streaming.events] == [6] and streaming.more
+    page = hub.page_before(7, 10)
+    assert [(e.seq, e.type) for e in page.events] == [
+        (1, "user_message"), (3, "assistant_message"),
+        (4, "user_message"), (6, "assistant_message"),
+    ]
+    assert not page.more and page.detail_from == 6
+
+    hub.publish("timeline_reset")
+    assert hub.transcript() == []
+    assert hub.page_before(hub.latest_seq + 1, 10).events == []

@@ -134,12 +134,9 @@ class Worker:
         self.attachment_owner = ""
         self.connections: set[socket.socket] = set()
         self.connections_lock = threading.Lock()
-        self.events = EventHub(max_events=10000)
         # Direct conversation must survive any amount of bounded tool/thinking
         # activity so a later attachment can always reconstruct the transcript.
-        self._transcript_lock = threading.Lock()
-        self._transcript_events: list[AgentEvent] = []
-        self.events.add_listener(self._remember_transcript)
+        self.events = EventHub(max_events=10000, keep_transcript=True)
         self.inputs = InputBroker(self.events)
         self.prompts = PromptBroker(self.events)
         self.cancellation = CancellationToken(self.events, self.prompts)
@@ -250,21 +247,6 @@ class Worker:
                 with self._state_lock:
                     self._last_user_message = text[:PREVIEW_LIMIT]
                 return
-
-    def _remember_transcript(self, event: AgentEvent) -> None:
-        """Retain direct conversation independently of the bounded event hub."""
-        with self._transcript_lock:
-            if event.type == "timeline_reset":
-                self._transcript_events.clear()
-            elif event.type in {"user_message", "assistant_message"}:
-                self._transcript_events.append(event)
-
-    def _transcript_snapshot(self) -> list[AgentEvent]:
-        lock = getattr(self, "_transcript_lock", None)
-        if lock is None:
-            return []
-        with lock:
-            return list(self._transcript_events)
 
     def _track_state(self, event: AgentEvent) -> None:
         """Record live UI state and exact discovery-state transition times."""
@@ -750,7 +732,7 @@ class Worker:
         self.events.add_listener(enqueue)
         bounded_events = self.events.snapshot()
         snapshot_seq = max((event.seq for event in bounded_events), default=0)
-        transcript_events = self._transcript_snapshot()
+        transcript_events = self.events.transcript()
         # Close the small gap between the two snapshots. Anything published
         # later remains in the listener queue and is forwarded after replay.
         catch_up_events = self.events.after(snapshot_seq)

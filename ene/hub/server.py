@@ -64,6 +64,9 @@ MAX_CLIENTS = 128
 LOGIN_RATE_WINDOW = 60          # seconds
 LOGIN_RATE_LIMIT = 8            # attempts per window per IP
 EVENT_WAIT_TIMEOUT = 1.0        # fallback re-check interval for browser readers
+# Events replayed when a browser opens a session, and per older page it
+# requests while scrolling back (pages are extended to a turn boundary).
+HISTORY_PAGE_EVENTS = 300
 PREVIEW_LIMIT = 160             # longest last-user-message preview sent to browsers
 MAX_BODY_BYTES = 4096
 MAX_ANSWER_BYTES = 128 * 1024
@@ -260,7 +263,9 @@ class RemoteSession:
         self.id = session_id
         self.meta = meta                 # {title, name, cwd, model}
         self.link: WorkerLink | None = None
-        self.events = EventHub()
+        # The transcript lets browsers scroll back through the conversation
+        # after its tool activity has left the bounded buffer.
+        self.events = EventHub(keep_transcript=True)
         # Derived UI state, tracked from the event stream (mirrors what the
         # single-agent server pulls from its brokers).
         self.prompt: dict | None = None
@@ -293,7 +298,7 @@ class RemoteSession:
 
     def reset(self) -> None:
         """Start a fresh event stream (new stream_id) on (re)attach."""
-        self.events = EventHub()
+        self.events = EventHub(keep_transcript=True)
         self.prompt = None
         self.pending = None
         self.operation_id = None
@@ -1695,7 +1700,43 @@ class Hub:
         if seq > session.events.latest_seq:
             seq = 0
 
-        def state_frame(s: RemoteSession, after_seq: int) -> dict:
+        def replay_point(s: RemoteSession, after_seq: int) -> tuple[int, dict]:
+            """Where streaming resumes, and the older history left behind it.
+
+            A reconnect continues from the client's cursor. A fresh client (or
+            one whose cursor fell out of retained history) starts at the newest
+            page and scrolls back with ``history`` requests.
+            """
+            if after_seq > 0 and not s.events.has_replay_gap(after_seq):
+                return after_seq, {"history_before": None, "detail_from": None}
+            # Streaming replays from the bounded buffer, so the first page
+            # never starts in the transcript-only part.
+            page = s.events.page_before(
+                s.events.latest_seq + 1, HISTORY_PAGE_EVENTS, condensed=False
+            )
+            start = page.events[0].seq if page.events else s.events.latest_seq + 1
+            return start - 1, {
+                "history_before": start if page.more else None,
+                "detail_from": page.detail_from,
+            }
+
+        def history_frame(s: RemoteSession, before: object) -> dict:
+            if not isinstance(before, int) or isinstance(before, bool) or before < 1:
+                before = 1
+            page = s.events.page_before(before, HISTORY_PAGE_EVENTS)
+            return {
+                "type": "history",
+                "session": session_id,
+                "stream_id": s.events.stream_id,
+                "before": before,
+                "events": [event.to_dict() for event in page.events],
+                "history_before": (
+                    page.events[0].seq if page.events and page.more else None
+                ),
+                "detail_from": page.detail_from,
+            }
+
+        def state_frame(s: RemoteSession, after_seq: int, history: dict) -> dict:
             require_login()
             return {
                 "type": "state",
@@ -1711,15 +1752,16 @@ class Hub:
                 "commands": s.commands,
                 "prompt": s.prompt,
                 "pending": s.pending,
-                "oldest_seq": s.events.oldest_seq,
-                "replay_truncated": s.events.has_replay_gap(after_seq),
+                "replay_from": after_seq + 1,
+                **history,
                 "info": s.info,
                 "rounds": s.rounds,
                 "active_round": s.active_round,
             }
 
         stream = session.events.stream_id
-        await websocket.send_json(state_frame(session, seq))
+        seq, history = replay_point(session, seq)
+        await websocket.send_json(state_frame(session, seq, history))
 
         async def send_events():
             nonlocal seq, stream
@@ -1733,8 +1775,8 @@ class Hub:
                 # the head so the client rebuilds this session's timeline.
                 if current.events.stream_id != stream:
                     stream = current.events.stream_id
-                    seq = 0
-                    await websocket.send_json(state_frame(current, seq))
+                    seq, history = replay_point(current, 0)
+                    await websocket.send_json(state_frame(current, seq, history))
                 pending = await current.wait_events(seq, EVENT_WAIT_TIMEOUT)
                 for event in pending:
                     require_login()
@@ -1759,6 +1801,13 @@ class Hub:
                 action = payload.get("type")
                 if action == "ping":
                     await websocket.send_json({"type": "pong"})
+                    continue
+                if action == "history":
+                    current = self.get_session(session_id)
+                    if current is not None:
+                        await websocket.send_json(
+                            history_frame(current, payload.get("before"))
+                        )
                     continue
                 if action not in {
                     "submit", "withdraw_pending", "prompt_response",

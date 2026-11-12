@@ -106,3 +106,32 @@ describe('Timeline tail following', () => {
     expect(top).toBe(700)
   })
 })
+
+describe('Timeline history', () => {
+  const props = {
+    active: true,
+    handle: createRef<TimelineHandle>(),
+    query: '',
+    matchIndex: 0,
+    onMatches: () => {},
+    onOpenFile: () => {},
+    onOpenStats: () => {},
+    onLoadOlder: () => {},
+  }
+  const order = (container: HTMLElement) =>
+    [...container.querySelectorAll('.timeline > *')].map((node) =>
+      (node as HTMLElement).dataset.key ?? (node.textContent?.includes('no longer retained') ? 'marker' : 'other'))
+
+  it('marks where condensed history meets full detail', () => {
+    const view = { ...viewWith(4), detailFrom: 3 }
+    const { container } = render(<Timeline view={view} {...props} />)
+    expect(order(container)).toEqual(['a1', 'a2', 'marker', 'a3', 'a4'])
+  })
+
+  it('waits for the condensed part before marking the boundary', () => {
+    const view = { ...viewWith(2), detailFrom: 1, historyBefore: 1 }
+    const { container } = render(<Timeline view={view} {...props} />)
+    expect(order(container)).toEqual(['other', 'a1', 'a2'])
+    expect(container.textContent).toContain('Loading earlier history')
+  })
+})

@@ -17,7 +17,7 @@ import {
   UserMessage,
 } from './TimelineItems'
 import { OpenFileContext } from './Markdown'
-import { Empty } from './ui'
+import { Empty, Spinner } from './ui'
 
 export type TimelineHandle = {
   scrollToSeq: (seq: number) => void
@@ -65,6 +65,17 @@ function topItem(element: HTMLElement): { key: string | null; offset: number } {
 }
 // Jump buttons appear once the view is this far from the respective edge.
 const EDGE_DISTANCE = 24
+// Older history is requested once the top is this close to the view.
+const PRELOAD_DISTANCE = 800
+
+/** The top item if it is a transcript item, else the first one below it. */
+function keyedTopItem(element: HTMLElement): { key: string; offset: number } | null {
+  const top = topItem(element)
+  if (top.key) return { key: top.key, offset: top.offset }
+  const first = element.querySelector<HTMLElement>('.timeline > [data-key]')
+  if (!first?.dataset.key) return null
+  return { key: first.dataset.key, offset: first.getBoundingClientRect().top - element.getBoundingClientRect().top }
+}
 
 // Memoized: parent re-renders (session list updates, composer typing) must
 // not walk the whole transcript.
@@ -77,6 +88,7 @@ export const Timeline = memo(function Timeline({
   onMatches,
   onOpenFile,
   onOpenStats,
+  onLoadOlder,
   memoryKey,
 }: {
   view: SessionView
@@ -89,6 +101,8 @@ export const Timeline = memo(function Timeline({
   onMatches: (count: number) => void
   onOpenFile: (path: string) => void
   onOpenStats: () => void
+  /** Request the page of history before the oldest loaded item. */
+  onLoadOlder?: () => void
 }) {
   const scroller = useRef<HTMLDivElement>(null)
   const memory = useRef<ScrollMemory>(
@@ -107,6 +121,11 @@ export const Timeline = memo(function Timeline({
     if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current)
     settleFrame.current = null
   }, [])
+  // While an older page loads, the item the reader is looking at; prepending
+  // the page re-aligns it so the view does not jump.
+  const olderAnchor = useRef<{ key: string; offset: number } | null>(null)
+  const firstKey = useRef<string | null>(null)
+  const sentinel = useRef<HTMLDivElement>(null)
   const [canUp, setCanUp] = useState(false)
   const [canDown, setCanDown] = useState(false)
   const live = view.operationId !== null
@@ -236,7 +255,17 @@ export const Timeline = memo(function Timeline({
 
   // Follow new output while pinned to the tail.
   useLayoutEffect(() => {
-    if (active && restorePending.current && view.items.length) {
+    const first = view.items[0]?.key ?? null
+    const previousFirst = firstKey.current
+    firstKey.current = first
+    const prepended = previousFirst !== null && first !== previousFirst &&
+      view.items.some((item) => item.key === previousFirst)
+    const anchor = olderAnchor.current
+    if (prepended) olderAnchor.current = null
+    if (active && prepended && anchor && !pinned.current) {
+      memory.current = { pinned: false, ...anchor, top: scroller.current?.scrollTop ?? 0 }
+      restore()
+    } else if (active && restorePending.current && view.items.length) {
       // One more try now that the transcript has loaded; then settle.
       restore()
       restorePending.current = false
@@ -253,6 +282,34 @@ export const Timeline = memo(function Timeline({
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
     stopSettling()
   }, [stopSettling])
+
+  // Load older history as the top comes near. Re-observing after each page
+  // reports the sentinel again, so a short page that leaves it in view keeps
+  // loading until the view is filled.
+  const historyBefore = view.historyBefore
+  // Where full detail begins: above it, only the conversation was retained.
+  // Marked once the condensed part is loaded, or when nothing is older.
+  const detailFrom = view.detailFrom
+  const condensedAt = useMemo(() => {
+    if (detailFrom === null || !nodes.length) return -1
+    const index = nodes.findIndex((node) =>
+      (node.kind === 'item' ? node.item.seq : node.items[0].seq) >= detailFrom)
+    if (index < 0) return nodes.length
+    return index > 0 || historyBefore === null ? index : -1
+  }, [nodes, detailFrom, historyBefore])
+  useEffect(() => {
+    const element = scroller.current
+    const target = sentinel.current
+    if (!active || !onLoadOlder || historyBefore === null || !element || !target) return
+    if (typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return
+      olderAnchor.current = pinned.current ? null : keyedTopItem(element)
+      onLoadOlder()
+    }, { root: element, rootMargin: `${PRELOAD_DISTANCE}px 0px 0px 0px` })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [active, onLoadOlder, historyBefore])
 
   // Keep the bottom in view when the composer grows or the viewport shrinks
   // (mobile keyboards); content resizes (expanding cards) can change which
@@ -284,6 +341,8 @@ export const Timeline = memo(function Timeline({
     if (top < lastTop.current - 0.5 && distance > 1) pinned.current = false
     else if (distance <= PIN_DISTANCE) pinned.current = true
     lastTop.current = top
+    // Track what the reader looks at until the requested page arrives.
+    if (olderAnchor.current) olderAnchor.current = pinned.current ? null : keyedTopItem(element)
     measure()
     // A restore still settling is not a new position.
     if (settleFrame.current !== null) return
@@ -337,13 +396,17 @@ export const Timeline = memo(function Timeline({
         onKeyDown={stopSettling}
       >
         <div className="timeline" aria-live="polite">
-          {view.truncatedAt !== null ? (
-            <div className="notice debug"><History size={14} /><span>Earlier history is no longer available in this view.</span></div>
+          {historyBefore !== null && onLoadOlder ? (
+            <div className="notice debug" ref={sentinel}><Spinner size={14} /><span>Loading earlier history…</span></div>
           ) : null}
-          {nodes.length === 0 ? (
+          {nodes.length === 0 && historyBefore === null ? (
             <Empty icon={MessagesSquare}>Send a message to start.</Empty>
           ) : null}
-          {nodes.map((node) => node.kind === 'item' ? (
+          {nodes.flatMap((node, index) => [...(index === condensedAt ? [(
+            <div className="notice debug" key="condensed">
+              <History size={14} /><span>Earlier tool activity is no longer retained; only the conversation is shown above.</span>
+            </div>
+          )] : []), node.kind === 'item' ? (
             <div className={`t-item k-${node.item.kind} ${mark(node.item.key)}`} key={node.item.key} data-key={node.item.key} data-seq={node.item.seq || undefined}>
               {renderItem(node.item, live, node.round?.round)}
             </div>
@@ -356,7 +419,10 @@ export const Timeline = memo(function Timeline({
             >
               <ActivityGroup items={node.items} live={node.live} render={renderItem} />
             </div>
-          ))}
+          )])}
+          {condensedAt === nodes.length ? (
+            <div className="notice debug"><History size={14} /><span>Earlier tool activity is no longer retained.</span></div>
+          ) : null}
         </div>
         {canUp || canDown ? (
           <div className="jump-stack">

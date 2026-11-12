@@ -43,8 +43,8 @@ class FakeSocket {
 }
 
 const stateFrame = (pending: Record<string, unknown> | null = null) => ({
-  type: 'state', csrf: 'c', session: 's1', stream_id: 'x', latest_seq: 0, oldest_seq: 0,
-  replay_truncated: false, operation_id: null, process_status: '', context_status: null,
+  type: 'state', csrf: 'c', session: 's1', stream_id: 'x', latest_seq: 0, replay_from: 1,
+  history_before: null, detail_from: null, operation_id: null, process_status: '', context_status: null,
   active_indicator: null, commands: {}, prompt: null, pending,
 })
 

@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import type { ServerEvent, StateFrame } from './protocol'
 import type { SessionView, TimelineItem } from './session'
-import { initialView, reduce, totals } from './session'
+import { applyHistory, initialView, reduce, totals } from './session'
 
 function state(overrides: Partial<StateFrame> = {}): ServerEvent {
   return {
-    type: 'state', csrf: 'c', session: 's1', stream_id: 'stream-a', latest_seq: 0, oldest_seq: 0,
-    replay_truncated: false, operation_id: null, process_status: '', context_status: null,
+    type: 'state', csrf: 'c', session: 's1', stream_id: 'stream-a', latest_seq: 0, replay_from: 1,
+    history_before: null, detail_from: null, operation_id: null, process_status: '', context_status: null,
     active_indicator: null, commands: { help: 'Help' }, prompt: null, pending: null, ...overrides,
   } as unknown as ServerEvent
 }
@@ -54,6 +54,45 @@ describe('session reducer', () => {
     expect(view.items).toEqual([])
     expect(view.lastSeq).toBe(0)
     expect(signals).toContainEqual({ kind: 'state', pendingActionId: null, streamChanged: true })
+  })
+
+  it('starts at the newest page and prepends older pages on request', () => {
+    const tail = run([
+      state({ replay_from: 5, history_before: 5 }),
+      ev(5, 'user_message', { text: 'second', source: 'web' }),
+      ev(6, 'assistant_message', { text: 'B' }),
+    ])
+    expect(tail.view.lastSeq).toBe(6)
+    expect(tail.view.historyBefore).toBe(5)
+    const page = {
+      type: 'history', session: 's1', stream_id: 'stream-a', before: 5,
+      history_before: null, detail_from: 5,
+      events: [
+        ev(2, 'user_message', { text: 'first', source: 'web' }),
+        ev(3, 'tool_start', { name: 'read_file', primary: 'a.py' }),
+        ev(4, 'tool_result', { text: 'A', success: true }),
+      ],
+    }
+    const { view } = run([page as unknown as ServerEvent], tail.view)
+    expect(view.items.map((item) => item.key)).toEqual(['e2', 'e3', 'e5', 'e6'])
+    expect(view.items[1].kind === 'tool' && view.items[1].result?.text).toBe('A')
+    expect(view.history).toEqual(['first', 'second'])
+    expect(view.historyBefore).toBeNull()
+    expect(view.detailFrom).toBe(5)
+    expect(view.lastSeq).toBe(6)
+    // A page answered twice, or for another stream, is ignored.
+    expect(applyHistory(view, page as never)).toBe(view)
+    expect(applyHistory(tail.view, { ...page, stream_id: 'other' } as never)).toBe(tail.view)
+  })
+
+  it('restarts from the newest page when the cursor fell out of history', () => {
+    const first = run([state(), ev(1, 'system', { text: 'old' })])
+    const { view } = run([state({ replay_from: 50, history_before: 50 })], first.view)
+    expect(view.items).toEqual([])
+    expect(view.lastSeq).toBe(49)
+    expect(view.historyBefore).toBe(50)
+    const resumed = run([state({ replay_from: 2 })], first.view)
+    expect(resumed.view.items).toHaveLength(1)
   })
 
   it('pairs tool results with their calls', () => {

@@ -1,5 +1,6 @@
 import type {
   ContextSnapshot,
+  HistoryFrame,
   Indicator,
   PendingMessage,
   ProcessSnapshot,
@@ -64,7 +65,13 @@ export type SessionView = {
   info: Record<string, string>
   rounds: RoundStats[]
   history: string[]
-  truncatedAt: number | null
+  /** Seq to request older events before, or null when nothing older is retained. */
+  historyBefore: number | null
+  /**
+   * Seq from which full detail is retained; older history shows only the
+   * direct conversation. Null when nothing was evicted.
+   */
+  detailFrom: number | null
   localCounter: number
   /** Seq of the latest operation_start, to anchor the next round summary. */
   roundStartSeq: number
@@ -103,7 +110,8 @@ export function initialView(): SessionView {
     info: {},
     rounds: [],
     history: [],
-    truncatedAt: null,
+    historyBefore: null,
+    detailFrom: null,
     localCounter: 0,
     roundStartSeq: 0,
   }
@@ -316,7 +324,20 @@ function indicatorFrom(data: Record<string, unknown>): LiveIndicator {
 export function applyState(view: SessionView, frame: StateFrame): [SessionView, Signal[]] {
   const key = `${frame.session}:${frame.stream_id}`
   const streamChanged = Boolean(view.streamKey && view.streamKey !== key)
-  const base = streamChanged ? { ...initialView(), history: view.history } : view
+  const replayFrom = typeof frame.replay_from === 'number' ? frame.replay_from : 1
+  // The server resumes at the client's cursor on a plain reconnect. Otherwise
+  // (a fresh load, a new stream, or a cursor that aged out of retained
+  // history) it starts at the newest page; older pages load on demand.
+  const restart = streamChanged || view.lastSeq === 0 || replayFrom > view.lastSeq + 1
+  const base: SessionView = restart
+    ? {
+        ...initialView(),
+        history: view.history,
+        lastSeq: Math.max(0, replayFrom - 1),
+        historyBefore: frame.history_before ?? null,
+        detailFrom: frame.detail_from ?? null,
+      }
+    : view
   const rounds = parseRounds(frame.rounds, base.rounds)
   const next: SessionView = {
     ...base,
@@ -337,14 +358,48 @@ export function applyState(view: SessionView, frame: StateFrame): [SessionView, 
     commands: frame.commands ?? {},
     info: frame.info ?? base.info,
     rounds,
-    truncatedAt: frame.replay_truncated ? frame.oldest_seq : base.truncatedAt,
   }
   return [next, [{ kind: 'state', pendingActionId: frame.pending?.action_id ?? null, streamChanged }]]
+}
+
+/**
+ * Prepend one page of older events. Pages start at a user message, so folding
+ * one on its own pairs every tool call with its result.
+ */
+export function applyHistory(view: SessionView, frame: HistoryFrame): SessionView {
+  // Stale answers (another stream, or a page already applied) are dropped.
+  if (view.streamKey !== `${frame.session}:${frame.stream_id}` || frame.before !== view.historyBefore) {
+    return view
+  }
+  let page = initialView()
+  for (const event of Array.isArray(frame.events) ? frame.events : []) {
+    page = reduce(page, event)[0]
+  }
+  const known = new Set(view.items.map((item) => item.key))
+  const older = page.items
+    .filter((item) => !known.has(item.key))
+    .map((item) => (item.kind === 'assistant' || item.kind === 'thinking') && item.streaming
+      ? { ...item, streaming: false }
+      : item)
+  // Older pages carry the start anchors of rounds the state frame listed.
+  const anchors = new Map(page.rounds.filter((round) => round.start_seq).map((round) => [round.id, round.start_seq]))
+  const rounds = anchors.size
+    ? view.rounds.map((round) => round.start_seq ? round : { ...round, start_seq: anchors.get(round.id) ?? 0 })
+    : view.rounds
+  return {
+    ...view,
+    items: older.length ? [...older, ...view.items] : view.items,
+    rounds,
+    history: [...page.history.filter((text) => !view.history.includes(text)), ...view.history].slice(-200),
+    historyBefore: frame.history_before ?? null,
+    detailFrom: frame.detail_from ?? null,
+  }
 }
 
 /** Fold one server frame into the view. Pure: same input, same output. */
 export function reduce(view: SessionView, message: ServerEvent): [SessionView, Signal[]] {
   if (message.type === 'state') return applyState(view, message as unknown as StateFrame)
+  if (message.type === 'history') return [applyHistory(view, message as unknown as HistoryFrame), []]
 
   // Acknowledgements are not part of the ordered event stream.
   if (message.type === 'accepted') {
@@ -484,6 +539,8 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
     case 'timeline_reset':
       next.items = []
       next.indicator = null
+      next.historyBefore = null
+      next.detailFrom = null
       break
     case 'operation_start':
       next.operationId = str(data.id) || null

@@ -135,16 +135,36 @@ _STREAM_FRAGMENT_TYPES = {
     "thinking": "thinking_delta",
 }
 _STREAM_FRAGMENT_FINALS = {fragment: final for final, fragment in _STREAM_FRAGMENT_TYPES.items()}
+# Direct conversation, kept beyond the bounded buffer by transcript hubs.
+_TRANSCRIPT_TYPES = frozenset({"user_message", "assistant_message"})
+
+
+@dataclass(frozen=True)
+class HistoryPage:
+    """A page of history before some sequence number (see ``page_before``)."""
+
+    events: list[AgentEvent]
+    # Older reachable history exists before this page.
+    more: bool
+    # Full detail is retained only from this seq on; older history is the
+    # direct conversation alone (or nothing without a transcript). None when
+    # nothing was evicted.
+    detail_from: int | None
 
 
 class EventHub:
     """Publish ordered events and retain a bounded reconnect history."""
 
-    def __init__(self, max_events: int = 2000):
+    def __init__(self, max_events: int = 2000, *, keep_transcript: bool = False):
         self.stream_id = uuid.uuid4().hex
         self._events: deque[AgentEvent] = deque(maxlen=max_events)
         self._cond = threading.Condition()
         self._seq = 0
+        # With *keep_transcript*, user and assistant messages since the latest
+        # timeline reset are kept in full, so the conversation outlives the
+        # bounded tool/thinking activity around it.
+        self._transcript: list[AgentEvent] | None = [] if keep_transcript else None
+        self._reset_seq = 0
         # Highest sequence number dropped for capacity. Superseded stream
         # fragments are removed too, but those leave no replay gap.
         self._evicted_seq = 0
@@ -179,6 +199,12 @@ class EventHub:
             if len(self._events) == self._events.maxlen:
                 self._evicted_seq = self._events[0].seq
             self._events.append(event)
+            if event_type == "timeline_reset":
+                self._reset_seq = event.seq
+                if self._transcript is not None:
+                    self._transcript.clear()
+            elif self._transcript is not None and event_type in _TRANSCRIPT_TYPES:
+                self._transcript.append(event)
             self._cond.notify_all()
             # Keep delivery serialized with sequence assignment. Attach
             # forwarders use sequence numbers for replay de-duplication, so a
@@ -214,6 +240,11 @@ class EventHub:
         """Return the currently retained bounded event history."""
         with self._cond:
             return list(self._events)
+
+    def transcript(self) -> list[AgentEvent]:
+        """Return the retained direct conversation (empty without a transcript)."""
+        with self._cond:
+            return list(self._transcript or ())
 
     def _after_locked(self, seq: int) -> list[AgentEvent]:
         # Readers almost always ask for the newest few events; scan from the
@@ -251,6 +282,36 @@ class EventHub:
         """Whether events after *after_seq* were evicted from bounded history."""
         with self._cond:
             return after_seq < self._evicted_seq
+
+    def page_before(
+        self, before_seq: int, limit: int, *, condensed: bool = True
+    ) -> HistoryPage:
+        """Return about *limit* of the newest events before *before_seq*.
+
+        A page starts at a user message, so no turn is split across pages, and
+        never reaches behind the latest ``timeline_reset``. With *condensed*,
+        history older than the bounded buffer continues as the transcript;
+        otherwise the page holds retained events only, which ``after`` can
+        stream.
+        """
+        with self._cond:
+            floor = self._reset_seq
+            oldest = self._events[0].seq if self._events else self._seq + 1
+            older = [
+                event for event in self._transcript or ()
+                if floor < event.seq < min(oldest, before_seq)
+            ]
+            candidates = [e for e in self._events if floor < e.seq < before_seq]
+            if condensed:
+                candidates = older + candidates
+            start = max(0, len(candidates) - max(1, limit))
+            while start > 0 and candidates[start].type != "user_message":
+                start -= 1
+            return HistoryPage(
+                events=candidates[start:],
+                more=start > 0 or (not condensed and bool(older)),
+                detail_from=oldest if self._evicted_seq > floor else None,
+            )
 
 
 @dataclass(frozen=True)

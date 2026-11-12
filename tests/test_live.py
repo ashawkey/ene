@@ -1482,10 +1482,7 @@ def test_live_worker_can_attach_without_replaying_history():
 def test_live_worker_attach_keeps_direct_transcript_beyond_bounded_history():
     left, right = socket.socketpair()
     worker = Worker.__new__(Worker)
-    worker.events = EventHub(max_events=2)
-    worker._transcript_lock = threading.Lock()
-    worker._transcript_events = []
-    worker.events.add_listener(worker._remember_transcript)
+    worker.events = EventHub(max_events=2, keep_transcript=True)
     worker.events.publish("user_message", text="old question")
     worker.events.publish("assistant_message", text="old answer")
     worker.events.publish("tool_result", text="output 1")

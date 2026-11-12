@@ -36,6 +36,8 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
   const outboxRef = useRef<OutboxEntry[]>([])
   const withdrawRef = useRef<string | null>(null)
   const [withdrawing, setWithdrawing] = useState(false)
+  // Cursor of the older page already requested on this link.
+  const historyRequest = useRef<number | null>(null)
 
   const setDraft = useCallback((text: string) => {
     draftRef.current = text
@@ -65,6 +67,8 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
       switch (signal.kind) {
         case 'state': {
           if (signal.streamChanged) withdrawRef.current = null
+          // A request sent on a dropped link gets no answer; allow a retry.
+          historyRequest.current = null
           // Resend everything still unacknowledged on this fresh link.
           const remaining = outboxRef.current.filter((entry) => entry.actionId !== signal.pendingActionId)
           for (const entry of remaining) {
@@ -203,6 +207,13 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
     setWithdrawing(true)
   }, [send])
 
+  /** Ask for the page of history before the oldest loaded item. */
+  const loadOlder = useCallback(() => {
+    const before = viewRef.current.historyBefore
+    if (before === null || historyRequest.current === before) return
+    if (send({ type: 'history', before })) historyRequest.current = before
+  }, [send])
+
   // Commands from panels (process controls) do not touch the draft.
   const command = useCallback((text: string) => submit(text), [submit])
 
@@ -236,6 +247,7 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
     cancel,
     answer,
     dismissPrompt,
+    loadOlder,
   }
 }
 

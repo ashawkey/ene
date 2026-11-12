@@ -223,6 +223,7 @@ export function SessionPane({
           onMatches={setMatchCount}
           onOpenFile={openFile}
           onOpenStats={openStats}
+          onLoadOlder={session.loadOlder}
         />
         </OpenProcessContext.Provider>
 

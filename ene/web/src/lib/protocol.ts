@@ -137,8 +137,12 @@ export type StateFrame = {
   session: string
   stream_id: string
   latest_seq: number
-  oldest_seq: number
-  replay_truncated: boolean
+  /** First seq the server streams after this frame. */
+  replay_from: number
+  /** Seq to request older history before, or null when none is retained. */
+  history_before: number | null
+  /** Full detail starts here; older history is condensed to messages. */
+  detail_from: number | null
   operation_id: string | null
   process_status: string
   processes?: ProcessSnapshot
@@ -150,6 +154,17 @@ export type StateFrame = {
   info?: Record<string, string>
   rounds?: RoundStats[]
   active_round?: { started_at: number } | null
+}
+
+/** One page of older events, answering a `history` request. */
+export type HistoryFrame = {
+  type: 'history'
+  session: string
+  stream_id: string
+  before: number
+  events: ServerEvent[]
+  history_before: number | null
+  detail_from: number | null
 }
 
 export type ServerEvent = {
@@ -170,6 +185,7 @@ export type ClientAction =
   | { type: 'prompt_response'; id: string; answer: string }
   | { type: 'prompt_cancel'; id: string }
   | { type: 'cancel'; operation_id: string | null }
+  | { type: 'history'; before: number }
 
 export type DirEntry = {
   name: string
