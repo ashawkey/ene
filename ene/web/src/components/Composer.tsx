@@ -24,6 +24,7 @@ import type { PendingMessage } from '../lib/protocol'
 import type { OutboxEntry } from '../lib/useSession'
 import { IconButton, Spinner, useNow } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
+import { caretRows, lineBounds } from '../lib/caret'
 import { QueryCache, narrowMatches } from '../lib/search'
 
 type Suggestion = { value: string; label: string; detail: string; kind: 'command' | 'path' }
@@ -219,28 +220,56 @@ export function Composer({
     }
   }
 
+  // Up/Down move through the text first; only on its first (or last) visual
+  // row do they step through sent messages. A recalled entry opens with the
+  // caret on its first line going up and at its end going down, so repeated
+  // presses keep walking the history.
   const recall = (direction: -1 | 1) => {
     const element = field.current
     if (!element || !history.length) return false
-    const value = element.value
-    const caret = element.selectionStart ?? 0
-    if (direction < 0 && value.slice(0, caret).includes('\n')) return false
-    if (direction > 0 && value.slice(caret).includes('\n')) return false
+    if (element.selectionStart !== element.selectionEnd) return false
+    const rows = caretRows(element)
+    if (direction < 0 ? !rows.first : !rows.last) return false
+    let text: string
     if (historyIndex.current === null) {
       if (direction > 0) return false
       stash.current = draft
       historyIndex.current = history.length - 1
+      text = history[historyIndex.current]
     } else {
       const next = historyIndex.current + direction
+      if (next < 0) return false
       if (next >= history.length) {
         historyIndex.current = null
-        setText(stash.current)
-        return true
+        text = stash.current
+      } else {
+        historyIndex.current = next
+        text = history[next]
       }
-      historyIndex.current = Math.max(0, next)
     }
-    setText(history[historyIndex.current])
+    setText(text, direction < 0 ? lineBounds(text, 0)[1] : text.length)
     return true
+  }
+
+  // Home/End go to the start/end of the current line, then of the whole text.
+  const jumpLine = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const element = event.currentTarget
+    const { value, selectionStart: start, selectionEnd: end, selectionDirection } = element
+    const backward = selectionDirection === 'backward'
+    // Shift extends from the selection's anchor; otherwise collapse first.
+    const anchor = backward ? end : start
+    const focus = event.shiftKey ? (backward ? start : end) : (event.key === 'Home' ? start : end)
+    const [lineStart, lineEnd] = lineBounds(value, focus)
+    const target = event.key === 'Home'
+      ? (focus === lineStart ? 0 : lineStart)
+      : (focus === lineEnd ? value.length : lineEnd)
+    event.preventDefault()
+    if (event.shiftKey) {
+      element.setSelectionRange(Math.min(anchor, target), Math.max(anchor, target), target < anchor ? 'backward' : 'forward')
+    } else {
+      element.setSelectionRange(target, target)
+    }
+    setCursor(element.selectionStart)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -269,12 +298,13 @@ export function Composer({
       onCancel()
       return
     }
-    if (event.key === 'ArrowUp' && !event.shiftKey && recall(-1)) {
-      event.preventDefault()
+    const plain = !event.altKey && !event.ctrlKey && !event.metaKey
+    if (plain && !event.shiftKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      if (recall(event.key === 'ArrowUp' ? -1 : 1)) event.preventDefault()
       return
     }
-    if (event.key === 'ArrowDown' && !event.shiftKey && historyIndex.current !== null && recall(1)) {
-      event.preventDefault()
+    if (plain && (event.key === 'Home' || event.key === 'End')) {
+      jumpLine(event)
       return
     }
     if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !coarsePointer()) {

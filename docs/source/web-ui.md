@@ -84,7 +84,8 @@ The sidebar groups every live session on the machine:
 
 - Enter sends; Shift+Enter adds a line. On touch devices, use the send button.
 - `/` at the start: commands and skills. `@`: workspace files; lookup starts after a 50 ms typing pause. Up/Down select, Tab/Enter complete.
-- Up/Down without suggestions: recall earlier input.
+- Up/Down without suggestions: move between lines; on the first (or last) line, recall earlier (or later) input.
+- Home/End: start or end of the current line; press again for the start or end of the message.
 - `!` at the start runs the rest as a one-off shell command in the workspace, shown in the conversation. For an interactive shell, use the [Terminal](#terminal) panel.
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
 - The queued chip shows a clock for a message that joins the running round and a list-end icon for a `/wait` message that runs after it, with any remaining delay in parentheses.

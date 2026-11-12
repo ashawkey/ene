@@ -164,3 +164,76 @@ describe('model picker', () => {
     expect(select.disabled).toBe(true)
   })
 })
+
+describe('composer keyboard navigation', () => {
+  const setup = (history: string[], text = '') => {
+    render(<Input history={history} />)
+    const field = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement
+    if (text) fireEvent.change(field, { target: { value: text } })
+    return field
+  }
+  const place = (field: HTMLTextAreaElement, start: number, end = start) => field.setSelectionRange(start, end)
+  const flush = () => act(() => { vi.runOnlyPendingTimers() })
+
+  it('moves within a multi-line draft before recalling history', () => {
+    const field = setup(['older', 'newest'], 'one\ntwo')
+    place(field, 6)
+    expect(fireEvent.keyDown(field, { key: 'ArrowUp' })).toBe(true)
+    expect(field.value).toBe('one\ntwo')
+
+    place(field, 2)
+    expect(fireEvent.keyDown(field, { key: 'ArrowUp' })).toBe(false)
+    expect(field.value).toBe('newest')
+  })
+
+  it('walks history with the caret on the top line going up and restores the draft', () => {
+    const field = setup(['a\nb', 'newest'], 'draft')
+    place(field, 5)
+    fireEvent.keyDown(field, { key: 'ArrowUp' })
+    flush()
+    fireEvent.keyDown(field, { key: 'ArrowUp' })
+    flush()
+    expect(field.value).toBe('a\nb')
+    expect(field.selectionStart).toBe(1)
+
+    // Down from the first line moves within the entry, then from its end.
+    expect(fireEvent.keyDown(field, { key: 'ArrowDown' })).toBe(true)
+    place(field, 3)
+    fireEvent.keyDown(field, { key: 'ArrowDown' })
+    flush()
+    expect(field.value).toBe('newest')
+    fireEvent.keyDown(field, { key: 'ArrowDown' })
+    expect(field.value).toBe('draft')
+  })
+
+  it('leaves Down alone when not browsing history', () => {
+    const field = setup(['newest'], 'draft')
+    place(field, 5)
+    expect(fireEvent.keyDown(field, { key: 'ArrowDown' })).toBe(true)
+    expect(field.value).toBe('draft')
+  })
+
+  it('sends Home and End to the line edges, then the text edges', () => {
+    const field = setup([], 'one\ntwo\nthree')
+    place(field, 6)
+    fireEvent.keyDown(field, { key: 'Home' })
+    expect(field.selectionStart).toBe(4)
+    fireEvent.keyDown(field, { key: 'Home' })
+    expect(field.selectionStart).toBe(0)
+
+    place(field, 5)
+    fireEvent.keyDown(field, { key: 'End' })
+    expect(field.selectionStart).toBe(7)
+    fireEvent.keyDown(field, { key: 'End' })
+    expect(field.selectionStart).toBe(13)
+  })
+
+  it('extends the selection with Shift+Home and Shift+End', () => {
+    const field = setup([], 'one\ntwo')
+    place(field, 6)
+    fireEvent.keyDown(field, { key: 'Home', shiftKey: true })
+    expect([field.selectionStart, field.selectionEnd, field.selectionDirection]).toEqual([4, 6, 'backward'])
+    fireEvent.keyDown(field, { key: 'End', shiftKey: true })
+    expect([field.selectionStart, field.selectionEnd]).toEqual([6, 7])
+  })
+})
