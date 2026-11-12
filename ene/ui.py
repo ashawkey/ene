@@ -98,8 +98,8 @@ AGENT_THEME = Theme({
     "tool_meta": "color(244)",
     "tool_ok": "dim green",
     "tool_fail": "dim red",
-    "header_meta": "color(244)",
-    "reply_label": "bold",
+    # Message headers and round summaries recede, so the text reads first.
+    "header": "color(242)",
     "round_summary": "color(242)",
 })
 
@@ -123,14 +123,18 @@ def _stamp(created_at: object) -> float | None:
 
 
 def _header(
-    icon: str, label: str, label_style: str, created_at: float | None, *notes: str
+    icon: str, icon_style: str, label: str, created_at: float | None, *notes: str
 ) -> Text:
-    """First line of a message: icon, who wrote it, time, and optional notes."""
-    line = Text(f"{icon} ", style=label_style)
-    line.append(label, style=label_style)
+    """First line of a message: icon, who wrote it, time, and optional notes.
+
+    Only the icon carries color; the rest is dim like the round summary.
+    """
+    line = Text()
+    line.append(icon, style=icon_style)
+    line.append(f" {label}", style="header")
     for part in (_clock(created_at), *notes):
         if part:
-            line.append(f" · {part}", style="header_meta")
+            line.append(f" · {part}", style="header")
     return line
 
 
@@ -185,7 +189,7 @@ def _compact_tokens(value: int) -> str:
 
 
 def _response_header(created_at: float | None, model: str | None = None) -> Text:
-    return _header(_BRAND, model or "Assistant", "reply_label", created_at)
+    return _header(_BRAND, "", model or "Assistant", created_at)
 
 
 def _print_markdown_response(
@@ -1686,9 +1690,9 @@ class AgentConsole:
         stamp = _stamp(created_at)
         if self.render_terminal:
             if source == "inbox":
-                header = _header(_INBOX, "Notifications", "system", stamp)
+                header = _header(_INBOX, "system", "Notifications", stamp)
             else:
-                header = _header(_USER, "You", "input", stamp, *(("steer",) if steer else ()))
+                header = _header(_USER, "input", "You", stamp, *(("steer",) if steer else ()))
             self._console.print(header)
             self._console.print(_Gutter(Text(msg, style="input"), _BODY))
         data = {"text": msg, "source": source, "created_at": stamp}

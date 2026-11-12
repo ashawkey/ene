@@ -848,3 +848,23 @@ def test_terminal_status_right_aligns_model_and_context():
     idle = "".join(text for _, text in terminal._message()).splitlines()[1]
     assert idle.startswith("🔷 gpt-5.5  ")
     terminal.close_title()
+
+
+def test_message_headers_are_dim_except_their_icon():
+    from ene.ui import AGENT_THEME, AgentConsole
+
+    output = io.StringIO()
+    console = AgentConsole()
+    console._console = Console(
+        file=output, width=60, force_terminal=True, color_system="256", theme=AGENT_THEME
+    )
+    console.response("body", created_at=None, model="gpt-5.5")
+    console.user_input("hi", with_rule=False, created_at=None)
+
+    dim = "\x1b[38;5;242m"
+    reply_header, _, user_header, _ = output.getvalue().splitlines()
+    assert f"{dim} gpt-5.5" in reply_header
+    assert f"{dim} You" in user_header
+    # The user marker keeps its accent color.
+    assert user_header.index("❯") < user_header.index(dim)
+    assert not user_header.startswith(dim)
