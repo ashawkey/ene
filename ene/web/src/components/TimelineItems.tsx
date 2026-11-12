@@ -84,15 +84,27 @@ function Step({
 }
 
 /** A monospace block with a hover copy button; *follow* keeps the tail in view. */
-function OutputBlock({ text, ansi, follow = false }: { text: string; ansi?: string | null; follow?: boolean }) {
+function OutputBlock({
+  text,
+  ansi,
+  follow = false,
+  className = '',
+  copyLabel = 'Copy output',
+}: {
+  text: string
+  ansi?: string | null
+  follow?: boolean
+  className?: string
+  copyLabel?: string
+}) {
   const ref = useRef<HTMLPreElement>(null)
   useLayoutEffect(() => {
     if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }, [follow, text])
   return (
     <div className="output-wrap">
-      <pre className="output ansi" ref={ref}>{ansi ? <AnsiText text={ansi} /> : text}</pre>
-      <CopyButton text={text} label="Copy output" />
+      <pre className={`output ansi ${className}`} ref={ref}>{ansi ? <AnsiText text={ansi} /> : text}</pre>
+      <CopyButton text={text} label={copyLabel} />
     </div>
   )
 }
@@ -200,6 +212,25 @@ function ToolImagePreview({ image, onOpenFile }: { image: ToolImage; onOpenFile?
   ) : <div className="tool-image">{img}</div>
 }
 
+/** Whether *ref*'s single-line text is cut off by its ellipsis. */
+function useClipped(ref: { current: HTMLElement | null }, text: string): boolean {
+  const [clipped, setClipped] = useState(false)
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) {
+      setClipped(false)
+      return
+    }
+    const measure = () => setClipped(element.scrollWidth > element.clientWidth + 1)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [ref, text])
+  return clipped
+}
+
 export type ProcessLinks = {
   find: (processId: string) => ProcessActivity | null
   open: (processId: string) => void
@@ -234,10 +265,12 @@ export const ToolCall = memo(function ToolCall({
     : failed
       ? <CircleX size={14} className="fail" />
       : <CircleCheck size={14} className="ok" />
+  const primaryRef = useRef<HTMLSpanElement>(null)
+  const clipped = useClipped(primaryRef, item.primary)
   const label = (
     <span className="tool-head">
       <span className="tool-name">{item.name || 'tool'}</span>
-      {item.primary ? <span className="tool-primary">{item.primary}</span> : null}
+      {item.primary ? <span className="tool-primary" ref={primaryRef}>{item.primary}</span> : null}
       {!item.name && item.text ? <span className="tool-primary">{item.text}</span> : null}
       {item.qualifiers.map((qualifier) => <span className="tool-qual" key={qualifier}>{qualifier}</span>)}
     </span>
@@ -247,7 +280,7 @@ export const ToolCall = memo(function ToolCall({
   const launched = useLaunchedProcess(item)
   const links = useContext(OpenProcessContext)
   const image = item.result?.image ?? null
-  const empty = !output && !result && !image && item.diffs.length === 0
+  const empty = !clipped && !output && !result && !image && item.diffs.length === 0
   // File edits start folded; text folds past a few lines. Failures stay open.
   const lines = lineCount(output?.text ?? '') + lineCount(result)
   const autoOpen = failed || (item.diffs.length === 0 && (running || lines <= AUTO_FOLD_LINES))
@@ -255,6 +288,8 @@ export const ToolCall = memo(function ToolCall({
     <Step className={`tool ${failed ? 'failed' : ''}`} icon={icon} label={label} autoOpen={autoOpen}>
       {empty ? null : (
         <>
+          {/* The header clips long arguments; the body shows them whole. */}
+          {clipped ? <OutputBlock text={item.primary} className="tool-full" copyLabel="Copy full text" /> : null}
           {output ? <OutputBlock text={output.text} ansi={output.ansi} follow={running} /> : null}
           {item.diffs.map((diff, index) => <DiffCard diff={diff} key={index} onOpenFile={onOpenFile} />)}
           {/* With output shown, the result is only its summary line. */}

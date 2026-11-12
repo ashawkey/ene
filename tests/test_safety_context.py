@@ -546,6 +546,18 @@ def test_wait_submission_never_steers_current_round():
     assert context.messages == []
 
 
+def test_slash_command_shape_excludes_paths():
+    from ene.utils.io import is_local_query, is_slash_command
+
+    assert is_slash_command("/help")
+    assert is_slash_command("/model gpt-5 high")
+    assert is_slash_command("/my-skill do it")
+    assert not is_slash_command("/")
+    assert not is_slash_command("/home/user/ckpt")
+    assert not is_slash_command("/tmp/a.log what failed?")
+    assert not is_local_query("/home/user/ckpt")
+
+
 @pytest.mark.parametrize("query", ["/help", "!git status", "exit", "quit"])
 def test_pending_local_query_waits_for_round_completion(query):
     broker = InputBroker(EventHub())

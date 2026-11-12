@@ -116,6 +116,8 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 
 ## Interactive slash commands
 
+Input whose first word contains another `/`, such as `/data/run/ckpt`, is sent to the model as a normal message.
+
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help message for all slash commands |

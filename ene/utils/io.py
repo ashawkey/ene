@@ -86,9 +86,27 @@ def parse_wait_command(text: str) -> tuple[float, str] | None:
     return delay, prompt
 
 
+_SLASH_COMMAND_RE = re.compile(r"/[A-Za-z0-9][\w.:-]*")
+
+
+def is_slash_command(text: str) -> bool:
+    """Whether input is shaped like ``/name [args]`` rather than a path.
+
+    Only the first word counts, and it must be a single ``/name`` with no
+    further slashes, so pasted paths such as ``/home/user/file`` reach the
+    model as plain text instead of failing as unknown commands.
+    """
+    parts = text.split(maxsplit=1)
+    return bool(parts) and _SLASH_COMMAND_RE.fullmatch(parts[0]) is not None
+
+
 def is_local_query(text: str) -> bool:
     """Whether input is handled locally (command, shell, exit), not by the model."""
-    return text.lower() in ("exit", "quit") or text.startswith(("!", "/"))
+    return (
+        text.lower() in ("exit", "quit")
+        or text.startswith("!")
+        or is_slash_command(text)
+    )
 
 
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")

@@ -727,7 +727,6 @@ class Worker:
         if (
             self.inputs.pending
             and agent is not None
-            and text.startswith("/")
             and agent.is_instant_command(text)
         ):
             agent.console.user_input(text, source=source)

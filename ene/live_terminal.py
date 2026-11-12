@@ -26,7 +26,7 @@ from ene.live import (
 )
 from ene.terminal import SessionDetach, SessionKill, SessionSwitch, TerminalInput
 from ene.ui import AgentConsole, ContextStatus, ResponseStream, ThinkingIndicator
-from ene.utils.io import is_local_query
+from ene.utils.io import is_local_query, is_slash_command
 from ene.utils.paths import get_ene_dir
 
 
@@ -402,9 +402,9 @@ class LiveTerminal:
         )
 
     def _is_instant_command(self, text: str) -> bool:
-        parts = text.split(maxsplit=1)
-        if not parts or not parts[0].startswith("/"):
+        if not is_slash_command(text):
             return False
+        parts = text.split(maxsplit=1)
         command = parts[0][1:].lower()
         if command in LOCAL_COMMANDS:
             return True

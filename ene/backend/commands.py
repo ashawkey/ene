@@ -23,7 +23,7 @@ from ene.providers import (
 from ene.personas import DEFAULT_PERSONA, PersonaInfo, discover_personas, get_persona
 from ene.tools.constants import MAX_PROCESS_LOG_TAIL_CHARS
 from ene.utils.interrupt import RequestInterrupted, run_interruptible
-from ene.utils.io import EVENT_TEXT_LIMIT
+from ene.utils.io import EVENT_TEXT_LIMIT, is_slash_command
 
 
 _RECAP_INPUT_MAX_CHARS = 24_000
@@ -127,6 +127,8 @@ class AgentCommandsMixin:
 
     def is_instant_command(self, raw: str) -> bool:
         """Whether ``raw`` can run now rather than queue behind a live round."""
+        if not is_slash_command(raw):
+            return False
         parts = raw.split(maxsplit=1)
         cmd = parts[0][1:].lower()
         if cmd in self.COMMANDS:

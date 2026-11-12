@@ -759,6 +759,7 @@ button.step-head:hover { background: var(--hover); }
 .tool-head { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; }
 .tool-name { font-weight: 600; color: var(--text); flex: none; }
 .tool-primary { font: 12px var(--mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.output.tool-full { max-height: 200px; color: var(--text-2); }
 .tool-qual { flex: none; font-size: 11.5px; color: var(--text-3); }
 .tool-qual::before { content: '·'; margin-right: 6px; }
 .tool.failed .tool-name { color: var(--red); }

@@ -290,6 +290,8 @@ def test_oauth_commands_use_current_provider():
         ("/fork alternate", False),
         ("/exit", False),
         ("/nonsense", True),     # a typo is reported straight away
+        ("/home/user/ckpt/epoch_2", False),  # a pasted path is a message
+        ("/tmp/log.txt what failed?", False),
     ],
 )
 def test_instant_command_classification(query, instant):
@@ -1366,6 +1368,21 @@ def test_web_can_run_session_commands(query, tmp_path):
 
     assert warnings == []
     assert dispatched == [query]
+
+
+def test_path_like_slash_input_is_sent_to_the_model(tmp_path):
+    agent, _ = _skill_invocation_agent(tmp_path)
+    warnings = []
+    dispatched = []
+    agent.console.warn = warnings.append
+    agent._run_command = lambda text: dispatched.append(text) or False
+    query = "/scratch/runs/checkpoints/epoch_2 has which files?"
+
+    agent._process_query(UserSubmission(query, "terminal", "s1"))
+
+    assert warnings == []
+    assert dispatched == []
+    assert [message.text for message in agent.context.messages] == [query]
 
 
 def test_peer_notice_is_injected_once_before_the_user_prompt(tmp_path):

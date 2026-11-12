@@ -86,6 +86,7 @@ from ene.utils.io import (
     PromptBroker,
     UserSubmission,
     is_local_query,
+    is_slash_command,
 )
 
 # A one-shot run that hears nothing for this long stops its background work
@@ -1800,7 +1801,6 @@ class LLMAgent(
                             continue
                         if (
                             self.input_broker.pending
-                            and text.startswith("/")
                             and self.is_instant_command(text)
                         ):
                             self.console.user_input(text, source="terminal")
@@ -1934,7 +1934,6 @@ class LLMAgent(
         query = submission.text.strip()
         if (
             not submission.ready
-            or not query.startswith("/")
             or not self.is_instant_command(query)
         ):
             return False
@@ -1964,7 +1963,8 @@ class LLMAgent(
         )
         if query.lower() in ("exit", "quit"):
             return True
-        if query.startswith("/"):
+        is_command = is_slash_command(query)
+        if is_command:
             cmd_word = query.split()[0][1:].lower()
         if query.startswith("!"):
             bash_cmd = query[1:].strip()
@@ -1980,7 +1980,7 @@ class LLMAgent(
         compaction_floor_before_round = self._compaction_floor_tokens
         peers_announced_before_round = self._peers_announced
         skill_state_before_round = None
-        if query.startswith("/"):
+        if is_command:
             if cmd_word in self.COMMANDS:
                 return self._run_command(query)
             if cmd_word not in self.skills:
