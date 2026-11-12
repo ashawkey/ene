@@ -79,6 +79,8 @@ export type ContextSnapshot = {
   cached_tokens: number
   model?: string
   model_icon?: string
+  /** Absent when the model has no configurable reasoning effort. */
+  reasoning_effort?: string
 }
 
 export type Indicator = {

@@ -952,6 +952,7 @@ class AgentCommandsMixin:
             self.console.error(f"Invalid reasoning effort '{effort}'. Choose: {choices}")
             return
         self.reasoning_effort = effort
+        self._publish_context_status()
         self.console.system(f"Reasoning effort set to {effort}.")
 
     def _cmd_model(self, raw: str):

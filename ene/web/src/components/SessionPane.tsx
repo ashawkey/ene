@@ -256,6 +256,8 @@ export function SessionPane({
             modelDetail={view.context?.model}
             modelIcon={view.context?.model_icon}
             onModel={(alias) => session.command(`/model ${alias}`)}
+            effort={view.context?.reasoning_effort}
+            onEffort={(level) => session.command(`/effort ${level}`)}
           />
         </div>
       </div>

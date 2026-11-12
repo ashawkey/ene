@@ -212,6 +212,8 @@ class ContextStatus:
     output_tokens: int
     cached_tokens: int = 0
     model: str = ""
+    # Empty when the model has no configurable reasoning effort.
+    reasoning_effort: str = ""
 
     @property
     def fraction(self) -> float:
@@ -242,6 +244,7 @@ class ContextStatus:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cached_tokens": self.cached_tokens,
+            **({"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {}),
         }
 
     def prompt_fragments(

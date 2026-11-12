@@ -78,7 +78,7 @@ The agent never blocks waiting for background work. Notifications queue in an in
 - Delivered notifications are inbox messages, not user prompts: `/context inbox` lists them, and `/rewind` to a notification round leaves the editor empty.
 - Keep `pattern` simple; it runs on every output line.
 - A line rewritten with carriage returns, such as a progress bar, notifies with its final redraw.
-- Starting, resuming, or forking a session stops managed processes and discards queued notifications.
+- Starting or resuming a session stops managed processes and discards queued notifications. `/fork` leaves the current session's processes running.
 
 ### One-shot runs
 

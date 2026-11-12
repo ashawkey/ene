@@ -356,6 +356,30 @@ class SessionMixin:
             self.console.error(f"Could not create fork: {exc}")
             return
 
+        name_note = f" named '{requested_name}'" if requested_name else ""
+        launcher = getattr(self, "_fork_launcher", None)
+        if launcher is not None:
+            # A live session keeps running; the fork becomes its own session.
+            draft = "" if candidate.get("inbox") else candidate["prompt"]
+            self.console.system("Starting the forked session…")
+            try:
+                handle = launcher(session_id, requested_name, draft)
+            except Exception as exc:
+                shutil.rmtree(target_store.path, ignore_errors=True)
+                self.console.error(f"Could not start fork: {exc}")
+                return
+            ready = (
+                "nothing was placed in its editor"
+                if candidate.get("inbox")
+                else "the selected prompt is ready to edit there"
+            )
+            self.console.system(
+                f"Forked round {target.get('round_id', 0)} into new live session "
+                f"'{session_id}'{name_note}; {ready}. This session is unchanged. "
+                f"Switch to it with /switch or `ene attach {handle}`."
+            )
+            return
+
         callback = getattr(self, "_session_changed", None)
         try:
             if callback is not None:
@@ -391,7 +415,6 @@ class SessionMixin:
         self._restore_candidate_draft(candidate)
         self.console.reset_timeline()
         self._replay_context()
-        name_note = f" named '{requested_name}'" if requested_name else ""
         self.console.system(
             f"Forked session '{source_id}' at round {self.round_id} into "
             f"new session '{session_id}'{name_note}. " + _draft_note(candidate)

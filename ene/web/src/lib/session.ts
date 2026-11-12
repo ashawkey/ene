@@ -153,6 +153,7 @@ export function parseContext(data: Record<string, unknown> | null | undefined): 
     cached_tokens: num(data.cached_tokens),
     model: typeof data.model === 'string' ? data.model : undefined,
     model_icon: typeof data.model_icon === 'string' ? data.model_icon : undefined,
+    reasoning_effort: typeof data.reasoning_effort === 'string' && data.reasoning_effort ? data.reasoning_effort : undefined,
   }
 }
 

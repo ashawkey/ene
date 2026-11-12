@@ -134,7 +134,7 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 | `/auth [provider\|model-alias]` | Show authentication status |
 | `/effort [level]` | Show or set reasoning effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) |
 | `/rewind` | In a terminal or the Web UI, restore conversation, tracked files, or both at an earlier prompt; edit and branch |
-| `/fork [name]` | In an attached terminal, fork an earlier prompt into a new session; leave tracked files unchanged |
+| `/fork [name]` | Fork an earlier prompt into a new live session that starts with the selected prompt in its editor; this session keeps running and tracked files are unchanged. The Web UI opens the fork; in a terminal use `/switch` |
 | `/skills` | List installed skills; `/skills reload` to re-scan; `/skills <name>` to load one |
 | `/<skill-name> [task]` | Invoke a skill for an optional task; without one, run its declared default or ask what to do |
 | `/persona` | List personas; `/persona <name>` to switch (restarts the conversation) |
@@ -143,7 +143,7 @@ The terminal and Web UI status bars keep the active model's marker first, even w
 | `/switch` | Switch live sessions (also Ctrl+S); Cancel or Ctrl+C keeps the current attachment |
 | `/new [name]` | Detach and start a new live session, optionally with a name |
 | `/clear` | Stop this session and attach to a new unnamed one; the old conversation remains resumable |
-| `/resume [session_id]` | In an attached terminal, save this conversation and activate a stopped one; omit the ID for a named picker |
+| `/resume [session_id]` | Save this conversation and activate a stopped one in this live session; omit the ID for a named picker |
 | `/name [name]` | Show or set the live session name; use `/name` to inspect it |
 | `/exit` or `/quit` | Exit the agent and stop the live session (also Ctrl+K) |
 

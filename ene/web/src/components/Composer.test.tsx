@@ -33,6 +33,7 @@ function Input(props: Partial<ComponentProps<typeof Composer>>) {
       cwd="/work"
       model="fast"
       onModel={() => {}}
+      onEffort={() => {}}
       {...props}
     />
   )
@@ -122,7 +123,25 @@ describe('queued message chip', () => {
 
 describe('model picker', () => {
   beforeEach(() => {
-    vi.mocked(sessionOptions).mockResolvedValue({ models: ['fast', 'smart'], default_model: 'fast', personas: [], reasoning_efforts: [] })
+    vi.mocked(sessionOptions).mockResolvedValue({ models: ['fast', 'smart'], default_model: 'fast', personas: [], reasoning_efforts: ['low', 'high'] })
+  })
+
+  it('sets reasoning effort through its select, even mid-round', async () => {
+    const onEffort = vi.fn()
+    render(<Input effort="high" onEffort={onEffort} busy />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const select = screen.getByRole('combobox', { name: 'Reasoning effort' }) as HTMLSelectElement
+    expect(select.value).toBe('high')
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(['low', 'high'])
+    expect(select.disabled).toBe(false)
+    fireEvent.change(select, { target: { value: 'low' } })
+    expect(onEffort).toHaveBeenCalledWith('low')
+  })
+
+  it('hides the effort picker when the model has no effort control', async () => {
+    render(<Input />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.queryByRole('combobox', { name: 'Reasoning effort' })).toBeNull()
   })
 
   it('switches models through the select', async () => {

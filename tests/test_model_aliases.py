@@ -135,3 +135,4 @@ def test_model_budgets_use_api_id_at_startup_switch_and_listing(
     columns = {column.header: column._cells for column in tables[0].columns}
     assert columns['Model'] == [model]
     assert columns['Context'] == [f'{context_length // 1000}K']
+

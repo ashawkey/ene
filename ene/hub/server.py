@@ -158,7 +158,7 @@ def _context_snapshot(data: dict | None) -> dict | None:
         },
         **{
             key: data[key]
-            for key in ("model", "model_icon")
+            for key in ("model", "model_icon", "reasoning_effort")
             if isinstance(data.get(key), str)
         },
     }
@@ -287,6 +287,9 @@ class RemoteSession:
         # browsers see working/waiting/done flips at once rather than on the
         # next registry poll.
         self.on_summary_change = None
+        # Called with a runtime ID when the worker forks into a new live
+        # session (``session_forked``), so the hub can open it.
+        self.on_forked = None
         # action key -> future resolving to the forwarded verdict (see
         # Hub._deduplicated_forward). Lives on the event loop only.
         self.actions: OrderedDict[str, asyncio.Future] = OrderedDict()
@@ -493,6 +496,13 @@ class RemoteSession:
             rounds = data.get("rounds")
             if isinstance(rounds, list):
                 self.rounds = [item for item in rounds if isinstance(item, dict)][-MAX_ROUNDS:]
+        if etype == "session_forked" and self.on_forked is not None:
+            runtime_id = data.get("runtime_id")
+            if isinstance(runtime_id, str) and runtime_id:
+                try:
+                    self.on_forked(runtime_id)
+                except Exception:
+                    pass
         self.events.publish_at(etype, dict(data), float(timestamp))
         self.touch()
         if etype in _SUMMARY_EVENTS and self.on_summary_change is not None:
@@ -729,6 +739,7 @@ class Hub:
         })
         session._loop = self._loop
         session.on_summary_change = self._notify_control
+        session.on_forked = lambda fork_id: self._open_fork(runtime_id, fork_id)
         session.link = WorkerLink(
             record,
             on_event=session.ingest,
@@ -884,6 +895,25 @@ class Hub:
                 if str(record.get("runtime_id", "")) == runtime_id:
                     return str(record.get("workspace", "")) or None
         return None
+
+    def _open_fork(self, source_id: str, runtime_id: str) -> None:
+        """Attach a session forked from a web-attached one and focus it.
+
+        Runs off the link reader thread: attaching blocks on the new worker.
+        Browsers showing *source_id* switch to the fork; others only see it
+        appear in the session list.
+        """
+        def run() -> None:
+            try:
+                session = self.attach_session(runtime_id)
+            except LiveError as exc:
+                self._log(f"could not open fork {runtime_id[:8]}: {exc}")
+                return
+            self._control.publish("session_focus", id=runtime_id, source=source_id)
+            self._notify_control()
+            self.warm_path_index(session)
+
+        threading.Thread(target=run, name="ene-hub-fork", daemon=True).start()
 
     def _notify_control(self) -> None:
         self._control.publish("sessions_changed")
@@ -1648,11 +1678,16 @@ class Hub:
             while True:
                 if self._control.latest_seq != seq:
                     require_login()
+                    events = self._control.after(seq)
                     seq = self._control.latest_seq
                     await websocket.send_json({
                         "type": "sessions",
                         "sessions": self._session_list(),
                     })
+                    # One-shot hints after the list that contains their target.
+                    for event in events:
+                        if event.type == "session_focus":
+                            await websocket.send_json({"type": "focus", **event.data})
                     continue
                 self._control_notify.clear()
                 if self._control.latest_seq != seq:

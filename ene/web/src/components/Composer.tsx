@@ -1,6 +1,7 @@
 import {
   ArrowUp,
   AtSign,
+  Brain,
   ChevronDown,
   Clock,
   CornerDownLeft,
@@ -57,6 +58,8 @@ export function Composer({
   modelDetail,
   modelIcon,
   onModel,
+  effort,
+  onEffort,
 }: {
   sessionId: string
   draft: string
@@ -86,6 +89,10 @@ export function Composer({
   modelIcon?: string
   /** Switch models; same as `/model <alias>`. */
   onModel: (alias: string) => void
+  /** Current reasoning effort; absent when the model has no effort control. */
+  effort?: string
+  /** Set reasoning effort; same as `/effort <level>`. */
+  onEffort: (level: string) => void
 }) {
   const field = useRef<HTMLTextAreaElement>(null)
   const [cursor, setCursor] = useState(draft.length)
@@ -95,6 +102,7 @@ export function Composer({
   const historyIndex = useRef<number | null>(null)
   const stash = useRef('')
   const composing = useRef(false)
+  const [options, reloadOptions] = useSessionOptions(cwd)
 
   useEffect(() => {
     if (focusSignal) field.current?.focus()
@@ -372,13 +380,22 @@ export function Composer({
           <IconButton icon={AtSign} label="Mention a file" size="sm" onClick={() => insertToken('@')} />
           <span className="grow" />
           <ModelPicker
-            cwd={cwd}
+            models={options.models}
+            reload={reloadOptions}
             model={model}
             detail={modelDetail}
             icon={modelIcon}
             disabled={!connected || busy}
             onModel={onModel}
           />
+          {effort ? (
+            <EffortPicker
+              efforts={options.reasoning_efforts}
+              effort={effort}
+              disabled={!connected}
+              onEffort={onEffort}
+            />
+          ) : null}
           {showStop ? (
             <IconButton icon={Square} label="Stop (Esc)" tone="danger" className="send" disabled={!connected} onClick={onCancel} />
           ) : (
@@ -489,31 +506,40 @@ function PendingChip({
   )
 }
 
+/** Configured models and reasoning efforts; `reload` refetches after config edits. */
+function useSessionOptions(cwd: string): [{ models: string[]; reasoning_efforts: string[] }, () => void] {
+  const [options, setOptions] = useState<{ models: string[]; reasoning_efforts: string[] }>({ models: [], reasoning_efforts: [] })
+  const reload = useCallback(() => {
+    sessionOptions(cwd).then(
+      (data) => setOptions({ models: data.models, reasoning_efforts: data.reasoning_efforts }),
+      () => {},
+    )
+  }, [cwd])
+  useEffect(reload, [reload])
+  return [options, reload]
+}
+
 /**
  * The session's model, as a compact select. Choosing another configured
  * model sends `/model <alias>`; switching is unavailable mid-round.
  */
 function ModelPicker({
-  cwd,
+  models,
+  reload,
   model,
   detail,
   icon,
   disabled,
   onModel,
 }: {
-  cwd: string
+  models: string[]
+  reload: () => void
   model: string
   detail?: string
   icon?: string
   disabled: boolean
   onModel: (alias: string) => void
 }) {
-  const [models, setModels] = useState<string[]>([])
-  const load = useCallback(() => {
-    sessionOptions(cwd).then((options) => setModels(options.models), () => {})
-  }, [cwd])
-  useEffect(load, [load])
-
   const choices = model && !models.includes(model) ? [model, ...models] : models
   if (!choices.length) return null
   const label = detail && model && detail !== model ? `${model} (${detail})` : model || detail || 'model'
@@ -527,10 +553,48 @@ function ModelPicker({
         value={model}
         aria-label="Model"
         disabled={disabled}
-        onFocus={load}
+        onFocus={reload}
         onChange={(event) => {
           const next = event.target.value
           if (next && next !== model) onModel(next)
+        }}
+      >
+        {choices.map((item) => <option key={item} value={item}>{item}</option>)}
+      </select>
+    </label>
+  )
+}
+
+/**
+ * The session's reasoning effort, as a compact select. Choosing a level sends
+ * `/effort <level>`, which applies from the next model request, so it stays
+ * available mid-round.
+ */
+function EffortPicker({
+  efforts,
+  effort,
+  disabled,
+  onEffort,
+}: {
+  efforts: string[]
+  effort: string
+  disabled: boolean
+  onEffort: (level: string) => void
+}) {
+  const choices = efforts.includes(effort) ? efforts : [effort, ...efforts]
+  const tip = 'Reasoning effort (/effort)'
+  return (
+    <label className={`model-picker ${disabled ? 'disabled' : ''}`} data-tip={tip}>
+      <Brain size={13} />
+      <span className="clamp">{effort}</span>
+      <ChevronDown size={12} className="model-caret" />
+      <select
+        value={effort}
+        aria-label="Reasoning effort"
+        disabled={disabled}
+        onChange={(event) => {
+          const next = event.target.value
+          if (next && next !== effort) onEffort(next)
         }}
       >
         {choices.map((item) => <option key={item} value={item}>{item}</option>)}

@@ -26,6 +26,7 @@ from ene.live import (
     recv_frame,
     record_path,
     send_frame,
+    start_session,
     unlink_record,
     update_identity,
     update_record,
@@ -419,6 +420,8 @@ class Worker:
     def _make_agent(self) -> LLMAgent:
         options = dict(self.record.get("options", {}))
         api_key = os.environ.pop(WORKER_API_KEY_ENV, None)
+        # Kept in memory only, so a fork can start with the same credentials.
+        self._api_key = api_key
         if api_key is not None:
             options["api_key"] = api_key
         try:
@@ -453,6 +456,11 @@ class Worker:
         self.agent._session_changed = self._session_changed
         self.agent._session_name_changed = self._session_name_changed
         self.agent._model_changed = self._model_changed
+        self.agent._fork_launcher = self._launch_fork
+        # A forked session places its fork-point prompt in the first
+        # attached editor.
+        draft = self.record.get("options", {}).get("draft")
+        self._initial_draft = draft if isinstance(draft, str) and draft else None
         self.record = update_identity(
             self.runtime_id,
             name=self.agent.session_name,
@@ -531,6 +539,37 @@ class Worker:
         )
         self._publish_session_name(name)
         return name
+
+    def _launch_fork(self, conversation_id: str, name: str, draft: str) -> str:
+        """Start a saved fork as a separate live session; return its handle.
+
+        The new worker inherits this session's launch options, current model,
+        and reasoning effort. ``session_forked`` lets an attached web hub open
+        the new session; it is not replayed, so a later attach never repeats it.
+        """
+        assert self.agent is not None
+        options = dict(self.record.get("options", {}))
+        options.pop("draft", None)
+        if options.get("base_url") is None:
+            options["model"] = self.agent.model_alias or options.get("model", "")
+        options["reasoning_effort"] = self.agent.reasoning_effort
+        options["resume"] = conversation_id
+        if draft:
+            options["draft"] = draft
+        api_key = getattr(self, "_api_key", None)
+        if api_key is not None:
+            options["api_key"] = api_key
+        record = start_session(
+            name=name, workspace=self.record["workspace"], options=options
+        )
+        runtime_id = str(record["runtime_id"])
+        self.events.publish(
+            "session_forked",
+            runtime_id=runtime_id,
+            name=name,
+            conversation_id=conversation_id,
+        )
+        return name or runtime_id
 
     def _model_changed(self, model: str) -> None:
         """Record a `/model` switch so session listings show the new model."""
@@ -748,6 +787,10 @@ class Worker:
         replayed_seqs = {
             int(event.get("seq", 0)) for event in replay if int(event.get("seq", 0)) > 0
         }
+        draft = getattr(self, "_initial_draft", None)
+        if draft is not None and replay_history:
+            self._initial_draft = None
+            replay.append({"seq": 0, "type": "draft_set", "data": {"text": draft}})
         session = self._status()
         session["has_replay"] = bool(replay)
         session["show_startup"] = replay_history and not replay

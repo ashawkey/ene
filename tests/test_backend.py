@@ -1043,6 +1043,8 @@ def test_effort_command_lists_choices_and_accepts_max():
     agent.console = NS(system=output.append, error=errors.append)
     agent.profile = NS(reasoning="anthropic")
     agent.reasoning_effort = "high"
+    published = []
+    agent._publish_context_status = lambda: published.append(agent.reasoning_effort)
 
     agent._cmd_effort("/effort")
     agent._cmd_effort("/effort max")
@@ -1053,6 +1055,8 @@ def test_effort_command_lists_choices_and_accepts_max():
     )
     assert output[1] == "Reasoning effort set to max."
     assert agent.reasoning_effort == "max"
+    # The Web UI effort picker follows the republished context status.
+    assert published == ["max"]
     assert errors == []
 
 
@@ -1348,36 +1352,20 @@ def _skill_invocation_agent(tmp_path, name="general-skill"):
 
 
 @pytest.mark.parametrize(
-    "query", ["/resume", "/resume saved-session", "/fork", "/fork branch"]
+    "query", ["/rewind", "/resume", "/resume saved-session", "/fork", "/fork branch"]
 )
-def test_web_cannot_switch_conversation(query, tmp_path):
+def test_web_can_run_session_commands(query, tmp_path):
+    """Their pickers, drafts, and session switches all reach the browser."""
     agent, _ = _skill_invocation_agent(tmp_path)
     warnings = []
     dispatched = []
     agent.console.warn = warnings.append
-    agent._run_command = dispatched.append
+    agent._run_command = lambda text: dispatched.append(text) or False
 
     assert agent._process_query(UserSubmission(query, "web", "s1")) is False
 
-    command = query.split()[0]
-    assert warnings == [f"{command} is only available from an attached terminal."]
-    assert dispatched == []
-    assert agent.context.messages == []
-    assert agent.round_id == 0
-
-
-def test_web_can_rewind(tmp_path):
-    """Rewind's pickers and draft restore reach the browser, so web may run it."""
-    agent, _ = _skill_invocation_agent(tmp_path)
-    warnings = []
-    dispatched = []
-    agent.console.warn = warnings.append
-    agent._run_command = lambda query: dispatched.append(query) or False
-
-    assert agent._process_query(UserSubmission("/rewind", "web", "s1")) is False
-
     assert warnings == []
-    assert dispatched == ["/rewind"]
+    assert dispatched == [query]
 
 
 def test_peer_notice_is_injected_once_before_the_user_prompt(tmp_path):

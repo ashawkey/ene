@@ -35,3 +35,8 @@ def test_context_events_include_actual_model_and_marker():
     data = ContextStatus(1, 10, 0, 0, model="anthropic/claude-sonnet").event_data()
     assert data["model"] == "anthropic/claude-sonnet"
     assert data["model_icon"] == "✳︎"
+
+
+def test_context_events_include_reasoning_effort_only_when_set():
+    assert ContextStatus(1, 10, 0, 0, reasoning_effort="high").event_data()["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in ContextStatus(1, 10, 0, 0).event_data()

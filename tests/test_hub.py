@@ -487,6 +487,9 @@ def test_remote_session_preserves_model_marker_on_hydration_and_events():
     assert session.context_status["model"] == "deepseek-v4"
     assert session.context_status["model_icon"] == "🐋"
 
+    session.ingest({"type": "context_status", "data": {**context, "reasoning_effort": "low"}})
+    assert session.context_status["reasoning_effort"] == "low"
+
 
 def test_remote_session_tracks_latest_indicator_for_authoritative_state():
     session = RemoteSession("s1", {})
@@ -1647,3 +1650,33 @@ def test_text_search_flags_files_capped_per_file(tmp_path, monkeypatch):
     assert len(files["many.txt"]["matches"]) == 3 and files["many.txt"]["capped"] is True
     assert files["few.txt"]["capped"] is False
     assert result["per_file_limit"] == 3 and result["truncated"] is False
+
+
+def test_remote_session_reports_forks_to_the_hub():
+    session = RemoteSession("s1", {})
+    forks = []
+    session.on_forked = forks.append
+    session.ingest({"type": "session_forked", "data": {"runtime_id": "r2", "name": ""}})
+    session.ingest({"type": "session_forked", "data": {}})
+    assert forks == ["r2"]
+
+
+def test_hub_opens_a_fork_and_tells_browsers_to_focus_it(monkeypatch):
+    hub = make_hub()
+    add_session(hub, "s1")
+
+    def fake_attach(runtime_id):
+        return add_session(hub, runtime_id)
+
+    monkeypatch.setattr(hub, "attach_session", fake_attach)
+    monkeypatch.setattr(hub, "warm_path_index", lambda session: None)
+    with TestClient(hub.app) as client:
+        client.post("/api/login", json={"token": "correct-token"})
+        headers = {"origin": "http://testserver"}
+        with client.websocket_connect("/api/ws", headers=headers) as control:
+            receive_type(control, "sessions")
+            hub._open_fork("s1", "r2")
+            listing = receive_type(control, "sessions")
+            assert "r2" in [session["id"] for session in listing["sessions"]]
+            focus = control.receive_json()
+            assert focus == {"type": "focus", "id": "r2", "source": "s1"}

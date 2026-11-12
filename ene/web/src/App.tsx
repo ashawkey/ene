@@ -94,6 +94,11 @@ export default function App() {
     fatalCodes: [4403],
     onFatal: () => setAuth(false),
     onMessage: (message) => {
+      if (message.type === 'focus') {
+        // A session forked from the one in view opens in its place.
+        if (typeof message.id === 'string' && message.source === activeRef.current) select(message.id)
+        return
+      }
       if (message.type !== 'sessions') return
       if (typeof message.csrf === 'string') setCsrf(message.csrf)
       if (typeof message.host === 'string' && message.host) setHost(message.host)

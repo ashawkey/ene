@@ -350,6 +350,10 @@ class LLMAgent(
         self._session_changed = None
         self._session_name_changed = None
         self._model_changed = None
+        # Set by a live worker: starts a forked conversation as its own live
+        # session and returns how to attach it. Without one, /fork switches
+        # this agent to the fork instead.
+        self._fork_launcher = None
 
         self.console.prompt_broker = self.prompt_broker
         if terminal_prompts and self.prompt_broker is not None:
@@ -581,6 +585,9 @@ class LLMAgent(
             output_tokens=self.token_totals["completion"],
             cached_tokens=self.token_totals["cached_prompt"],
             model=self.model,
+            reasoning_effort=(
+                self.reasoning_effort if self.profile.reasoning is not None else ""
+            ),
         )
 
     def _publish_context_status(self) -> None:
@@ -1959,11 +1966,6 @@ class LLMAgent(
             return True
         if query.startswith("/"):
             cmd_word = query.split()[0][1:].lower()
-            if submission.source == "web" and cmd_word in {"resume", "fork"}:
-                self.console.warn(
-                    f"/{cmd_word} is only available from an attached terminal."
-                )
-                return False
         if query.startswith("!"):
             bash_cmd = query[1:].strip()
             if bash_cmd:

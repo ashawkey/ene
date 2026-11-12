@@ -226,6 +226,45 @@ def test_fork_starts_named_session_at_selected_prompt_boundary(tmp_path: Path):
     assert "Forked session 'session'" in console.text
 
 
+def test_live_fork_starts_a_separate_session_and_keeps_this_one(tmp_path: Path):
+    agent, work, console = _build(tmp_path, [" 1."])
+    launched = []
+    agent._fork_launcher = lambda session_id, name, draft: (
+        launched.append((session_id, name, draft)) or "alt"
+    )
+    changed = []
+    agent._session_changed = lambda session_id, name: changed.append((session_id, name))
+
+    agent._cmd_fork("/fork alt")
+
+    assert launched == [("fork", "alt", "make the parser handle floats and drop util")]
+    # The running session stays where it was, with its work intact.
+    assert agent._session_id == "session"
+    assert agent.session_name == ""
+    assert len(agent.context.messages) == 3
+    assert changed == []
+    assert agent.shutdowns == 0 and agent.input_broker.cleared == 0
+    assert getattr(agent, "_rewind_draft", None) is None
+    fork = SessionStore(tmp_path / "sessions", "fork")
+    assert fork.summary()["session_name"] == "alt"
+    assert fork.summary()["round_id"] == 1
+    assert "ene attach alt" in console.text
+
+
+def test_failed_live_fork_removes_the_saved_fork(tmp_path: Path):
+    agent, _, console = _build(tmp_path, [" 1."])
+
+    def fail(*_args):
+        raise RuntimeError("A live session named 'alt' already exists")
+
+    agent._fork_launcher = fail
+    agent._cmd_fork("/fork alt")
+
+    assert agent._session_id == "session"
+    assert not (tmp_path / "sessions" / "fork").exists()
+    assert "Could not start fork" in console.text
+
+
 def test_cancelled_fork_keeps_current_session(tmp_path: Path):
     agent, _, console = _build(tmp_path, [])
     console.select = lambda **kwargs: None

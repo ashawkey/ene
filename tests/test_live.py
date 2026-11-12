@@ -2338,3 +2338,67 @@ def test_live_terminal_stamps_relayed_messages_with_their_own_time():
         ("round", 5.0, None),
     ]
     assert calls[2][2]["source"] == "inbox"
+
+
+def test_forked_worker_places_its_draft_in_the_first_attached_editor():
+    def attach() -> list[dict]:
+        left, right = socket.socketpair()
+        serving = threading.Thread(target=worker._serve_terminal, args=(right,))
+        serving.start()
+        frames = [live.recv_frame(left)]
+        live.send_frame(left, {"type": "detach"})
+        serving.join(timeout=1)
+        try:
+            while True:
+                left.settimeout(0.2)
+                frames.append(live.recv_frame(left))
+        except (OSError, EOFError, ValueError):
+            pass
+        left.close()
+        right.close()
+        return [frame["event"] for frame in frames if frame.get("type") == "event"]
+
+    worker = Worker.__new__(Worker)
+    worker.events = EventHub(keep_transcript=True)
+    worker.events.publish("user_message", text="earlier")
+    worker.stop_event = threading.Event()
+    worker._status = lambda: {"runtime_id": "runtime"}
+    worker._initial_draft = "try another approach"
+
+    first = attach()
+    assert first[-1]["type"] == "draft_set"
+    assert first[-1]["data"] == {"text": "try another approach"}
+    assert all(event["type"] != "draft_set" for event in attach())
+
+
+def test_fork_launch_inherits_session_options(monkeypatch):
+    started = []
+
+    def fake_start(*, name, workspace, options):
+        started.append((name, workspace, options))
+        return {"runtime_id": "r2"}
+
+    monkeypatch.setattr("ene.live_worker.start_session", fake_start)
+    worker = Worker.__new__(Worker)
+    worker.events = EventHub()
+    worker.record = {
+        "workspace": "/work",
+        "options": {"model": "fast", "persona": "", "stream": True, "resume": "old"},
+    }
+    worker._api_key = "secret"
+    worker.agent = SimpleNamespace(model_alias="smart", reasoning_effort="low")
+
+    assert worker._launch_fork("forked", "", "prompt") == "r2"
+    assert worker._launch_fork("forked2", "alt", "") == "alt"
+
+    _, workspace, options = started[0]
+    assert workspace == "/work"
+    assert options == {
+        "model": "smart", "persona": "", "stream": True, "resume": "forked",
+        "reasoning_effort": "low", "draft": "prompt", "api_key": "secret",
+    }
+    assert "draft" not in started[1][2]
+    assert [event.type for event in worker.events.snapshot()] == [
+        "session_forked", "session_forked",
+    ]
+    assert worker.events.snapshot()[0].data["runtime_id"] == "r2"
