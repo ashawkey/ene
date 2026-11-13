@@ -9,6 +9,7 @@ import { isInspectorTab, rememberInspectorTab } from './components/Inspector'
 import { SessionPane } from './components/SessionPane'
 import { Sidebar } from './components/Sidebar'
 import { IconButton, LinkBanner, Spinner, Toasts, useMedia } from './components/ui'
+import { armChime, loadSound, playChime, saveSound } from './lib/chime'
 import { attachSession, detachSession, endSession, errorMessage, logout, setCsrf } from './lib/api'
 import { sessionTitle } from './lib/format'
 import type { SessionSummary } from './lib/protocol'
@@ -54,6 +55,9 @@ export default function App() {
   const [findOpen, setFindOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [theme, setTheme] = useState<ThemeChoice>(loadTheme)
+  const [sound, setSound] = useState(loadSound)
+  const soundRef = useRef(sound)
+  soundRef.current = sound
   const searchRef = useRef<HTMLInputElement>(null)
   const previousStates = useRef(new Map<string, string>())
   const listSignature = useRef('')
@@ -67,6 +71,7 @@ export default function App() {
   activeRef.current = activeId
 
   useEffect(() => applyTheme(theme), [theme])
+  useEffect(() => armChime(), [])
 
   const setInspector = useCallback((tab: InspectorTab | null) => {
     setInspectorState(tab)
@@ -114,6 +119,8 @@ export default function App() {
         }
       }
       previousStates.current = new Map(list.map((session) => [session.id, session.state]))
+      // One chime per update, however many sessions finished together.
+      if (finished.length && soundRef.current) playChime()
       setUnread((current) => {
         const alive = new Set(list.map((session) => session.id))
         const next = new Set([...current, ...finished].filter((id) => alive.has(id)))
@@ -262,6 +269,13 @@ export default function App() {
           setSidebarOpen(false)
         }}
         onTheme={() => setTheme(nextTheme(theme))}
+        sound={sound}
+        onSound={() => {
+          saveSound(!sound)
+          setSound(!sound)
+          // Turning it on doubles as a preview (and a user gesture to unlock audio).
+          if (!sound) playChime()
+        }}
         onLogout={signOut}
       />
       <main className="workspace">

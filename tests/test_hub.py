@@ -783,6 +783,19 @@ def test_mutating_endpoints_require_a_csrf_token():
         ).status_code == 400
 
 
+def test_forbidden_responses_explain_the_cause():
+    from ene.hub.server import CSRF_MISMATCH, LOGIN_EXPIRED
+
+    hub = make_hub()
+    with TestClient(hub.app) as client:
+        assert client.get("/api/sessions").json()["detail"] == LOGIN_EXPIRED
+        assert client.post("/api/sessions", json={}).json()["detail"] == LOGIN_EXPIRED
+        login(client)
+        reply = client.post("/api/sessions", json={}, headers={"x-csrf-token": "stale"})
+        assert reply.status_code == 403
+        assert reply.json()["detail"] == CSRF_MISMATCH
+
+
 def test_create_session_validates_the_working_directory(tmp_path):
     hub = make_hub()
     with TestClient(hub.app) as client:

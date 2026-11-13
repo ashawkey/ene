@@ -57,6 +57,13 @@ from ene.utils.io import EventHub
 COOKIE_NAME = "ene_web_session"
 SESSION_TTL = 12 * 60 * 60
 MAX_SESSIONS = 32               # browser login sessions (not live sessions)
+LOGIN_EXPIRED = (
+    "Your sign-in has expired or the hub restarted. Reload the page and sign in again."
+)
+CSRF_MISMATCH = (
+    "This page's security token is out of date, possibly from signing in "
+    "in another tab. Reload the page and try again."
+)
 # Concurrent browser websockets. Each open browser page holds one control
 # socket plus one socket per attached session (all kept open so tab switching
 # is instant), so this must comfortably exceed (sessions + 1) * pages.
@@ -1104,21 +1111,25 @@ class Hub:
         @app.post("/api/logout")
         async def logout(request: Request):
             login_id = request.cookies.get(COOKIE_NAME)
-            csrf = authenticate_cookie(login_id, refresh=False)
-            if csrf is None or not hmac.compare_digest(
-                request.headers.get("x-csrf-token", ""), csrf
-            ):
-                raise HTTPException(status_code=403, detail="Forbidden.")
+            check_csrf(request, authenticate_cookie(login_id, refresh=False))
             with self._login_lock:
                 revoke_login(login_id)
             response = JSONResponse({"ok": True})
             response.delete_cookie(COOKIE_NAME, path="/")
             return response
 
+        def check_csrf(request: Request, csrf: str | None) -> None:
+            if csrf is None:
+                raise HTTPException(status_code=403, detail=LOGIN_EXPIRED)
+            if not hmac.compare_digest(
+                request.headers.get("x-csrf-token", ""), csrf
+            ):
+                raise HTTPException(status_code=403, detail=CSRF_MISMATCH)
+
         def require_login(request: Request) -> str:
             csrf = authenticate_cookie(request.cookies.get(COOKIE_NAME))
             if csrf is None:
-                raise HTTPException(status_code=403, detail="Forbidden.")
+                raise HTTPException(status_code=403, detail=LOGIN_EXPIRED)
             return csrf
 
         def require_csrf(request: Request) -> None:
@@ -1127,13 +1138,10 @@ class Hub:
             Mutations are reachable through a tunnel, so they need the CSRF
             token from the login response in addition to the cookie.
             """
-            csrf = authenticate_cookie(
-                request.cookies.get(COOKIE_NAME), refresh=False
+            check_csrf(
+                request,
+                authenticate_cookie(request.cookies.get(COOKIE_NAME), refresh=False),
             )
-            if csrf is None or not hmac.compare_digest(
-                request.headers.get("x-csrf-token", ""), csrf
-            ):
-                raise HTTPException(status_code=403, detail="Forbidden.")
 
         async def read_json_body(request: Request, limit: int) -> dict:
             raw_body = await request.body()

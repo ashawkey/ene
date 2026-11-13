@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react'
-import { Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, Unlink, X } from 'lucide-react'
+import { Bell, BellOff, Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, Unlink, X } from 'lucide-react'
 import type { RefObject } from 'react'
 
 import { basename, sessionTitle } from '../lib/format'
@@ -119,6 +119,8 @@ export function Sidebar({
   onEnd,
   onNew,
   onTheme,
+  sound,
+  onSound,
   onLogout,
 }: {
   sessions: SessionSummary[]
@@ -141,6 +143,9 @@ export function Sidebar({
   onEnd: (id: string) => void
   onNew: () => void
   onTheme: () => void
+  /** Chime when a session finishes out of view. */
+  sound: boolean
+  onSound: () => void
   onLogout: () => void
 }) {
   const [filter, setFilter] = useState('')
@@ -201,6 +206,7 @@ export function Sidebar({
         </div>
         <span className="grow" />
         <LinkDot status={status} />
+        <IconButton icon={sound ? Bell : BellOff} size="sm" label={sound ? 'Sound: on' : 'Sound: off'} onClick={onSound} />
         <IconButton icon={ThemeIcon} size="sm" label={`Theme: ${theme}`} onClick={onTheme} />
         <IconButton icon={LogOut} size="sm" label="Sign out" onClick={onLogout} />
       </nav>
@@ -269,6 +275,7 @@ export function Sidebar({
           <LinkDot status={status} />
           <span className="muted small">{status === 'open' ? 'Hub connected' : 'Hub link down'}</span>
           <span className="grow" />
+          <IconButton icon={sound ? Bell : BellOff} size="sm" label={sound ? 'Sound: on' : 'Sound: off'} onClick={onSound} />
           <IconButton icon={ThemeIcon} size="sm" label={`Theme: ${theme}`} onClick={onTheme} />
           <IconButton icon={LogOut} size="sm" label="Sign out" onClick={onLogout} />
         </div>
