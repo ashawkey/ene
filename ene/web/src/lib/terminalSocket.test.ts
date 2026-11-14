@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chunkBytes, inTerminal, TerminalSocket } from './terminalSocket'
+import { chunkBytes, inTerminal, macLineEditSequence, TerminalSocket } from './terminalSocket'
 
 class FakeSocket {
   static instances: FakeSocket[] = []
@@ -100,5 +100,23 @@ describe('terminal socket', () => {
     expect(inTerminal(document.querySelector('textarea'))).toBe(true)
     expect(inTerminal(document.querySelector('input'))).toBe(false)
     expect(inTerminal(null)).toBe(false)
+  })
+})
+
+describe('mac line editing', () => {
+  const key = (key: string, extra: Partial<KeyboardEvent> = {}) =>
+    ({ type: 'keydown', key, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, ...extra })
+
+  it('maps command arrows and backspace to readline sequences', () => {
+    expect(macLineEditSequence(key('ArrowLeft'))).toBe('\x01')
+    expect(macLineEditSequence(key('ArrowRight'))).toBe('\x05')
+    expect(macLineEditSequence(key('Backspace'))).toBe('\x15')
+  })
+
+  it('leaves other keys to xterm and the browser', () => {
+    expect(macLineEditSequence(key('c'))).toBeNull()
+    expect(macLineEditSequence(key('ArrowLeft', { metaKey: false }))).toBeNull()
+    expect(macLineEditSequence(key('ArrowLeft', { shiftKey: true }))).toBeNull()
+    expect(macLineEditSequence(key('ArrowLeft', { type: 'keyup' }))).toBeNull()
   })
 })

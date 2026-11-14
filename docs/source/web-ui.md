@@ -137,7 +137,8 @@ The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal,
 - **Persistence:** shells belong to the hub, not the browser. Closing the panel, switching sessions, or reloading keeps them running; reopening replays the last 256 KB of output.
 - **Exit:** an exited shell shows its exit code; **Restart** replaces it with a new shell.
 - **Lifetime:** detaching or ending the session, the worker exiting, or stopping the hub closes its shells.
-- **Keys:** a focused terminal receives every key, including the page shortcuts below.
+- **Keys:** a focused terminal receives every key, including the page shortcuts below. On macOS, **⌘←** / **⌘→** jump to the line's start / end and **⌘⌫** deletes to its start.
+- **Resizing:** the shell is resized once a panel drag settles, so its prompt redraws once.
 - **Limits:** 8 shells per session, 32 per hub.
 - **Typing ahead:** input that a busy program has not read yet waits for it, up to 1 MB.
 - Linux and macOS hubs only.

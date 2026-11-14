@@ -133,3 +133,21 @@ export class TerminalSocket {
 /** True for keyboard events aimed at a terminal, which must not trigger page shortcuts. */
 export const inTerminal = (target: EventTarget | null) =>
   target instanceof Element && target.closest('.xterm') !== null
+
+export const isMac = () => /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+
+/**
+ * Readline sequences for the macOS ⌘ line-editing shortcuts that native
+ * terminals translate but xterm.js passes over: ⌘← / ⌘→ jump to the line's
+ * start / end and ⌘⌫ deletes to its start. Null leaves the key to xterm (and
+ * the browser, so ⌘C / ⌘V keep working).
+ */
+export function macLineEditSequence(event: Pick<KeyboardEvent, 'type' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>) {
+  if (event.type !== 'keydown' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null
+  switch (event.key) {
+    case 'ArrowLeft': return '\x01'
+    case 'ArrowRight': return '\x05'
+    case 'Backspace': return '\x15'
+    default: return null
+  }
+}

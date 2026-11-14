@@ -1,4 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
@@ -7,11 +8,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { closeTerminal, createTerminal, errorMessage, listTerminals, terminalSocketUrl } from '../lib/api'
 import type { TerminalInfo } from '../lib/protocol'
 import { store } from '../lib/storage'
-import { TerminalSocket, type TerminalLinkStatus } from '../lib/terminalSocket'
+import { isMac, macLineEditSequence, TerminalSocket, type TerminalLinkStatus } from '../lib/terminalSocket'
 import { toast } from '../lib/toast'
 import { Empty, IconButton, Spinner } from './ui'
 
 const REFRESH_INTERVAL = 5000
+// Resize the shell once a drag settles: every size change makes the shell
+// redraw its prompt, and a stream of them during a drag overwrites the lines
+// above it (and reflows the whole buffer each frame).
+const RESIZE_DEBOUNCE = 120
 
 const LIGHT: ITheme = {
   background: '#fbfcfe',
@@ -85,6 +90,15 @@ function TerminalView({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(element)
+    // GPU rendering keeps typing and output responsive; xterm falls back to
+    // its DOM renderer when WebGL is unavailable or its context is lost.
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
+    } catch {
+      // keep the DOM renderer
+    }
     const socket = new TerminalSocket({
       url: terminalSocketUrl(sessionId, terminal.id),
       onData: (data) => term.write(data),
@@ -105,15 +119,25 @@ function TerminalView({
       }
       socket.resize(term.cols, term.rows)
     }
-    let frame = 0
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(refit)
-    })
+    let timer = 0
+    const scheduleRefit = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(refit, RESIZE_DEBOUNCE)
+    }
+    const observer = new ResizeObserver(scheduleRefit)
     observer.observe(element)
     refit()
     // Glyph metrics can change once the monospace font finishes loading.
-    document.fonts?.ready.then(() => requestAnimationFrame(refit)).catch(() => {})
+    document.fonts?.ready.then(scheduleRefit).catch(() => {})
+    if (isMac()) {
+      term.attachCustomKeyEventHandler((event) => {
+        const sequence = macLineEditSequence(event)
+        if (sequence === null) return true
+        event.preventDefault()
+        socket.input(sequence)
+        return false
+      })
+    }
     const data = term.onData((input) => socket.input(input))
     const binary = term.onBinary((input) => socket.input(binaryString(input)))
     const stopTheme = watchTheme(() => {
@@ -121,7 +145,7 @@ function TerminalView({
     })
     term.focus()
     return () => {
-      cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
       observer.disconnect()
       stopTheme()
       data.dispose()

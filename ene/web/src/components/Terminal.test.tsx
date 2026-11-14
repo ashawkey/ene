@@ -26,9 +26,11 @@ vi.mock('@xterm/xterm', () => ({
     dispose() {}
     onData() { return { dispose() {} } }
     onBinary() { return { dispose() {} } }
+    attachCustomKeyEventHandler() {}
   },
 }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
 import { TerminalPanel } from './Terminal'
