@@ -8,15 +8,37 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { closeTerminal, createTerminal, errorMessage, listTerminals, terminalSocketUrl } from '../lib/api'
 import type { TerminalInfo } from '../lib/protocol'
 import { store } from '../lib/storage'
-import { isMac, macLineEditSequence, TerminalSocket, type TerminalLinkStatus } from '../lib/terminalSocket'
+import { lineEditSequence, TerminalSocket, type TerminalLinkStatus } from '../lib/terminalSocket'
 import { toast } from '../lib/toast'
 import { Empty, IconButton, Spinner } from './ui'
 
 const REFRESH_INTERVAL = 5000
-// Resize the shell once a drag settles: every size change makes the shell
-// redraw its prompt, and a stream of them during a drag overwrites the lines
-// above it (and reflows the whole buffer each frame).
+// Resize the shell once, after a panel drag ends or a window resize settles:
+// every size change makes the running program redraw, and each redraw over
+// re-wrapped lines can leave a stray copy behind.
 const RESIZE_DEBOUNCE = 120
+
+const dragging = () => document.documentElement.classList.contains('resizing')
+
+/**
+ * Fit the terminal to its host. Narrowing normally re-wraps every line, which
+ * a shell prompt redraws over correctly. A program that repaints its own
+ * region (a prompt with a toolbar, a TUI) erases by its old row count instead,
+ * so while one runs, narrowed lines are clipped rather than re-wrapped; the
+ * clipped text returns when the terminal widens again.
+ */
+export function fitTerminal(term: XTerm, fit: FitAddon, programRunning: boolean) {
+  const size = fit.proposeDimensions()
+  if (!size || !(size.cols > 0) || !(size.rows > 0)) return
+  const clip = programRunning && size.cols < term.cols && term.buffer.active.type === 'normal'
+  // windowsMode is xterm's switch for resizing without reflow.
+  if (clip) term.options.windowsMode = true
+  try {
+    fit.fit()
+  } finally {
+    if (clip) term.options.windowsMode = false
+  }
+}
 
 const LIGHT: ITheme = {
   background: '#fbfcfe',
@@ -99,6 +121,7 @@ function TerminalView({
     } catch {
       // keep the DOM renderer
     }
+    let programRunning = false
     const socket = new TerminalSocket({
       url: terminalSocketUrl(sessionId, terminal.id),
       onData: (data) => term.write(data),
@@ -108,36 +131,41 @@ function TerminalView({
         term.write(`\r\n\x1b[2m[process exited${code === null ? '' : ` with code ${code}`}]\x1b[0m\r\n`)
         exitRef.current()
       },
+      onForeground: (busy) => {
+        programRunning = busy
+      },
       onStatus: setStatus,
     })
-    const refit = () => {
-      if (!element.offsetParent) return // hidden: keep the last size
-      try {
-        fit.fit()
-      } catch {
-        return
-      }
-      socket.resize(term.cols, term.rows)
-    }
     let timer = 0
     const scheduleRefit = () => {
       window.clearTimeout(timer)
       timer = window.setTimeout(refit, RESIZE_DEBOUNCE)
+    }
+    const refit = () => {
+      if (!element.offsetParent) return // hidden: keep the last size
+      if (dragging()) {
+        scheduleRefit()
+        return
+      }
+      try {
+        fitTerminal(term, fit, programRunning)
+      } catch {
+        return
+      }
+      socket.resize(term.cols, term.rows)
     }
     const observer = new ResizeObserver(scheduleRefit)
     observer.observe(element)
     refit()
     // Glyph metrics can change once the monospace font finishes loading.
     document.fonts?.ready.then(scheduleRefit).catch(() => {})
-    if (isMac()) {
-      term.attachCustomKeyEventHandler((event) => {
-        const sequence = macLineEditSequence(event)
-        if (sequence === null) return true
-        event.preventDefault()
-        socket.input(sequence)
-        return false
-      })
-    }
+    term.attachCustomKeyEventHandler((event) => {
+      const sequence = lineEditSequence(event)
+      if (sequence === null) return true
+      event.preventDefault()
+      socket.input(sequence)
+      return false
+    })
     const data = term.onData((input) => socket.input(input))
     const binary = term.onBinary((input) => socket.input(binaryString(input)))
     const stopTheme = watchTheme(() => {

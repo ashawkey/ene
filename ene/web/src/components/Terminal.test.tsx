@@ -33,7 +33,7 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
 vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
-import { TerminalPanel } from './Terminal'
+import { fitTerminal, TerminalPanel } from './Terminal'
 
 const info = (id: string, extra = {}) => ({ id, title: `Terminal ${id}`, shell: 'bash', alive: true, exit_code: null, created: 0, ...extra })
 
@@ -82,5 +82,33 @@ describe('terminal panel', () => {
     api.listTerminals.mockResolvedValue({ supported: false, terminals: [] })
     render(<TerminalPanel sessionId="s1" connected />)
     expect(await screen.findByText(/not supported/)).toBeInTheDocument()
+  })
+})
+
+describe('fitting the terminal', () => {
+  const setup = (cols: number, proposed: number, buffer = 'normal') => {
+    const modes: Array<boolean | undefined> = []
+    const term = { cols, buffer: { active: { type: buffer } }, options: {} as { windowsMode?: boolean } }
+    const fit = {
+      proposeDimensions: () => ({ cols: proposed, rows: 24 }),
+      fit: () => modes.push(term.options.windowsMode),
+    }
+    return { term, fit, modes }
+  }
+  const run = (s: ReturnType<typeof setup>, running: boolean) =>
+    fitTerminal(s.term as never, s.fit as never, running)
+
+  it('clips instead of re-wrapping when a running program narrows', () => {
+    const s = setup(80, 60)
+    run(s, true)
+    expect(s.modes).toEqual([true])
+    expect(s.term.options.windowsMode).toBe(false)
+  })
+
+  it('re-wraps at a shell prompt, when widening, and on the alternate screen', () => {
+    for (const [s, running] of [[setup(80, 60), false], [setup(60, 80), true], [setup(80, 60, 'alternate'), true]] as const) {
+      run(s, running)
+      expect(s.modes).toEqual([undefined])
+    }
   })
 })

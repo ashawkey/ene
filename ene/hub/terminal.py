@@ -205,6 +205,21 @@ class Terminal:
             if self._pending and not self._fd_closed:
                 del self._pending[:self._write_now(self._pending)]
 
+    def foreground_busy(self) -> bool:
+        """True while a program other than the shell owns the terminal.
+
+        Browsers use it to decide how to narrow the screen: a shell prompt
+        redraws correctly over re-wrapped lines, but a program that repaints
+        its own region (a prompt with a toolbar, a TUI) would leave copies.
+        """
+        with self._write_lock:
+            if self._fd_closed:
+                return False
+            try:
+                return os.tcgetpgrp(self.master) != self.process.pid
+            except OSError:
+                return False
+
     def resize(self, cols: int, rows: int) -> None:
         if not self.alive or (cols, rows) == (self.cols, self.rows):
             return

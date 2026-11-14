@@ -138,7 +138,7 @@ The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal,
 - **Exit:** an exited shell shows its exit code; **Restart** replaces it with a new shell.
 - **Lifetime:** detaching or ending the session, the worker exiting, or stopping the hub closes its shells.
 - **Keys:** a focused terminal receives every key, including the page shortcuts below. On macOS, **⌘←** / **⌘→** jump to the line's start / end and **⌘⌫** deletes to its start.
-- **Resizing:** the shell is resized once a panel drag settles, so its prompt redraws once.
+- **Resizing:** the shell is resized once, when a panel drag ends. Narrowing re-wraps lines at a shell prompt; while a program runs, lines are clipped instead so its redraw leaves no copies, and widening restores them.
 - **Limits:** 8 shells per session, 32 per hub.
 - **Typing ahead:** input that a busy program has not read yet waits for it, up to 1 MB.
 - Linux and macOS hubs only.

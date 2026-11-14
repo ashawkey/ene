@@ -9,6 +9,8 @@ export type TerminalSocketOptions = {
   /** Called before a reconnect replays the scrollback, so the view can reset. */
   onReconnect: () => void
   onExit: (code: number | null) => void
+  /** Whether a program other than the shell currently owns the terminal. */
+  onForeground?: (busy: boolean) => void
   onStatus: (status: TerminalLinkStatus) => void
 }
 
@@ -71,13 +73,15 @@ export class TerminalSocket {
         this.options.onData(new Uint8Array(event.data))
         return
       }
-      let message: { type?: string; code?: number | null }
+      let message: { type?: string; code?: number | null; busy?: boolean }
       try {
         message = JSON.parse(String(event.data))
       } catch {
         return
       }
-      if (message?.type === 'exit') {
+      if (message?.type === 'foreground') {
+        this.options.onForeground?.(message.busy === true)
+      } else if (message?.type === 'exit') {
         this.exited = true
         this.options.onExit(typeof message.code === 'number' ? message.code : null)
       }
@@ -134,15 +138,14 @@ export class TerminalSocket {
 export const inTerminal = (target: EventTarget | null) =>
   target instanceof Element && target.closest('.xterm') !== null
 
-export const isMac = () => /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
-
 /**
- * Readline sequences for the macOS ⌘ line-editing shortcuts that native
- * terminals translate but xterm.js passes over: ⌘← / ⌘→ jump to the line's
- * start / end and ⌘⌫ deletes to its start. Null leaves the key to xterm (and
- * the browser, so ⌘C / ⌘V keep working).
+ * Readline sequences for the ⌘ (Meta) line-editing shortcuts that macOS
+ * editors honor but xterm.js passes over: ⌘← / ⌘→ jump to the line's start /
+ * end and ⌘⌫ deletes to its start. Not gated on a platform check, which
+ * browsers may spoof; elsewhere the OS usually claims these keys first. Null
+ * leaves the key to xterm (and the browser, so ⌘C / ⌘V keep working).
  */
-export function macLineEditSequence(event: Pick<KeyboardEvent, 'type' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>) {
+export function lineEditSequence(event: Pick<KeyboardEvent, 'type' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>) {
   if (event.type !== 'keydown' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null
   switch (event.key) {
     case 'ArrowLeft': return '\x01'

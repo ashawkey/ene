@@ -70,6 +70,24 @@ def test_terminal_runs_a_shell_in_the_workspace(tmp_path):
         manager.close_all(timeout=5)
 
 
+def test_terminal_reports_a_program_in_the_foreground(tmp_path):
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path))
+    try:
+        out = Collector()
+        terminal.subscribe(out)
+        terminal.write(b"echo ready\n")
+        assert wait_until(lambda: b"ready\r\n" in out.data)
+        assert wait_until(lambda: not terminal.foreground_busy())
+        terminal.write(b"sleep 30\n")
+        assert wait_until(terminal.foreground_busy)
+        terminal.write(b"\x03")
+        assert wait_until(lambda: not terminal.foreground_busy())
+    finally:
+        manager.close_all(timeout=5)
+    assert terminal.foreground_busy() is False
+
+
 def test_new_subscribers_replay_scrollback_and_see_exit(tmp_path):
     manager = TerminalManager()
     terminal = manager.create("s1", str(tmp_path))
@@ -237,6 +255,11 @@ def test_terminal_websocket_round_trip_and_close(tmp_path):
 
             url = f"/api/sessions/s1/terminals/{created['id']}/ws"
             with client.websocket_connect(url, headers=ORIGIN) as sock:
+                # After any scrollback replay: the shell itself owns the terminal.
+                message = sock.receive()
+                while message.get("bytes"):
+                    message = sock.receive()
+                assert json.loads(message["text"]) == {"type": "foreground", "busy": False}
                 sock.send_json({"type": "ping"})
                 sock.send_json({"type": "resize", "cols": 70, "rows": 15})
                 sock.send_bytes(b"stty size; echo hello-$((6*7))\n")

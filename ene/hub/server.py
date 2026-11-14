@@ -1999,9 +1999,12 @@ class Hub:
         """Relay one terminal: binary frames carry raw bytes both ways.
 
         On connect the retained scrollback is replayed. Text frames from the
-        browser are ``ping`` / ``resize``; the hub sends ``pong`` and, once the
-        shell is gone, ``{"type": "exit", "code": ...}``. A viewer that falls
-        too far behind is closed with 1013 and replays on reconnect.
+        browser are ``ping`` / ``resize``; the hub sends ``pong``,
+        ``{"type": "foreground", "busy": ...}`` whenever a program other than
+        the shell takes or returns the terminal (checked as output arrives),
+        and, once the shell is gone, ``{"type": "exit", "code": ...}``. A
+        viewer that falls too far behind is closed with 1013 and replays on
+        reconnect.
         """
         terminal = self.terminals.get(session_id, terminal_id)
         if terminal is None:
@@ -2028,11 +2031,21 @@ class Hub:
                 pass  # the loop is shutting down
 
         snapshot, alive = terminal.subscribe(on_output)
+        foreground = {"busy": None}
+
+        async def report_foreground() -> None:
+            busy = terminal.foreground_busy()
+            if busy != foreground["busy"]:
+                foreground["busy"] = busy
+                await websocket.send_json({"type": "foreground", "busy": busy})
+
         try:
             require_login()
             if snapshot:
                 await websocket.send_bytes(snapshot)
-            if not alive:
+            if alive:
+                await report_foreground()
+            else:
                 await websocket.send_json({"type": "exit", "code": terminal.exit_code})
 
             async def send_output():
@@ -2047,6 +2060,7 @@ class Hub:
                         data = bytes(pending)
                         pending.clear()
                         await websocket.send_bytes(data)
+                        await report_foreground()
                     if state["exit"] is not None:
                         await websocket.send_json({"type": "exit", "code": state["exit"]})
                         break

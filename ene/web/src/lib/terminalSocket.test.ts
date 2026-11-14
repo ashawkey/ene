@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chunkBytes, inTerminal, macLineEditSequence, TerminalSocket } from './terminalSocket'
+import { chunkBytes, inTerminal, lineEditSequence, TerminalSocket } from './terminalSocket'
 
 class FakeSocket {
   static instances: FakeSocket[] = []
@@ -38,12 +38,13 @@ afterEach(() => {
 })
 
 function connect() {
-  const events = { data: [] as Uint8Array[], exits: [] as Array<number | null>, statuses: [] as string[], resets: 0 }
+  const events = { data: [] as Uint8Array[], exits: [] as Array<number | null>, statuses: [] as string[], foreground: [] as boolean[], resets: 0 }
   const socket = new TerminalSocket({
     url: 'ws://hub/t',
     onData: (data) => events.data.push(data),
     onReconnect: () => { events.resets += 1 },
     onExit: (code) => events.exits.push(code),
+    onForeground: (busy) => events.foreground.push(busy),
     onStatus: (status) => events.statuses.push(status),
   })
   return { socket, events, ws: () => FakeSocket.instances.at(-1)! }
@@ -90,6 +91,14 @@ describe('terminal socket', () => {
     expect(FakeSocket.instances).toHaveLength(2)
   })
 
+  it('reports which program owns the terminal', () => {
+    const { events, ws } = connect()
+    ws().open()
+    ws().onmessage?.({ data: JSON.stringify({ type: 'foreground', busy: true }) })
+    ws().onmessage?.({ data: JSON.stringify({ type: 'foreground', busy: false }) })
+    expect(events.foreground).toEqual([true, false])
+  })
+
   it('splits large pastes into frames the hub accepts', () => {
     const chunks = chunkBytes(new Uint8Array(70_000))
     expect(chunks.map((chunk) => chunk.length)).toEqual([32768, 32768, 4464])
@@ -108,15 +117,15 @@ describe('mac line editing', () => {
     ({ type: 'keydown', key, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, ...extra })
 
   it('maps command arrows and backspace to readline sequences', () => {
-    expect(macLineEditSequence(key('ArrowLeft'))).toBe('\x01')
-    expect(macLineEditSequence(key('ArrowRight'))).toBe('\x05')
-    expect(macLineEditSequence(key('Backspace'))).toBe('\x15')
+    expect(lineEditSequence(key('ArrowLeft'))).toBe('\x01')
+    expect(lineEditSequence(key('ArrowRight'))).toBe('\x05')
+    expect(lineEditSequence(key('Backspace'))).toBe('\x15')
   })
 
   it('leaves other keys to xterm and the browser', () => {
-    expect(macLineEditSequence(key('c'))).toBeNull()
-    expect(macLineEditSequence(key('ArrowLeft', { metaKey: false }))).toBeNull()
-    expect(macLineEditSequence(key('ArrowLeft', { shiftKey: true }))).toBeNull()
-    expect(macLineEditSequence(key('ArrowLeft', { type: 'keyup' }))).toBeNull()
+    expect(lineEditSequence(key('c'))).toBeNull()
+    expect(lineEditSequence(key('ArrowLeft', { metaKey: false }))).toBeNull()
+    expect(lineEditSequence(key('ArrowLeft', { shiftKey: true }))).toBeNull()
+    expect(lineEditSequence(key('ArrowLeft', { type: 'keyup' }))).toBeNull()
   })
 })
