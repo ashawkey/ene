@@ -381,6 +381,7 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .login-field { display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); color: var(--text-2); }
 .login-field input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; height: 34px; color: var(--text); }
 .form-error { margin: 12px 0 0; color: var(--red); font-size: 13px; }
+.boot-error { max-width: 420px; padding: 0 16px; text-align: center; line-height: 1.5; }
 
 /* ---------- app layout ---------- */
 

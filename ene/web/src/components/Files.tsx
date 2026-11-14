@@ -20,13 +20,15 @@ import {
 } from 'lucide-react'
 import { type ReactNode, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
-import { errorMessage, fileDiff, findFiles, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
+import { ApiError, errorMessage, fileDiff, findFiles, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
 import { bytes, relativeTime } from '../lib/format'
 import { highlight, languageForPath, splitHighlightedLines } from '../lib/highlight'
+import { MOD_KEY } from '../lib/platform'
 import type { DirListing, FilePreview, FindResult, FoundPath, GitChanges, GitDiff } from '../lib/protocol'
 import { type FilesFocus, type Range, QueryCache, narrowMatches, pathMatchRanges, useDebounced, useFilesFocus } from '../lib/search'
 import { splitLines } from '../lib/splitDiff'
 import { store } from '../lib/storage'
+import { toast } from '../lib/toast'
 import { CopyButton, Markdown } from './Markdown'
 import { Highlighted, TextSearch } from './Search'
 import { SplitDiff } from './SplitDiff'
@@ -47,8 +49,6 @@ export function fileIcon(name: string, type: 'dir' | 'file') {
 const STATUS_LETTER: Record<string, string> = {
   modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', conflict: 'U', untracked: '?',
 }
-
-const MOD_KEY = typeof navigator !== 'undefined' && /Mac|iP(hone|ad)/.test(navigator.platform) ? '⌘' : 'Ctrl+'
 
 /** Lines per lazily painted block of the code view. */
 const CODE_CHUNK = 200
@@ -125,6 +125,8 @@ export const FileBrowser = memo(function FileBrowser({
   const [finding, setFinding] = useState(false)
   const [searchFocus, setSearchFocus] = useState(0)
   const filterInput = useRef<HTMLInputElement>(null)
+  // The requested path of the folder on screen; null until one has listed.
+  const listedPath = useRef<string | null>(null)
 
   useFilesFocus(useCallback((target: FilesFocus) => {
     if (target === 'search') {
@@ -147,14 +149,22 @@ export const FileBrowser = memo(function FileBrowser({
     listFiles(sessionId, path)
       .then((data) => {
         if (cancelled) return
+        listedPath.current = path
         setListing(data)
         store.set(`ene.files.${sessionId}`, data.path)
       })
       .catch((exc) => {
         if (cancelled) return
-        // A remembered folder that disappeared falls back to the root.
-        if (path) setPath('')
-        else setError(errorMessage(exc, 'Could not list files.'))
+        const gone = exc instanceof ApiError && exc.status === 404
+        if (path && (listedPath.current === null || (gone && path === listedPath.current))) {
+          // The remembered folder, or the one on screen, disappeared: back to the root.
+          setPath('')
+        } else if (listedPath.current !== null && path !== listedPath.current) {
+          // A folder that cannot be opened (outside the workspace, unreadable,
+          // offline): say so and stay in the current one.
+          toast(errorMessage(exc, 'Could not open the folder.'))
+          setPath(listedPath.current)
+        } else setError(errorMessage(exc, 'Could not list files.'))
       })
       .finally(() => !cancelled && setLoading(false))
     return () => {
@@ -174,6 +184,9 @@ export const FileBrowser = memo(function FileBrowser({
 
   // Recursive, fuzzy file finder over the whole workspace (hub-side index).
   const findQuery = useDebounced(filter.trim(), 80)
+  // The filter as typed now, for a lookup that Enter is waiting on.
+  const typed = useRef(filter)
+  typed.current = filter
   const findTick = useRef(tick)
   useEffect(() => {
     if (!findQuery || mode !== 'browse') {
@@ -245,6 +258,26 @@ export const FileBrowser = memo(function FileBrowser({
     setPath(target)
   }
   const openFound = (item: FoundPath) => (item.type === 'dir' ? browse(item.path) : onOpen(item.path, changeMap.has(item.path) ? true : undefined))
+  // Enter with no match in this folder opens the first workspace match for
+  // exactly the typed query. Hits narrowed from an earlier query's answer can
+  // rank differently, so use this query's own answer, looked up if need be.
+  const openFirstHit = async (query: string) => {
+    if (!query) return
+    const key = `${sessionId}\u0000${query}`
+    let answer: FindResult | undefined = found?.session === sessionId && found.query === query ? found : findCache.get(key)
+    if (!answer) {
+      try {
+        answer = await findFiles(sessionId, query)
+      } catch {
+        return
+      }
+      findCache.set(key, answer)
+    }
+    // Typing moved on while the answer was on its way.
+    if (typed.current.trim() !== query) return
+    const hit = answer.results.find((item) => showHidden || !isHiddenPath(item.path))
+    if (hit) openFound(hit)
+  }
 
   return (
     <div className="files">
@@ -310,7 +343,7 @@ export const FileBrowser = memo(function FileBrowser({
               } else if (event.key === 'Enter') {
                 const entry = entries[0]
                 if (entry) openFound({ path: join(entry.name), type: entry.type })
-                else if (workspaceHits[0]) openFound(workspaceHits[0])
+                else void openFirstHit(filter.trim())
               }
             }}
           />
@@ -488,7 +521,9 @@ export const FileViewer = memo(function FileViewer({
   const isMarkdown = /\.(md|markdown)$/i.test(path)
   const Icon = fileIcon(path, 'file')
   const hasDiff = diff !== null && diff.status !== 'unchanged'
-  const showDiff = mode === 'diff' && (hasDiff || changed)
+  // Listed as changed opens on the diff while it loads; a file Git lists but
+  // whose content matches HEAD (a mode change, say) then shows the file.
+  const showDiff = mode === 'diff' && (diff ? hasDiff : changed)
   // Diffed once: the stat and the split view share the same rows.
   const diffRows = useMemo(
     () => (diff && !diff.binary && !diff.too_large ? splitLines(diff.old, diff.new) : null),

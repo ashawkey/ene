@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ServerEvent, StateFrame } from './protocol'
 import type { SessionView, TimelineItem } from './session'
-import { applyHistory, initialView, messageTime, reduce, totals } from './session'
+import { MAX_OUTPUT_CHARS, applyHistory, initialView, messageTime, reduce, roundsVersion, totals } from './session'
 
 function state(overrides: Partial<StateFrame> = {}): ServerEvent {
   return {
@@ -53,7 +53,7 @@ describe('session reducer', () => {
     const { view, signals } = run([state({ stream_id: 'stream-b' })], first.view)
     expect(view.items).toEqual([])
     expect(view.lastSeq).toBe(0)
-    expect(signals).toContainEqual({ kind: 'state', pendingActionId: null, streamChanged: true })
+    expect(signals).toContainEqual({ kind: 'state', pendingActionId: null, streamChanged: true, resync: false })
   })
 
   it('starts at the newest page and prepends older pages on request', () => {
@@ -163,7 +163,7 @@ describe('session reducer', () => {
       ev(4, 'draft_set', { text: 'restored' }),
     ])
     expect(signals).toEqual([
-      { kind: 'state', pendingActionId: 'a0', streamChanged: false },
+      { kind: 'state', pendingActionId: 'a0', streamChanged: false, resync: false },
       { kind: 'ack', actionId: 'a1' },
       { kind: 'ack', actionId: 'a2' },
       { kind: 'reject', actionId: 'a3', error: 'busy' },
@@ -272,5 +272,57 @@ describe('session reducer', () => {
     expect(tool.diffs.map((d) => d.path)).toEqual(['x.py', 'y.py'])
     const orphan = run([state(), diff(1, 'z.py')]).view
     expect(orphan.items[0]).toMatchObject({ kind: 'diff', path: 'z.py' })
+  })
+})
+
+describe('command output', () => {
+  const line = (block: number, index: number) => `${block}:${index} ${'x'.repeat(40)}`
+  const block = (n: number) => Array.from({ length: 200 }, (_, index) => line(n, index)).join('\n')
+
+  it('keeps only the newest output of a long-running call', () => {
+    // Every output event of a chatty command was kept and re-scanned on each
+    // render, without bound.
+    let view = reduce(initialView(), { type: 'tool_start', seq: 1, data: { name: 'run_command', primary: 'make' } } as ServerEvent)[0]
+    for (let n = 0; n < 100; n++) {
+      const text = block(n)
+      view = reduce(view, { type: 'output', seq: 2 + n, data: { text, ansi: `\u001b[2m${text}\u001b[22m` } } as ServerEvent)[0]
+    }
+    const tool = view.items[0] as Extract<TimelineItem, { kind: 'tool' }>
+    const output = tool.output!
+    expect(output.text.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS)
+    const shown = output.text.split('\n')
+    expect(shown.at(-1)).toBe(line(99, 199))
+    expect(shown[0]).toMatch(/^\d+:\d+ x{40}$/)
+    expect((output.trimmed ?? 0) + shown.length).toBe(100 * 200)
+    expect(output.ansi!.split('\n')).toHaveLength(shown.length)
+  })
+
+  it('caps loose output blocks the same way', () => {
+    let view = initialView()
+    for (let n = 0; n < 100; n++) {
+      view = reduce(view, { type: 'output', seq: 1 + n, data: { text: block(n) } } as ServerEvent)[0]
+    }
+    expect(view.items).toHaveLength(1)
+    const output = view.items[0] as Extract<TimelineItem, { kind: 'output' }>
+    expect(output.text.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS)
+    expect((output.trimmed ?? 0) + output.text.split('\n').length).toBe(100 * 200)
+  })
+})
+
+describe('rounds version', () => {
+  it('changes with every finished round, past the 500 kept', () => {
+    // Panels refresh after each round; keyed on the list length, they
+    // stopped once the list was full.
+    let view = initialView()
+    const lengths = new Set<number>()
+    const versions = new Set<number>()
+    for (let index = 0; index < 503; index++) {
+      const data = { id: `r${index}`, index, started_at: 1000 + index, ended_at: 1000.5 + index }
+      view = reduce(view, { type: 'round_stats', seq: 1 + index, data } as ServerEvent)[0]
+      lengths.add(view.rounds.length)
+      versions.add(roundsVersion(view.rounds))
+    }
+    expect(lengths.size).toBe(500)
+    expect(versions.size).toBe(503)
   })
 })

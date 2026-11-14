@@ -158,6 +158,13 @@ export type StateFrame = {
   info?: Record<string, string>
   rounds?: RoundStats[]
   active_round?: { started_at: number } | null
+  /**
+   * Same link, rebuilt timeline (this browser fell behind retained history):
+   * actions in flight are still answered on it.
+   */
+  resync?: boolean
+  /** Largest frame the hub accepts; a bigger one closes the socket. */
+  max_frame_bytes?: number
 }
 
 /** One page of older events, answering a `history` request. */

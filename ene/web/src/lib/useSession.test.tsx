@@ -151,6 +151,74 @@ describe('useSession outbox', () => {
     expect(text()).toBe('Hello!')
   })
 
+  it('refuses a message the hub would drop the link for, and keeps it', () => {
+    // A frame over the hub's limit closes the socket (1009); re-sending it
+    // from the outbox after every reconnect looped forever.
+    const { result } = renderHook(() => useSession('s1', () => undefined))
+    act(() => {
+      latest().open()
+      latest().push({ ...stateFrame(), max_frame_bytes: 1024 })
+    })
+    let ok = true
+    act(() => { ok = result.current.submit('x'.repeat(2000)) })
+    expect(ok).toBe(false)
+    expect(submits(latest())).toHaveLength(0)
+    expect(result.current.outbox).toHaveLength(0)
+    act(() => { ok = result.current.submit('x'.repeat(500)) })
+    expect(ok).toBe(true)
+  })
+
+  it('refuses an answer the hub would drop the link for', () => {
+    const { result } = renderHook(() => useSession('s1', () => undefined))
+    act(() => {
+      latest().open()
+      latest().push({
+        ...stateFrame(),
+        max_frame_bytes: 1024,
+        prompt: { id: 'p', kind: 'text', message: 'Name?', choices: [], default: '' },
+      })
+    })
+    let ok = true
+    act(() => { ok = result.current.answer('y'.repeat(2000)) })
+    expect(ok).toBe(false)
+    expect(latest().sent.filter((message) => message.type === 'prompt_response')).toHaveLength(0)
+    act(() => { ok = result.current.answer('short') })
+    expect(ok).toBe(true)
+  })
+
+  it('keeps its callbacks stable, so memoized views skip renders while typing', () => {
+    const { result } = renderHook(() => useSession('s1', () => undefined))
+    connect()
+    const before = { ...result.current }
+    act(() => result.current.setDraft('h'))
+    for (const name of ['submit', 'command', 'withdraw', 'cancel', 'answer', 'dismissPrompt', 'loadOlder', 'retry'] as const) {
+      expect(result.current[name], name).toBe(before[name])
+    }
+  })
+
+  it('rebuilds the view on a same-link resync without re-sending or abandoning actions', () => {
+    const { result } = renderHook(() => useSession('s1', () => undefined))
+    act(() => {
+      latest().open()
+      latest().push(stateFrame({ id: 'p1', text: 'queued', source: 'web', action_id: null }))
+    })
+    act(() => { result.current.submit('hello') })
+    act(() => result.current.withdraw())
+    expect(result.current.withdrawing).toBe(true)
+    const withdrawal = latest().sent.find((message) => message.type === 'withdraw_pending')!
+    // The hub fell this browser behind its retained history and restarts the
+    // timeline on the same socket: answers to actions still arrive here.
+    act(() => latest().push({ ...stateFrame(), latest_seq: 90, replay_from: 50, resync: true }))
+    expect(submits(latest())).toHaveLength(1)
+    expect(result.current.outbox).toHaveLength(1)
+    expect(result.current.withdrawing).toBe(true)
+    act(() => latest().push({
+      seq: 50, type: 'pending_cleared',
+      data: { id: 'p1', reason: 'withdrawn', action_id: withdrawal.action_id, text: 'queued' },
+    }))
+    expect(result.current.draft).toBe('queued')
+  })
+
   it('holds renders while hidden and catches up when shown', () => {
     const { result, rerender } = renderHook(({ visible }) => useSession('s1', () => undefined, visible), {
       initialProps: { visible: false },

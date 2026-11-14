@@ -34,6 +34,10 @@ function audio(): AudioContext | null {
   return context
 }
 
+// A mouse press or a key is a user gesture, but a touch (or pen) becomes one
+// only on release: on a phone, pointerdown alone never unlocks audio.
+const GESTURES = ['pointerdown', 'pointerup', 'touchend', 'keydown']
+
 /**
  * Browsers only allow audio after a user gesture; resume the context on the
  * first one so a later chime can play while the tab sits in the background.
@@ -45,11 +49,9 @@ export function armChime(): () => void {
     if (!ctx || ctx.state === 'running') remove()
   }
   const remove = () => {
-    window.removeEventListener('pointerdown', unlock, true)
-    window.removeEventListener('keydown', unlock, true)
+    for (const type of GESTURES) window.removeEventListener(type, unlock, true)
   }
-  window.addEventListener('pointerdown', unlock, true)
-  window.addEventListener('keydown', unlock, true)
+  for (const type of GESTURES) window.addEventListener(type, unlock, true)
   return remove
 }
 

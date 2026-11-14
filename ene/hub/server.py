@@ -24,12 +24,14 @@ endpoint annotations eagerly, and ``fastapi`` types are only imported inside
 import asyncio
 import hmac
 import json
+import math
 import os
 import secrets
 import socket
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -89,6 +91,17 @@ MAX_ACTION_ID_LENGTH = 128
 MAX_ROUNDS = 500                # round statistics kept per attached session
 MAX_TERMINAL_INPUT = 64 * 1024  # largest keyboard/paste frame from a browser
 MAX_TERMINAL_BACKLOG = 4 * 1024 * 1024  # unsent output before a slow viewer is dropped
+# Largest websocket frame a browser may send; a bigger one closes its socket
+# with 1009, so the state frame reports this limit for the UI to check first.
+MAX_WS_FRAME_BYTES = 256 * 1024
+# Close code for a websocket whose Origin does not match its Host — usually a
+# reverse proxy that rewrites Host. Distinct from 4403 (signed out), which
+# sends the browser back to the sign-in page.
+CLOSE_BAD_ORIGIN = 4400
+ORIGIN_WARNING_INTERVAL = 60.0  # seconds between logged origin rejections
+# Threads that relay browser actions to workers, kept apart from the default
+# executor so slow file, git, or index work cannot delay a submit.
+ACTION_THREADS = 8
 # Events that can change an attached session's list entry (state, title, preview).
 _SUMMARY_EVENTS = frozenset({
     "operation_start", "operation_end", "pending_set", "pending_cleared",
@@ -589,6 +602,9 @@ class Hub:
         self._path_completers: dict[str, AtFileCompleter] = {}
         self._path_completion_lock = threading.Lock()
         self._text_search = hubfiles.TextSearch()
+        self._action_executor = ThreadPoolExecutor(
+            max_workers=ACTION_THREADS, thread_name_prefix="ene-hub-action"
+        )
         # Browser terminals, owned by the hub and closed with their session.
         self.terminals = TerminalManager()
 
@@ -944,6 +960,7 @@ class Hub:
             from fastapi import FastAPI, HTTPException, Request, WebSocket
             from fastapi.responses import FileResponse, JSONResponse
             from fastapi.staticfiles import StaticFiles
+            from starlette.middleware.gzip import GZipMiddleware
         except ImportError as exc:
             raise RuntimeError(
                 "Web UI dependencies are missing. Install or update ene."
@@ -980,10 +997,43 @@ class Hub:
             if revoked is not None:
                 revoked.set()
 
+        def set_login_cookie(request: Request, response, login_id: str, max_age: int) -> None:
+            response.set_cookie(
+                COOKIE_NAME,
+                login_id,
+                httponly=True,
+                secure=request.url.scheme == "https",
+                samesite="strict",
+                max_age=max_age,
+                path="/",
+            )
+
+        def renew_login_cookie(request: Request, response) -> None:
+            """Keep the cookie's lifetime in step with the login's sliding
+            expiry; set once at login, it would sign out a browser in use."""
+            path = request.url.path
+            if not path.startswith("/api/") or path in {"/api/login", "/api/logout"}:
+                return
+            login_id = request.cookies.get(COOKIE_NAME)
+            if not login_id:
+                return
+            with self._login_lock:
+                record = self._logins.get(login_id)
+            remaining = record[0] - time.time() if record is not None else 0
+            if remaining >= 1:
+                set_login_cookie(request, response, login_id, math.ceil(remaining))
+
         @app.middleware("http")
         async def security_headers(request: Request, call_next):
             response = await call_next(request)
-            response.headers["Cache-Control"] = "no-store"
+            # Build output under /assets is content-hashed, so it can be cached
+            # for good; everything else (the page, API data) is never stored.
+            response.headers["Cache-Control"] = (
+                "public, max-age=31536000, immutable"
+                if request.url.path.startswith("/assets/") and response.status_code == 200
+                else "no-store"
+            )
+            renew_login_cookie(request, response)
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Frame-Options"] = "DENY"
@@ -1052,6 +1102,21 @@ class Hub:
             parsed = urlsplit(origin)
             return parsed.scheme in {"http", "https"} and parsed.netloc == host
 
+        last_origin_warning: list[float] = []
+
+        def warn_origin(origin: str | None, host: str | None) -> None:
+            """Log a refused origin, at most once per interval (any page can
+            trigger this)."""
+            now = time.monotonic()
+            if last_origin_warning and now - last_origin_warning[0] < ORIGIN_WARNING_INTERVAL:
+                return
+            last_origin_warning[:] = [now]
+            self._log(
+                f"refused a browser connection: page origin {(origin or '')[:200]!r} "
+                f"does not match host {(host or '')[:200]!r}. Behind a reverse "
+                "proxy, forward the original Host header."
+            )
+
         @app.get("/")
         async def index():
             return FileResponse(assets / "index.html")
@@ -1097,15 +1162,7 @@ class Hub:
             login_id, csrf = new_login()
             self._log_dim(f"web login from {ip}")
             response = JSONResponse({"ok": True, "csrf": csrf})
-            response.set_cookie(
-                COOKIE_NAME,
-                login_id,
-                httponly=True,
-                secure=request.url.scheme == "https",
-                samesite="strict",
-                max_age=SESSION_TTL,
-                path="/",
-            )
+            set_login_cookie(request, response, login_id, SESSION_TTL)
             return response
 
         @app.post("/api/logout")
@@ -1183,26 +1240,32 @@ class Hub:
         async def browse(request: Request, path: str = ""):
             """List subdirectories for the workspace picker."""
             require_login(request)
-            target = resolved_directory(path) if path else Path.home()
-            try:
-                entries = sorted(
-                    (
-                        {
-                            "name": entry.name,
-                            "path": str(entry),
-                            "hidden": entry.name.startswith("."),
-                        }
-                        for entry in target.iterdir()
-                        if entry.is_dir()
-                    ),
-                    key=lambda entry: entry["name"].lower(),
-                )
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=403, detail="Directory is not readable."
-                ) from exc
-            parent = str(target.parent) if target.parent != target else ""
-            return {"path": str(target), "parent": parent, "entries": entries}
+
+            def listing() -> dict:
+                target = resolved_directory(path) if path else Path.home()
+                try:
+                    entries = sorted(
+                        (
+                            {
+                                "name": entry.name,
+                                "path": str(entry),
+                                "hidden": entry.name.startswith("."),
+                            }
+                            for entry in target.iterdir()
+                            if entry.is_dir()
+                        ),
+                        key=lambda entry: entry["name"].lower(),
+                    )
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=403, detail="Directory is not readable."
+                    ) from exc
+                parent = str(target.parent) if target.parent != target else ""
+                return {"path": str(target), "parent": parent, "entries": entries}
+
+            # Disk work (slow on network filesystems) stays off the loop that
+            # serves every browser stream; authentication stays on it.
+            return await asyncio.get_running_loop().run_in_executor(None, listing)
 
         @app.get("/api/sessions/{session_id}/path-completions")
         async def path_completions(
@@ -1271,12 +1334,16 @@ class Hub:
             from ene.personas import list_personas
 
             models = list(conf.get("openai", {}) or {})
-            work_dir = str(resolved_directory(cwd)) if cwd else None
-            try:
-                personas = sorted(list_personas(work_dir))
-            except Exception:
-                # A broken project persona must not block session creation.
-                personas = []
+
+            def find_personas() -> list[str]:
+                work_dir = str(resolved_directory(cwd)) if cwd else None
+                try:
+                    return sorted(list_personas(work_dir))
+                except Exception:
+                    # A broken project persona must not block session creation.
+                    return []
+
+            personas = await asyncio.get_running_loop().run_in_executor(None, find_personas)
             return {
                 "models": models,
                 "default_model": models[0] if models else "",
@@ -1290,18 +1357,23 @@ class Hub:
             require_login(request)
             from ene.session_store import saved_session_summaries
 
-            work_dir = resolved_directory(cwd) if cwd else Path.cwd()
-            live = {
-                record.get("conversation_id")
-                for record in self._session_list()
-                if record.get("cwd") == str(work_dir)
-            }
-            return {
-                "conversations": [
-                    {**summary, "live": summary["id"] in live}
-                    for summary in saved_session_summaries(work_dir)
-                ]
-            }
+            def listing() -> dict:
+                work_dir = resolved_directory(cwd) if cwd else Path.cwd()
+                live = {
+                    record.get("conversation_id")
+                    for record in self._session_list()
+                    if record.get("cwd") == str(work_dir)
+                }
+                # Reads every saved session's summary (and may rebuild stale
+                # ones), so it runs off the event loop.
+                return {
+                    "conversations": [
+                        {**summary, "live": summary["id"] in live}
+                        for summary in saved_session_summaries(work_dir)
+                    ]
+                }
+
+            return await asyncio.get_running_loop().run_in_executor(None, listing)
 
         @app.post("/api/sessions")
         async def create_session(request: Request):
@@ -1409,7 +1481,9 @@ class Hub:
             }
             loop = asyncio.get_running_loop()
             try:
-                response = await loop.run_in_executor(None, link.request, message)
+                response = await loop.run_in_executor(
+                    self._action_executor, link.request, message
+                )
             except LiveError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             if not response.get("ok"):
@@ -1427,7 +1501,9 @@ class Hub:
             loop = asyncio.get_running_loop()
             try:
                 response = await loop.run_in_executor(
-                    None, link.request, {"type": "process_stop", "process_id": process_id[:64]}
+                    self._action_executor,
+                    link.request,
+                    {"type": "process_stop", "process_id": process_id[:64]},
                 )
             except LiveError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1589,11 +1665,17 @@ class Hub:
             client cap, and closing the socket when the login ends.
             """
             await websocket.accept()
+            # Origin first: a cross-site page learns nothing about the login,
+            # and a proxy that rewrites Host gets a reason, not a sign-in loop.
+            origin = websocket.headers.get("origin")
+            host = websocket.headers.get("host")
+            if not valid_origin(origin, host):
+                warn_origin(origin, host)
+                await websocket.close(code=CLOSE_BAD_ORIGIN)
+                return
             login_id = websocket.cookies.get(COOKIE_NAME)
             csrf = authenticate_cookie(login_id)
-            if csrf is None or not valid_origin(
-                websocket.headers.get("origin"), websocket.headers.get("host")
-            ):
+            if csrf is None:
                 await websocket.close(code=4403)
                 return
             with self._client_lock:
@@ -1662,9 +1744,15 @@ class Hub:
                 ),
             )
 
+        # Compressed here rather than app-wide: API responses carry secrets
+        # (CSRF tokens) next to user-controlled text.
         app.mount(
             "/assets",
-            StaticFiles(directory=assets / "assets", check_dir=False),
+            GZipMiddleware(
+                StaticFiles(directory=assets / "assets", check_dir=False),
+                minimum_size=1024,
+                compresslevel=6,
+            ),
             name="assets",
         )
         return app
@@ -1779,7 +1867,9 @@ class Hub:
                 "detail_from": page.detail_from,
             }
 
-        def state_frame(s: RemoteSession, after_seq: int, history: dict) -> dict:
+        def state_frame(
+            s: RemoteSession, after_seq: int, history: dict, *, resync: bool = False
+        ) -> dict:
             require_login()
             return {
                 "type": "state",
@@ -1787,6 +1877,11 @@ class Hub:
                 "session": session_id,
                 "stream_id": s.events.stream_id,
                 "latest_seq": s.events.latest_seq,
+                # Same link, rebuilt timeline: actions in flight still get
+                # their answers here, so the browser must not treat it as a
+                # reconnect.
+                "resync": resync,
+                "max_frame_bytes": MAX_WS_FRAME_BYTES,
                 "operation_id": s.operation_id,
                 "process_status": s.process_status,
                 "processes": s.processes,
@@ -1821,6 +1916,15 @@ class Hub:
                     seq, history = replay_point(current, 0)
                     await websocket.send_json(state_frame(current, seq, history))
                 pending = await current.wait_events(seq, EVENT_WAIT_TIMEOUT)
+                if current.events.has_replay_gap(seq):
+                    # This browser fell so far behind that events it never got
+                    # were evicted; streaming on would silently skip them.
+                    # Restart its timeline at the newest page instead.
+                    seq, history = replay_point(current, seq)
+                    await websocket.send_json(
+                        state_frame(current, seq, history, resync=True)
+                    )
+                    continue
                 for event in pending:
                     require_login()
                     await websocket.send_json(event.to_dict())
@@ -1957,7 +2061,9 @@ class Hub:
                     data = message.get("bytes")
                     if data is not None:
                         if 0 < len(data) <= MAX_TERMINAL_INPUT:
-                            await loop.run_in_executor(None, terminal.write, data)
+                            # Never blocks: input the shell is not reading
+                            # yet queues inside the terminal.
+                            terminal.write(data)
                         continue
                     try:
                         payload = json.loads(message.get("text") or "")
@@ -2004,24 +2110,30 @@ class Hub:
         known = session.actions.get(key)
         if known is not None:
             session.actions.move_to_end(key)
+            if known.done():
+                return (not known.cancelled() and known.exception() is None
+                        and bool(known.result())), True
+            # Shielded: this socket closing must not cancel the forward.
             try:
                 return bool(await asyncio.shield(known)), True
             except Exception:
                 return False, True
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        session.actions[key] = future
+        # The forward runs as its own task. Once sent, the worker may accept the
+        # message even if the browser socket that asked goes away, so a retry
+        # must find the verdict rather than forward a second copy.
+        forward = asyncio.ensure_future(self._forward_to_worker(session_id, payload))
+        session.actions[key] = forward
         while len(session.actions) > MAX_REMEMBERED_ACTIONS:
             session.actions.popitem(last=False)
-        try:
-            ok = await self._forward_to_worker(session_id, payload)
-        except BaseException:
-            session.actions.pop(key, None)
-            future.cancel()
-            raise
-        if not ok and session.actions.get(key) is future:
-            session.actions.pop(key)
-        future.set_result(ok)
-        return ok, False
+
+        def forget_failure(task: asyncio.Future) -> None:
+            # A failed delivery is forgotten so a later retry can still deliver.
+            failed = task.cancelled() or task.exception() is not None or not task.result()
+            if failed and session.actions.get(key) is task:
+                session.actions.pop(key)
+
+        forward.add_done_callback(forget_failure)
+        return bool(await asyncio.shield(forward)), False
 
     async def _forward_to_worker(self, session_id: str, payload: dict) -> bool:
         """Send one browser action to the attached worker.
@@ -2040,7 +2152,9 @@ class Hub:
         if action in {"submit", "withdraw_pending"}:
             message = {**payload, "source": "web"}
             try:
-                response = await loop.run_in_executor(None, link.request, message)
+                response = await loop.run_in_executor(
+                    self._action_executor, link.request, message
+                )
             except LiveError:
                 return False
             if response.get("ok"):
@@ -2062,7 +2176,7 @@ class Hub:
             return True
         try:
             await loop.run_in_executor(
-                None, link.send, {**payload, "source": "web"}
+                self._action_executor, link.send, {**payload, "source": "web"}
             )
             return True
         except LiveError:
@@ -2142,7 +2256,7 @@ class Hub:
                 log_level="warning",
                 proxy_headers=True,
                 forwarded_allow_ips="127.0.0.1,::1",
-                ws_max_size=256 * 1024,
+                ws_max_size=MAX_WS_FRAME_BYTES,
             )
             self._server = uvicorn.Server(config)
             self._thread = threading.Thread(target=self._server.run, daemon=True)

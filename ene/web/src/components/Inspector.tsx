@@ -1,5 +1,5 @@
 import { Activity, Bot, ChartColumn, CircleCheck, CircleX, Eye, FolderOpen, Info, MessagesSquare, Square, SquareTerminal, X } from 'lucide-react'
-import { useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 
 import { errorMessage, stopProcess } from '../lib/api'
 import { duration } from '../lib/format'
@@ -10,8 +10,10 @@ import { toast } from '../lib/toast'
 import { CopyButton } from './Markdown'
 import { FileBrowser } from './Files'
 import { StatsPanel } from './Stats'
-import { TerminalPanel } from './Terminal'
-import { Empty, IconButton, useNow } from './ui'
+import { Empty, IconButton, Spinner, useNow } from './ui'
+
+// The terminal (xterm is about a third of the bundle) loads when its tab first opens.
+const TerminalPanel = lazy(() => import('./Terminal').then((module) => ({ default: module.TerminalPanel })))
 
 export type InspectorTab = 'files' | 'terminal' | 'stats' | 'tasks' | 'info'
 
@@ -51,6 +53,10 @@ function TasksPanel({
 }) {
   const now = useNow(processes.running > 0)
   const [armed, setArmed] = useState<string | null>(null)
+  // The pending disarm: each arm restarts it, so an earlier arm's timer
+  // cannot cut a later one short.
+  const disarm = useRef(0)
+  useEffect(() => () => window.clearTimeout(disarm.current), [])
   const drift = Math.max(0, (now - processes.receivedAt) / 1000)
   const stop = (processId: string) => {
     setArmed(null)
@@ -105,7 +111,8 @@ function TasksPanel({
                       stop(process.process_id)
                     } else {
                       setArmed(process.process_id)
-                      window.setTimeout(() => setArmed((current) => (current === process.process_id ? null : current)), 3000)
+                      window.clearTimeout(disarm.current)
+                      disarm.current = window.setTimeout(() => setArmed(null), 3000)
                     }
                   }}
                 />
@@ -200,7 +207,11 @@ export function Inspector({
       </div>
       <div className="inspector-body">
         {tab === 'files' ? <FileBrowser sessionId={sessionId} onOpen={onOpenFile} onMention={onMention} refreshKey={filesRefresh} /> : null}
-        {tab === 'terminal' ? <TerminalPanel sessionId={sessionId} connected={connected} /> : null}
+        {tab === 'terminal' ? (
+          <Suspense fallback={<div className="center-pad"><Spinner /></div>}>
+            <TerminalPanel sessionId={sessionId} connected={connected} />
+          </Suspense>
+        ) : null}
         {tab === 'stats' ? (
           <StatsPanel rounds={rounds} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
         ) : null}

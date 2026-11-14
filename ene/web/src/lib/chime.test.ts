@@ -16,6 +16,32 @@ describe('chime', () => {
     expect(loadSound()).toBe(true)
   })
 
+  it.each(['pointerup', 'touchend'])('unlocks audio on a tap\'s %s', async (release) => {
+    // A touch grants user activation on release; its pointerdown has none.
+    let activation = false
+    const contexts: FakeContext[] = []
+    class FakeContext {
+      state = 'suspended'
+      resume = vi.fn(async () => {
+        if (activation) this.state = 'running'
+      })
+      constructor() {
+        contexts.push(this)
+      }
+    }
+    vi.stubGlobal('AudioContext', FakeContext)
+    const { armChime } = await import('./chime')
+    const disarm = armChime()
+    try {
+      window.dispatchEvent(new Event('pointerdown'))
+      activation = true
+      window.dispatchEvent(new Event(release))
+      expect(contexts[0].state).toBe('running')
+    } finally {
+      disarm()
+    }
+  })
+
   it('does nothing without Web Audio', async () => {
     vi.stubGlobal('AudioContext', undefined)
     const { playChime } = await import('./chime')

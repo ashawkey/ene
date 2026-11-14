@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type LinkStatus = 'connecting' | 'open' | 'reconnecting' | 'offline' | 'closed'
 
@@ -248,10 +248,13 @@ export function useSocket(options: SocketOptions & { enabled?: boolean }) {
     }
   }, [enabled])
 
-  return {
-    status,
-    socket,
-    send: (message: unknown) => socket.current?.send(message) ?? false,
-    retry: () => socket.current?.retry(),
-  }
+  // Stable across renders: callers build memoized callbacks on these.
+  const send = useCallback((message: unknown) => socket.current?.send(message) ?? false, [])
+  const retry = useCallback(() => socket.current?.retry(), [])
+  return { status, socket, send, retry }
 }
+
+const encoder = new TextEncoder()
+
+/** Size in bytes of *message* as a JSON websocket frame. */
+export const frameSize = (message: unknown) => encoder.encode(JSON.stringify(message)).length

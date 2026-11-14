@@ -11,7 +11,12 @@ import { highlight } from '../lib/highlight'
 import { fileTarget, isExternalHref, isWebUrl, remarkLinks } from '../lib/links'
 import { copyText } from './ui'
 
-export function CopyButton({ text, label = 'Copy', icon: Icon = Copy }: { text: string; label?: string; icon?: LucideIcon }) {
+/** *text* may be a function, to build large text only when copied. */
+export function CopyButton({ text, label = 'Copy', icon: Icon = Copy }: {
+  text: string | (() => string)
+  label?: string
+  icon?: LucideIcon
+}) {
   const [done, setDone] = useState(false)
   return (
     <button
@@ -21,7 +26,7 @@ export function CopyButton({ text, label = 'Copy', icon: Icon = Copy }: { text: 
       data-tip={done ? 'Copied' : label}
       onClick={async (event) => {
         event.stopPropagation()
-        if (await copyText(text)) {
+        if (await copyText(typeof text === 'function' ? text() : text)) {
           setDone(true)
           window.setTimeout(() => setDone(false), 1200)
         }

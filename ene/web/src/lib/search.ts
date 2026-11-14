@@ -29,6 +29,25 @@ export function pathMatchRanges(path: string, query: string): Range[] {
   return subsequenceRanges(path, needle, path.lastIndexOf('/') + 1) ?? subsequenceRanges(path, needle) ?? []
 }
 
+/**
+ * `ranges` counted in code points, as the hub reports text search hits, moved
+ * to the UTF-16 offsets JavaScript slices `text` by. They differ only after a
+ * character outside the BMP (an emoji, say), which takes two UTF-16 units.
+ */
+export function utf16Ranges(text: string, ranges: Range[]): Range[] {
+  if (!/[\uD800-\uDFFF]/.test(text)) return ranges
+  // UTF-16 offset of each code point, plus the end of the text.
+  const offsets: number[] = []
+  let unit = 0
+  for (const char of text) {
+    offsets.push(unit)
+    unit += char.length
+  }
+  offsets.push(unit)
+  const at = (index: number) => offsets[Math.min(Math.max(index, 0), offsets.length - 1)]
+  return ranges.map(([start, end]): Range => [at(start), at(end)])
+}
+
 /** Split `text` into plain and highlighted parts by sorted, non-overlapping ranges. */
 export function splitRanges(text: string, ranges: Range[]): Array<{ text: string; hit: boolean }> {
   const parts: Array<{ text: string; hit: boolean }> = []

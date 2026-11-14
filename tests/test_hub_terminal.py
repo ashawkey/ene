@@ -1,6 +1,8 @@
 import json
 import os
+import shlex
 import sys
+import threading
 import time
 
 import pytest
@@ -131,6 +133,58 @@ def test_terminal_limits(tmp_path, monkeypatch):
         manager.close_all(timeout=5)
 
 
+
+def raw_program(tmp_path, monkeypatch, body):
+    """Use, as the "shell", a program that puts its terminal in raw mode
+    (like a full-screen app), prints ``ready`` and then runs *body*."""
+    script = tmp_path / "raw-shell"
+    code = "import os, sys, time, tty\ntty.setraw(0)\nprint('ready', flush=True)\n" + body
+    script.write_text(f"#!/bin/sh\nexec {sys.executable} -c {shlex.quote(code)}\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(script))
+
+
+def test_writes_never_block_when_the_program_stops_reading(tmp_path, monkeypatch):
+    """Input to a program that is not reading queues instead of parking the
+    hub thread that writes it (which closing the terminal did not release)."""
+    raw_program(tmp_path, monkeypatch, "time.sleep(60)\n")
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path), 80, 24)
+    try:
+        out = Collector()
+        terminal.subscribe(out)
+        assert wait_until(lambda: b"ready" in out.data)
+        writer = threading.Thread(
+            target=lambda: [terminal.write(b"x" * 1024) for _ in range(512)], daemon=True
+        )
+        writer.start()
+        writer.join(timeout=5)
+        assert not writer.is_alive(), "a write blocked on a program that is not reading"
+    finally:
+        manager.close_all(timeout=5)
+
+
+def test_queued_input_reaches_the_program_once_it_reads(tmp_path, monkeypatch):
+    raw_program(tmp_path, monkeypatch, (
+        "time.sleep(1)\n"
+        "total = 0\n"
+        "while total < 300000:\n"
+        "    total += len(os.read(0, 65536))\n"
+        "print(f'got {total}', flush=True)\n"
+        "time.sleep(60)\n"
+    ))
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path), 80, 24)
+    try:
+        out = Collector()
+        terminal.subscribe(out)
+        assert wait_until(lambda: b"ready" in out.data)
+        for _ in range(300):
+            terminal.write(b"y" * 1000)
+        assert wait_until(lambda: b"got 300000" in out.data, timeout=10)
+    finally:
+        manager.close_all(timeout=5)
+
 # -- hub endpoints --------------------------------------------------------------
 
 def make_hub(tmp_path, session_id="s1"):
@@ -218,7 +272,7 @@ def test_terminal_websocket_rejects_foreign_origin_and_unknown_ids(tmp_path):
             with client.websocket_connect(url, headers={"origin": "https://attacker.example"}) as sock:
                 with pytest.raises(WebSocketDisconnect) as exc:
                     sock.receive_bytes()
-            assert exc.value.code == 4403
+            assert exc.value.code == 4400
             # The terminal belongs to s1, not to another session.
             with client.websocket_connect(f"/api/sessions/s2/terminals/{created['id']}/ws", headers=ORIGIN) as sock:
                 with pytest.raises(WebSocketDisconnect) as exc:

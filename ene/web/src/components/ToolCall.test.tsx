@@ -38,3 +38,12 @@ describe('tool call arguments', () => {
     expect(container.querySelector('button.step-head')).toBeNull()
   })
 })
+
+describe('tool call output', () => {
+  it('says how many earlier lines were dropped from long output', () => {
+    stubWidths(200, 200)
+    const item = { ...tool(), output: { text: 'last line', ansi: null, trimmed: 12345 } }
+    const { container } = render(<ToolCall item={item} live />)
+    expect(container.textContent).toContain('12,345 earlier lines not shown')
+  })
+})

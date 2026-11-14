@@ -290,6 +290,7 @@ export const ToolCall = memo(function ToolCall({
         <>
           {/* The header clips long arguments; the body shows them whole. */}
           {clipped ? <OutputBlock text={item.primary} className="tool-full" copyLabel="Copy full text" /> : null}
+          {output ? <TrimmedNote lines={output.trimmed} /> : null}
           {output ? <OutputBlock text={output.text} ansi={output.ansi} follow={running} /> : null}
           {item.diffs.map((diff, index) => <DiffCard diff={diff} key={index} onOpenFile={onOpenFile} />)}
           {/* With output shown, the result is only its summary line. */}
@@ -397,8 +398,13 @@ export function AnsiText({ text }: { text: string }) {
   )
 }
 
+/** Says how much of a long output was dropped from the start of its block. */
+function TrimmedNote({ lines }: { lines?: number }) {
+  return lines ? <div className="step-note muted">{lines.toLocaleString('en-US')} earlier lines not shown</div> : null
+}
+
 export const Output = memo(function Output({ item }: { item: ItemOf<'output'> }) {
-  const lines = lineCount(item.text)
+  const lines = lineCount(item.text) + (item.trimmed ?? 0)
   return (
     <Step
       className="output-step"
@@ -406,6 +412,7 @@ export const Output = memo(function Output({ item }: { item: ItemOf<'output'> })
       label={<span className="muted">{lines === 1 ? 'Output' : `Output · ${lines} lines`}</span>}
       autoOpen={lines <= AUTO_FOLD_LINES}
     >
+      <TrimmedNote lines={item.trimmed} />
       <OutputBlock text={item.text} ansi={item.ansi} />
     </Step>
   )

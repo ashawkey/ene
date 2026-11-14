@@ -316,7 +316,7 @@ def test_websocket_requires_same_origin():
         ) as sock:
             with pytest.raises(WebSocketDisconnect) as exc:
                 sock.receive_json()
-        assert exc.value.code == 4403
+        assert exc.value.code == 4400
 
 
 def test_logout_closes_all_sockets_for_only_that_login(monkeypatch):
@@ -1693,3 +1693,180 @@ def test_hub_opens_a_fork_and_tells_browsers_to_focus_it(monkeypatch):
             assert "r2" in [session["id"] for session in listing["sessions"]]
             focus = control.receive_json()
             assert focus == {"type": "focus", "id": "r2", "source": "s1"}
+
+
+# -- regressions from the Web UI review ----------------------------------------
+
+def test_dropped_socket_mid_forward_delivers_a_submit_exactly_once():
+    """A socket torn down while its submit is being forwarded must not let a
+    retry deliver the message again, nor kill a socket waiting on it."""
+    import asyncio
+
+    hub = make_hub()
+    session = add_session(hub, "s1")
+    delivered = []
+
+    class SlowLink:
+        def request(self, message):
+            time.sleep(0.3)  # the forward is still in flight on a thread
+            delivered.append(message["action_id"])
+            return {"ok": True}
+
+    session.link = SlowLink()
+    action = {"type": "submit", "text": "hello", "action_id": "a1"}
+
+    async def scenario():
+        first = asyncio.ensure_future(hub._deduplicated_forward("s1", action))
+        await asyncio.sleep(0.05)
+        # The browser re-sends on a second socket while the first one waits.
+        second = asyncio.ensure_future(hub._deduplicated_forward("s1", action))
+        await asyncio.sleep(0.05)
+        first.cancel()  # the first socket goes away mid-forward
+        waited = await second
+        retried = await hub._deduplicated_forward("s1", action)  # a later reconnect
+        return waited, retried
+
+    loop = asyncio.new_event_loop()
+    try:
+        waited, retried = loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+    assert waited == (True, True)
+    assert retried == (True, True)
+    assert delivered == ["a1"]
+
+
+def test_browser_that_falls_behind_retained_history_is_resynced(monkeypatch):
+    hub = make_hub()
+    session = add_session(hub, "s1")
+    session.events.publish("user_message", text="first")
+    wait_events = session.wait_events
+    burst = []
+
+    async def bursty_wait(after_seq, timeout):
+        if not burst:
+            # More events than the bounded history holds arrive before this
+            # socket sends them, as for a slow browser during a chatty command.
+            burst.append(True)
+            for index in range(2500):
+                session.events.publish("output", text=f"line {index}")
+        return await wait_events(after_seq, timeout)
+
+    monkeypatch.setattr(session, "wait_events", bursty_wait)
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect(
+            "/api/ws?session=s1", headers={"origin": "http://testserver"}
+        ) as sock:
+            initial = receive_type(sock, "state")
+            resync = sock.receive_json()
+            assert resync["type"] == "state"
+            assert resync["resync"] is True
+            assert resync["replay_from"] > initial["latest_seq"] + 1
+            assert sock.receive_json()["seq"] == resync["replay_from"]
+
+
+def test_directory_endpoints_do_not_block_the_event_loop(monkeypatch, tmp_path):
+    import asyncio
+    from pathlib import Path
+
+    def on_loop():
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    seen = {}
+    iterdir = Path.iterdir
+
+    def recording_iterdir(path):
+        if path == tmp_path:
+            seen["fs"] = on_loop()
+        return iterdir(path)
+
+    def summaries(work_dir=None):
+        seen["conversations"] = on_loop()
+        return []
+
+    def personas(work_dir=None):
+        seen["options"] = on_loop()
+        return {}
+
+    monkeypatch.setattr(Path, "iterdir", recording_iterdir)
+    monkeypatch.setattr("ene.session_store.saved_session_summaries", summaries)
+    monkeypatch.setattr("ene.personas.list_personas", personas)
+    hub = make_hub()
+    with TestClient(hub.app) as client:
+        login(client)
+        for path in ("/api/fs", "/api/conversations", "/api/options"):
+            key = path.rsplit("/", 1)[-1]
+            reply = client.get(path, params={"path" if key == "fs" else "cwd": str(tmp_path)})
+            assert reply.status_code == 200, reply.text
+    # Disk work (slow on network filesystems) runs off the loop that serves
+    # every browser stream.
+    assert seen == {"fs": False, "conversations": False, "options": False}
+
+
+def test_activity_renews_the_login_cookie():
+    """The cookie follows the hub's sliding expiry, so a browser in use is not
+    signed out a fixed time after it logged in."""
+    hub = make_hub()
+    with TestClient(hub.app) as client:
+        csrf = login(client)
+        cookie = client.get("/api/sessions").headers.get("set-cookie", "")
+        assert cookie.startswith(f"{hub_module.COOKIE_NAME}=")
+        assert f"Max-Age={hub_module.SESSION_TTL}" in cookie
+        assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+        # Logging out deletes the cookie and does not renew it.
+        logout = client.post("/api/logout", headers={"x-csrf-token": csrf})
+        cookies = logout.headers.get_list("set-cookie")
+        assert len(cookies) == 1 and "Max-Age=0" in cookies[0]
+        # Signed-out requests get no cookie.
+        assert "set-cookie" not in client.get("/api/sessions").headers
+
+
+def test_foreign_origin_is_rejected_with_its_own_close_code():
+    """An origin mismatch (often a reverse proxy rewriting Host) must not look
+    like an expired login, which would loop the browser through sign-in."""
+    hub = make_hub()
+    logged = []
+    hub._log = logged.append
+    with TestClient(hub.app) as client:
+        login(client)
+        for _ in range(2):
+            with client.websocket_connect(
+                "/api/ws", headers={"origin": "https://ene.example.com"}
+            ) as sock:
+                with pytest.raises(WebSocketDisconnect) as exc:
+                    sock.receive_json()
+            assert exc.value.code == 4400
+    assert len(logged) == 1
+    assert "https://ene.example.com" in logged[0] and "testserver" in logged[0]
+
+
+def test_state_frame_reports_the_largest_accepted_frame():
+    hub = make_hub()
+    add_session(hub, "s1")
+    with TestClient(hub.app) as client:
+        login(client)
+        with client.websocket_connect(
+            "/api/ws?session=s1", headers={"origin": "http://testserver"}
+        ) as sock:
+            assert receive_type(sock, "state")["max_frame_bytes"] == 256 * 1024
+
+
+def test_hashed_assets_are_cacheable_and_compressed():
+    from pathlib import Path
+
+    assets = Path(hub_module.__file__).resolve().parent.parent / "web" / "dist" / "assets"
+    script = max(assets.glob("*.js"), key=lambda path: path.stat().st_size)
+    hub = make_hub()
+    with TestClient(hub.app) as client:
+        reply = client.get(f"/assets/{script.name}", headers={"accept-encoding": "gzip"})
+        assert reply.status_code == 200
+        assert reply.headers["content-encoding"] == "gzip"
+        assert "immutable" in reply.headers["cache-control"]
+        assert reply.content == script.read_bytes()
+        # The page itself is never cached, so a rebuilt UI is picked up.
+        assert client.get("/").headers["cache-control"] == "no-store"

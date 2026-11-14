@@ -25,7 +25,7 @@ function measure(panel: Panel) {
 export function ResizeHandle({ panel }: { panel: Panel }) {
   // The sidebar grows to the right, the inspector to the left.
   const direction = panel === 'sidebar' ? 1 : -1
-  const drag = useRef<{ x: number; width: number; bounds: { min: number; max: number }; next: number; frame: number } | null>(null)
+  const drag = useRef<{ x: number; width: number; bounds: { min: number; max: number }; next: number; frame: number; moved: boolean } | null>(null)
   const [value, setValue] = useState<number | null>(null)
 
   const finish = (width: number) => {
@@ -40,13 +40,14 @@ export function ResizeHandle({ panel }: { panel: Panel }) {
     if (!current) return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    drag.current = { x: event.clientX, width: current.width, bounds: current.bounds, next: current.width, frame: 0 }
+    drag.current = { x: event.clientX, width: current.width, bounds: current.bounds, next: current.width, frame: 0, moved: false }
     document.documentElement.classList.add('resizing')
   }
 
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const state = drag.current
     if (!state) return
+    if (event.clientX !== state.x) state.moved = true
     state.next = clampWidth(state.width + direction * (event.clientX - state.x), state.bounds)
     if (!state.frame) {
       state.frame = requestAnimationFrame(() => {
@@ -62,7 +63,9 @@ export function ResizeHandle({ panel }: { panel: Panel }) {
     drag.current = null
     if (state.frame) cancelAnimationFrame(state.frame)
     document.documentElement.classList.remove('resizing')
-    finish(state.next)
+    // A click is no resize: saving the measured width would pin one that CSS
+    // shrank to fit the window.
+    if (state.moved) finish(state.next)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

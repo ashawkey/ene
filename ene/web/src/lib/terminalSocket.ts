@@ -15,8 +15,9 @@ export type TerminalSocketOptions = {
 const PING_INTERVAL = 15_000
 // Large pastes go out in pieces the hub accepts (it drops frames over 64 KiB).
 export const INPUT_CHUNK = 32 * 1024
-// Closed for good: login gone (4403) or the terminal no longer exists (4404).
-const FATAL = new Set([4403, 4404])
+// Closed for good: page origin refused (4400), login gone (4403), or the
+// terminal no longer exists (4404).
+const FATAL = new Set([4400, 4403, 4404])
 
 export function chunkBytes(data: Uint8Array, size = INPUT_CHUNK): Uint8Array[] {
   const chunks: Uint8Array[] = []

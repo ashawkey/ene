@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { gitBranch } from '../lib/api'
 import { basename, sessionTitle, compactNumber, percent } from '../lib/format'
 import type { GitBranch as GitBranchInfo, ProcessActivity, RoundStats, SessionSummary } from '../lib/protocol'
-import { contextFraction } from '../lib/session'
+import { contextFraction, roundsVersion } from '../lib/session'
 import { useSession } from '../lib/useSession'
 import { Composer } from './Composer'
 import { FileViewer } from './Files'
@@ -19,6 +19,7 @@ import { SessionIdContext } from './Markdown'
 import { OpenProcessContext } from './TimelineItems'
 import { ContextRing, IconButton, LinkBanner, LinkDot, StateIcon } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
+import { MOD_KEY } from '../lib/platform'
 
 export function SessionPane({
   summary,
@@ -93,7 +94,7 @@ export function SessionPane({
 
   // Refresh the file browser whenever a round finishes (the agent may have
   // written files).
-  const filesRefresh = view.rounds.length
+  const filesRefresh = roundsVersion(view.rounds)
 
   // The agent may switch branches, so re-check after each round as well.
   const [branch, setBranch] = useState<GitBranchInfo | null>(null)
@@ -173,7 +174,7 @@ export function SessionPane({
             <span>{fraction !== null ? percent(fraction) : view.context ? compactNumber(view.context.context_tokens) : '—'}</span>
           </button>
           <div className="header-actions">
-            <IconButton icon={Search} label="Find in conversation (Ctrl+F)" active={findOpen} onClick={() => onFindOpen(!findOpen)} />
+            <IconButton icon={Search} label={`Find in conversation (${MOD_KEY}F)`} active={findOpen} onClick={() => onFindOpen(!findOpen)} />
             {/* One toggle for the side panel; its own tabs pick files, stats, tasks, or info. */}
             <IconButton
               icon={inspector ? PanelRightClose : PanelRightOpen}
@@ -230,7 +231,7 @@ export function SessionPane({
         <div className="dock">
           {active ? <LinkBanner status={session.status} onRetry={() => session.retry()} /> : null}
           {view.prompt ? (
-            <PromptSheet prompt={view.prompt} connected={connected} onAnswer={session.answer} onCancel={session.dismissPrompt} />
+            <PromptSheet prompt={view.prompt} active={active} connected={connected} onAnswer={session.answer} onCancel={session.dismissPrompt} />
           ) : null}
           <Composer
             sessionId={summary.id}

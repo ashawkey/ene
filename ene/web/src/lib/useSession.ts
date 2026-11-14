@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { setCsrf } from './api'
+import { bytes } from './format'
 import { newActionId } from './ids'
 import type { ClientAction, ServerEvent } from './protocol'
 import type { SessionView, Signal } from './session'
 import { initialView, reduce } from './session'
-import { useSocket } from './socket'
+import { frameSize, useSocket } from './socket'
 import { store } from './storage'
 import { toast } from './toast'
 
@@ -38,6 +39,9 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
   const [withdrawing, setWithdrawing] = useState(false)
   // Cursor of the older page already requested on this link.
   const historyRequest = useRef<number | null>(null)
+  // Largest frame the hub accepts (from the state frame); a bigger one would
+  // close the socket, and an outbox entry would then be re-sent forever.
+  const frameLimit = useRef(Infinity)
 
   const setDraft = useCallback((text: string) => {
     draftRef.current = text
@@ -66,9 +70,12 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
     for (const signal of signals) {
       switch (signal.kind) {
         case 'state': {
-          if (signal.streamChanged) withdrawRef.current = null
           // A request sent on a dropped link gets no answer; allow a retry.
           historyRequest.current = null
+          // A resync rebuilds the timeline on the same link, where actions in
+          // flight are still answered: nothing to re-send or abandon.
+          if (signal.resync) break
+          if (signal.streamChanged) withdrawRef.current = null
           // Resend everything still unacknowledged on this fresh link.
           const remaining = outboxRef.current.filter((entry) => entry.actionId !== signal.pendingActionId)
           for (const entry of remaining) {
@@ -147,7 +154,10 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
 
   const onMessage = useCallback((raw: Record<string, unknown>) => {
     const message = raw as ServerEvent
-    if (message.type === 'state' && typeof raw.csrf === 'string') setCsrf(raw.csrf)
+    if (message.type === 'state') {
+      if (typeof raw.csrf === 'string') setCsrf(raw.csrf)
+      if (typeof raw.max_frame_bytes === 'number') frameLimit.current = raw.max_frame_bytes
+    }
     const [next, signals] = reduce(viewRef.current, message)
     if (next !== viewRef.current) {
       viewRef.current = next
@@ -171,14 +181,23 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
       return `${protocol}://${location.host}/api/ws?${query}`
     },
     onMessage,
-    fatalCodes: [4403, 4404],
+    // 4400: the hub refused this page's origin (the control channel says why).
+    fatalCodes: [4400, 4403, 4404],
     onFatal: (code) => {
       if (code === 4404) onGone()
     },
   })
   socketRef.current = socket
 
-  const send = useCallback((action: ClientAction) => socket.send(action), [socket])
+  const send: (action: ClientAction) => boolean = socket.send
+
+  /** Whether *action* is too large for the hub; says so when it is. */
+  const oversized = useCallback((action: ClientAction, what: string) => {
+    const size = frameSize(action)
+    if (size <= frameLimit.current) return false
+    toast(`${what} is too large to send (${bytes(size)}; the limit is ${bytes(frameLimit.current)}).`)
+    return true
+  }, [])
 
   const submit = useCallback((text: string): boolean => {
     const trimmed = text.trim()
@@ -188,7 +207,10 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
       return false
     }
     const actionId = newActionId()
-    if (!send({ type: 'submit', text, action_id: actionId })) {
+    const action: ClientAction = { type: 'submit', text, action_id: actionId }
+    // Refused here, the text stays in the composer.
+    if (oversized(action, 'This message')) return false
+    if (!send(action)) {
       toast('Not connected — your message was kept.', 'info')
       return false
     }
@@ -196,7 +218,7 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
     window.setTimeout(() => rejectedTexts.current.delete(actionId), 60_000)
     updateOutbox([...outboxRef.current, { actionId, text, sentAt: now, attempts: 1 }])
     return true
-  }, [send, updateOutbox])
+  }, [send, oversized, updateOutbox])
 
   const withdraw = useCallback(() => {
     const pending = viewRef.current.pending
@@ -221,10 +243,13 @@ export function useSession(sessionId: string, onGone: () => void, visible = true
     send({ type: 'cancel', operation_id: viewRef.current.operationId })
   }, [send])
 
-  const answer = useCallback((answerText: string) => {
+  /** Answer the open question; false when nothing was sent. */
+  const answer = useCallback((answerText: string): boolean => {
     const prompt = viewRef.current.prompt
-    if (prompt) send({ type: 'prompt_response', id: prompt.id, answer: answerText })
-  }, [send])
+    if (!prompt) return false
+    const action: ClientAction = { type: 'prompt_response', id: prompt.id, answer: answerText }
+    return !oversized(action, 'This answer') && send(action)
+  }, [send, oversized])
 
   const dismissPrompt = useCallback(() => {
     const prompt = viewRef.current.prompt

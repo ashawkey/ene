@@ -4,7 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, searchText } from '../lib/api'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 import type { SearchOptions, SearchResult } from '../lib/protocol'
-import { type Range, splitRanges, useDebounced } from '../lib/search'
+import { type Range, splitRanges, useDebounced, utf16Ranges } from '../lib/search'
 import { store } from '../lib/storage'
 import { FileItem, fileIcon } from './Files'
 import { Empty, IconButton, Spinner } from './ui'
@@ -15,7 +15,9 @@ function loadState(sessionId: string): { query: string; options: SearchOptions }
   try {
     const saved = JSON.parse(store.get(`ene.search.${sessionId}`) ?? 'null')
     if (saved && typeof saved.query === 'string') {
-      return { query: saved.query, options: { ...DEFAULT_OPTIONS, ...saved.options } }
+      // Stored flat, as the request below: { query, regex, case, ... }.
+      const { query, ...options } = saved
+      return { query, options: { ...DEFAULT_OPTIONS, ...options } }
     }
   } catch {
     // A corrupt entry just resets the search.
@@ -189,7 +191,7 @@ export const TextSearch = memo(function TextSearch({
                   <span className="ln">{match.line}</span>
                   <code>
                     {match.clipped ? '…' : null}
-                    <Highlighted text={match.text} ranges={match.ranges} />
+                    <Highlighted text={match.text} ranges={utf16Ranges(match.text, match.ranges)} />
                   </code>
                 </button>
               )) : null}

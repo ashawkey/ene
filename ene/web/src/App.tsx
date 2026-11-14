@@ -12,6 +12,7 @@ import { IconButton, LinkBanner, Spinner, Toasts, useMedia } from './components/
 import { armChime, loadSound, playChime, saveSound } from './lib/chime'
 import { attachSession, detachSession, endSession, errorMessage, logout, setCsrf } from './lib/api'
 import { sessionTitle } from './lib/format'
+import { hasShortcutModifier } from './lib/platform'
 import type { SessionSummary } from './lib/protocol'
 import { requestFilesFocus } from './lib/search'
 import { useSocket } from './lib/socket'
@@ -54,6 +55,7 @@ export default function App() {
   const [inspector, setInspectorState] = useState<InspectorTab | null>(loadInspector)
   const [findOpen, setFindOpen] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [originRefused, setOriginRefused] = useState(false)
   const [theme, setTheme] = useState<ThemeChoice>(loadTheme)
   const [sound, setSound] = useState(loadSound)
   const soundRef = useRef(sound)
@@ -79,25 +81,38 @@ export default function App() {
     if (!narrow()) store.set('ene.inspector', tab)
   }, [])
 
+  const markRead = useCallback((id: string) => {
+    setUnread((current) => {
+      if (!current.has(id)) return current
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   const select = useCallback((id: string | null) => {
     setActiveId(id)
     store.set('ene.active', id)
     setSidebarOpen(false)
-    if (id) {
-      setUnread((current) => {
-        if (!current.has(id)) return current
-        const next = new Set(current)
-        next.delete(id)
-        return next
-      })
+    if (id) markRead(id)
+  }, [markRead])
+
+  // The session in view finished while the tab was hidden: it is read once
+  // the tab is shown again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && activeRef.current) markRead(activeRef.current)
     }
-  }, [])
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [markRead])
 
   const control = useSocket({
     enabled: auth !== false,
     url: () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`,
-    fatalCodes: [4403],
-    onFatal: () => setAuth(false),
+    // 4400: the hub refused this page's origin, so signing in cannot help.
+    fatalCodes: [4400, 4403],
+    onFatal: (code) => (code === 4400 ? setOriginRefused(true) : setAuth(false)),
     onMessage: (message) => {
       if (message.type === 'focus') {
         // A session forked from the one in view opens in its place.
@@ -197,7 +212,8 @@ export default function App() {
     const onKey = (event: KeyboardEvent) => {
       // A focused terminal gets every key (Ctrl+B, Ctrl+F, … mean something there).
       if (inTerminal(event.target)) return
-      const mod = event.metaKey || event.ctrlKey
+      // Cmd on macOS, where Ctrl+B/F/K/P move the caret or delete in text fields.
+      const mod = hasShortcutModifier(event)
       const key = event.key.toLowerCase()
       if (mod && key === 'k' && !event.shiftKey) {
         event.preventDefault()
@@ -235,6 +251,16 @@ export default function App() {
     document.title = `${reviewCount ? `(${reviewCount}) ` : ''}${name ? `${name} · ` : ''}${host}`
   }, [reviewCount, activeSession, host])
 
+  if (originRefused) {
+    return (
+      <main className="boot">
+        <p className="form-error boot-error" role="alert">
+          The hub refused this page&apos;s address: its origin does not match the host the hub sees. Behind a
+          reverse proxy, forward the original Host header. The hub&apos;s log shows both values.
+        </p>
+      </main>
+    )
+  }
   if (auth === false) return <><Login onSuccess={() => setAuth(null)} /><Toasts /></>
   if (auth === null) {
     return (

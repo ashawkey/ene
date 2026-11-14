@@ -90,6 +90,9 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
   }, [])
 
   useEffect(() => {
+    // Saved conversations belong to one folder: forget the list and the pick.
+    setSaved([])
+    setResume('')
     if (!cwd.startsWith('/') && !cwd.startsWith('~') && !/^[A-Za-z]:[\\/]/.test(cwd)) return
     let cancelled = false
     const timer = window.setTimeout(() => {

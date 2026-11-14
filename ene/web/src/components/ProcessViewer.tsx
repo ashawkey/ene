@@ -14,7 +14,7 @@ import {
   WrapText,
   X,
 } from 'lucide-react'
-import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { stripAnsi } from '../lib/ansi'
 import { errorMessage, stopProcess } from '../lib/api'
@@ -72,10 +72,14 @@ export const ProcessViewer = memo(function ProcessViewer({
   const log = useProcessLog(sessionId, process.process_id, process.log_bytes ?? 0, connected && !showChat)
   const events = useProcessEvents(sessionId, process.process_id, process.events_bytes ?? 0, connected && showChat)
 
+  // Each arm restarts the disarm delay; an earlier arm's timer must not cut it short.
+  const disarm = useRef(0)
+  useEffect(() => () => window.clearTimeout(disarm.current), [])
   const stop = async () => {
     if (!armed) {
       setArmed(true)
-      window.setTimeout(() => setArmed(false), 3000)
+      window.clearTimeout(disarm.current)
+      disarm.current = window.setTimeout(() => setArmed(false), 3000)
       return
     }
     setArmed(false)
@@ -125,7 +129,7 @@ export const ProcessViewer = memo(function ProcessViewer({
               <input {...NO_AUTOFILL} value={filter} placeholder="Filter" aria-label="Filter lines" onChange={(event) => setFilter(event.target.value)} />
             </label>
             <IconButton icon={WrapText} size="sm" label={wrap ? 'Disable line wrap' : 'Wrap lines'} active={wrap} onClick={() => setWrap(!wrap)} />
-            <CopyButton text={stripAnsi(logText(log.log))} label="Copy loaded output" />
+            <CopyButton text={() => stripAnsi(logText(log.log))} label="Copy loaded output" />
           </>
         ) : null}
         {running ? (

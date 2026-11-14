@@ -22,7 +22,15 @@ type Sent = { at?: number | null }
 /** An image a tool loaded (`read_image`); `path` is the agent's local path. */
 export type ToolImage = { path: string; mime: string }
 export type ToolResult = { text: string; success: boolean; image?: ToolImage }
-export type OutputBlock = { text: string; ansi: string | null }
+/** Printed output; *trimmed* counts earlier lines dropped (see MAX_OUTPUT_CHARS). */
+export type OutputBlock = { text: string; ansi: string | null; trimmed?: number }
+
+/**
+ * Output kept per block, newest lines first. A long command streams output
+ * for as long as it runs, and every render re-reads the block; the agent's
+ * tool result still covers the full output.
+ */
+export const MAX_OUTPUT_CHARS = 200_000
 export type DiffData = {
   path: string
   oldText: string
@@ -85,7 +93,7 @@ export type SessionView = {
 
 /** Side effects the reducer reports for the connection layer to act on. */
 export type Signal =
-  | { kind: 'state'; pendingActionId: string | null; streamChanged: boolean }
+  | { kind: 'state'; pendingActionId: string | null; streamChanged: boolean; resync: boolean }
   | { kind: 'ack'; actionId: string }
   | { kind: 'reject'; actionId: string; error: string }
   | { kind: 'withdrawn'; actionId: string; text: string }
@@ -321,7 +329,33 @@ function attachDiff(items: TimelineItem[], diff: DiffData): TimelineItem[] | nul
 
 function mergeOutput(a: OutputBlock, b: OutputBlock): OutputBlock {
   const ansi = a.ansi !== null || b.ansi !== null ? `${a.ansi ?? a.text}\n${b.ansi ?? b.text}` : null
-  return { text: `${a.text}\n${b.text}`, ansi }
+  return capOutput({ text: `${a.text}\n${b.text}`, ansi, trimmed: (a.trimmed ?? 0) + (b.trimmed ?? 0) })
+}
+
+const countLines = (text: string, end: number) => {
+  let count = 0
+  for (let index = text.indexOf('\n'); index >= 0 && index < end; index = text.indexOf('\n', index + 1)) count++
+  return count
+}
+
+/** Drop whole leading lines until *block* fits in MAX_OUTPUT_CHARS. */
+function capOutput(block: OutputBlock): OutputBlock {
+  const excess = block.text.length - MAX_OUTPUT_CHARS
+  if (excess <= 0) return block
+  const lineEnd = block.text.indexOf('\n', excess)
+  if (lineEnd < 0) {
+    // One line longer than the limit: keep its end, without styling.
+    return { text: block.text.slice(-MAX_OUTPUT_CHARS), ansi: null, trimmed: (block.trimmed ?? 0) + countLines(block.text, block.text.length) }
+  }
+  const dropped = countLines(block.text, lineEnd + 1)
+  let ansi = block.ansi
+  if (ansi !== null) {
+    // Same lines out of the styled copy (escape codes hold no line breaks).
+    let cut = -1
+    for (let line = 0; line < dropped; line++) cut = ansi.indexOf('\n', cut + 1)
+    ansi = ansi.slice(cut + 1)
+  }
+  return { text: block.text.slice(lineEnd + 1), ansi, trimmed: (block.trimmed ?? 0) + dropped }
 }
 
 function indicatorFrom(data: Record<string, unknown>): LiveIndicator {
@@ -381,7 +415,12 @@ export function applyState(view: SessionView, frame: StateFrame): [SessionView, 
     info: frame.info ?? base.info,
     rounds,
   }
-  return [next, [{ kind: 'state', pendingActionId: frame.pending?.action_id ?? null, streamChanged }]]
+  return [next, [{
+    kind: 'state',
+    pendingActionId: frame.pending?.action_id ?? null,
+    streamChanged,
+    resync: frame.resync === true,
+  }]]
 }
 
 /**
@@ -671,6 +710,14 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
       break
   }
   return [next, signals]
+}
+
+/**
+ * Changes whenever a round finishes (or history is replaced), for panels that
+ * refresh after rounds. Not the list length: only the newest 500 are kept.
+ */
+export function roundsVersion(rounds: RoundStats[]): number {
+  return rounds.at(-1)?.ended_at ?? rounds.length
 }
 
 /** Context fill as 0..1, or null when the limit is unknown. */

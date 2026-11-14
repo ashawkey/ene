@@ -31,6 +31,7 @@ ene hub --port 8765
 - Without `ene_web_token`, Ene generates a temporary token for that hub process.
 - A second hub cannot use an occupied hub port.
 - Login creates an httponly cookie. Logout or expiry closes that login's WebSocket connections across tabs; other authenticated browsers stay signed in.
+- A sign-in expires after 12 hours without activity.
 
 ## Create a session
 
@@ -71,6 +72,7 @@ The sidebar groups every live session on the machine:
 - **Timeline:** messages, reasoning, and tool calls. A tool call holds its command output, diffs, and result.
 - **History:** opening or reloading a session shows the newest turns; scrolling up loads earlier ones, back to the start of the conversation. Full detail covers the latest 2,000 events; before a marked point, only messages are kept, without tool activity.
 - **Folding:** every step folds by its chevron. Results longer than 12 lines start folded; failures and running calls start open. Three or more consecutive tool calls fold into one row.
+- **Long output:** a tool call keeps the newest 200,000 characters of its command output and says how many earlier lines it no longer shows.
 - **Message times:** each message and notification shows when it was sent (replies: when they started), with the date for earlier days; hover for the full time. Sessions saved before message timestamps existed show none.
 - **Reasoning:** folded; while streaming it previews the newest lines. Unfold it at any time to read the whole thought so far.
 - **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
@@ -137,6 +139,7 @@ The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal,
 - **Lifetime:** detaching or ending the session, the worker exiting, or stopping the hub closes its shells.
 - **Keys:** a focused terminal receives every key, including the page shortcuts below.
 - **Limits:** 8 shells per session, 32 per hub.
+- **Typing ahead:** input that a busy program has not read yet waits for it, up to 1 MB.
 - Linux and macOS hubs only.
 
 ## Process output
@@ -160,12 +163,16 @@ Open a process from **Processes** or from the link under its `start_process` cal
 | Ctrl/Cmd+Shift+F | Search text in workspace files |
 | Escape | Close dialogs and suggestions, dismiss a question, or stop the round |
 
+On macOS the shortcuts use Cmd; Ctrl+B, Ctrl+F, Ctrl+K, and Ctrl+P keep their text-editing meaning.
+
 ## Connection handling
 
 - Each tab keeps its sockets alive with heartbeats and reconnects automatically with backoff, immediately when the network or tab returns.
 - While disconnected, a banner appears, sending is disabled, and drafts are kept (also across reloads).
 - A message whose delivery was not confirmed is re-sent after reconnecting; the hub recognizes it and never delivers it twice.
 - A message the agent refuses returns to the composer.
+- A message or answer over the hub's 256 KB frame limit is refused before sending and stays where you typed it.
+- A tab that falls too far behind the live output (for example on a slow link) restarts at the newest page instead of skipping events.
 - Reloading or closing the tab keeps sessions attached. Stopping the hub releases them for terminals.
 
 ## Network and remote access
@@ -173,6 +180,7 @@ Open a process from **Processes** or from the link under its `start_process` cal
 - **Treat the token as shell access:** signed-in browsers get an interactive shell as the hub's user, can read workspace files, and start agents in any directory. Terminals start in the workspace but are not confined to it.
 - Use a long random token and run the hub only on trusted networks.
 - For remote access, use a protected tunnel or reverse proxy.
+- Behind a reverse proxy, forward the original `Host` header. Otherwise the hub refuses the page's connections, and the page and the hub's log say why.
 
 Cloudflare Tunnel example:
 

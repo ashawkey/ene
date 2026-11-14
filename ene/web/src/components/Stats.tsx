@@ -1,5 +1,5 @@
 import { ChartColumn, CircleX, Coins, Cpu, Gauge, Timer, Wrench } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 
 import { compactNumber, duration, latency, percent, tokenRate } from '../lib/format'
 import type { ContextSnapshot, RoundStats } from '../lib/protocol'
@@ -139,7 +139,9 @@ function roundedTop(x: number, y: number, w: number, h: number, r: number) {
   return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`
 }
 
-export function StatsPanel({
+// Memoized: the inspector re-renders on every streamed update, and the round
+// table and charts must not re-render with it.
+export const StatsPanel = memo(function StatsPanel({
   rounds,
   active,
   context,
@@ -262,4 +264,4 @@ export function StatsPanel({
       )}
     </div>
   )
-}
+})

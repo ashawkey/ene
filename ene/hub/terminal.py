@@ -35,6 +35,9 @@ POLL_INTERVAL = 0.25            # reader wake-up to notice an exited shell
 KILL_GRACE = 1.5                # seconds between SIGHUP and SIGKILL on close
 MIN_SIZE, MAX_SIZE = 1, 1000    # accepted terminal rows/columns
 DEFAULT_COLS, DEFAULT_ROWS = 80, 24
+# Input a program has not read yet (a busy full-screen app, a hung ssh) waits
+# here once the pty's own buffer is full; beyond this it is dropped.
+MAX_PENDING_INPUT = 1024 * 1024
 
 # A subscriber receives ("data", bytes) and finally ("exit", exit_code).
 Subscriber = Callable[[str, object], None]
@@ -88,7 +91,10 @@ class Terminal:
         self._scrollback = bytearray()
         self._subscribers: set[Subscriber] = set()
         self._lock = threading.Lock()
+        # Guards the master fd for writers: input, resizes, and the final close.
         self._write_lock = threading.Lock()
+        self._pending = bytearray()
+        self._fd_closed = False
         self._closing_at: float | None = None
         self._done = threading.Event()
 
@@ -116,6 +122,9 @@ class Terminal:
             raise
         finally:
             os.close(slave)
+        # Writes must never block a hub thread (see write); reads are
+        # select-driven, so this only changes how a full input buffer behaves.
+        os.set_blocking(master, False)
         self.master = master
         self.shell = os.path.basename(shell)
         self._reader = threading.Thread(
@@ -156,27 +165,57 @@ class Terminal:
     # -- input ---------------------------------------------------------------
 
     def write(self, data: bytes) -> None:
+        """Send input to the shell without ever blocking.
+
+        A program that stops reading fills the pty's input buffer; a blocking
+        write would then park the calling thread, even past ``close``. What
+        does not fit waits in a bounded queue that the reader thread flushes
+        once the program reads again.
+        """
         if not data or not self.alive:
             return
         with self._write_lock:
-            view = memoryview(data)
-            while view and self.alive:
+            if self._fd_closed:
+                return
+            if not self._pending:
+                data = data[self._write_now(data):]
+            room = MAX_PENDING_INPUT - len(self._pending)
+            if data and room > 0:
+                self._pending += data[:room]
+
+    def _write_now(self, data: bytes | bytearray) -> int:
+        """Write what the pty accepts now; hold ``_write_lock``. Returns the
+        bytes consumed (all of them once the shell is gone)."""
+        written = 0
+        # Released on exit: the pending bytearray is resized right after.
+        with memoryview(data) as view:
+            while written < len(view):
                 try:
-                    written = os.write(self.master, view)
+                    written += os.write(self.master, view[written:])
                 except InterruptedError:
                     continue
-                except OSError:
-                    return
-                view = view[written:]
+                except BlockingIOError:
+                    break
+                except OSError:  # the shell is gone: drop the input
+                    return len(view)
+        return written
+
+    def _flush_input(self) -> None:
+        with self._write_lock:
+            if self._pending and not self._fd_closed:
+                del self._pending[:self._write_now(self._pending)]
 
     def resize(self, cols: int, rows: int) -> None:
         if not self.alive or (cols, rows) == (self.cols, self.rows):
             return
         self.cols, self.rows = cols, rows
-        try:
-            _set_size(self.master, cols, rows)  # the kernel signals SIGWINCH
-        except OSError:
-            pass
+        with self._write_lock:
+            if self._fd_closed:
+                return
+            try:
+                _set_size(self.master, cols, rows)  # the kernel signals SIGWINCH
+            except OSError:
+                pass
 
     def close(self) -> None:
         """Hang up the shell's process group; the reader escalates to SIGKILL."""
@@ -223,12 +262,18 @@ class Terminal:
                     self._signal(signal.SIGKILL)
                     if self.process.poll() is not None:
                         break
+                # Wait for output, and for room to flush queued input.
+                waiting_input = [self.master] if self._pending else []
                 try:
-                    ready, _, _ = select.select([self.master], [], [], POLL_INTERVAL)
+                    ready, writable, _ = select.select(
+                        [self.master], waiting_input, [], POLL_INTERVAL
+                    )
                 except InterruptedError:
                     continue
                 except (OSError, ValueError):
                     break
+                if writable:
+                    self._flush_input()
                 if not ready:
                     # The shell exited but a leftover child may still hold the
                     # pty open; stop once nothing more is arriving.
@@ -237,7 +282,7 @@ class Terminal:
                     continue
                 try:
                     data = os.read(self.master, READ_CHUNK)
-                except InterruptedError:
+                except (InterruptedError, BlockingIOError):
                     continue
                 except OSError:  # EIO: every slave fd is closed
                     break
@@ -253,10 +298,14 @@ class Terminal:
         except subprocess.TimeoutExpired:
             self._signal(signal.SIGKILL)
             code = self.process.wait()
-        try:
-            os.close(self.master)
-        except OSError:
-            pass
+        # Under the write lock, so no writer can reach a reused fd number.
+        with self._write_lock:
+            self._fd_closed = True
+            self._pending.clear()
+            try:
+                os.close(self.master)
+            except OSError:
+                pass
         with self._lock:
             self.exit_code = code
             self._done.set()

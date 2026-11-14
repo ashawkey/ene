@@ -4,19 +4,32 @@ import { useEffect, useRef, useState } from 'react'
 import type { Prompt } from '../lib/protocol'
 import { inTerminal } from '../lib/terminalSocket'
 import { Markdown } from './Markdown'
-import { IconButton } from './ui'
+import { IconButton, modalOpen } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 
-/** An agent question. Answers are idempotent per prompt id on the worker. */
+const isField = (target: HTMLElement | null) =>
+  target !== null && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' ||
+    target.isContentEditable)
+
+/**
+ * An agent question. Answers are idempotent per prompt id on the worker.
+ *
+ * Keys go to it only while its session is *active*, no dialog is open, and
+ * focus is in the composer, the sheet, or outside any text field: other
+ * fields (find bar, filters, session search) keep their own Escape and digits.
+ */
 export function PromptSheet({
   prompt,
+  active,
   connected,
   onAnswer,
   onCancel,
 }: {
   prompt: Prompt
+  active: boolean
   connected: boolean
-  onAnswer: (answer: string) => void
+  /** False when the answer was not sent; the sheet then stays answerable. */
+  onAnswer: (answer: string) => boolean | void
   onCancel: () => void
 }) {
   const [text, setText] = useState(prompt.default)
@@ -29,16 +42,24 @@ export function PromptSheet({
     input.current?.focus()
   }, [prompt.id, prompt.default])
 
+  // Still open after a reconnect means the answer never arrived; allow
+  // another (answers are idempotent per prompt id).
+  useEffect(() => {
+    if (connected) setSent(false)
+  }, [connected])
+
   const answer = (value: string) => {
     if (sent || !connected) return
-    setSent(true)
-    onAnswer(value)
+    if (onAnswer(value) !== false) setSent(true)
   }
 
   useEffect(() => {
+    if (!active) return
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
-      if (inTerminal(target)) return
+      if (inTerminal(target) || modalOpen()) return
+      const field = isField(target)
+      if (field && !target!.closest('.composer, .prompt-sheet')) return
       if (event.key === 'Escape') {
         // Captured first so the composer does not also stop the round.
         event.preventDefault()
@@ -47,9 +68,8 @@ export function PromptSheet({
         return
       }
       if (prompt.kind !== 'select' || event.metaKey || event.ctrlKey || event.altKey) return
-      // Typing in a field keeps its digits, unless the composer is empty.
-      const field = target as HTMLTextAreaElement | HTMLInputElement | null
-      if ((target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT') && field?.value) return
+      // The composer keeps its digits once it holds text.
+      if (field && (target as HTMLTextAreaElement).value) return
       const number = Number(event.key)
       if (Number.isInteger(number) && number >= 1 && number <= prompt.choices.length) {
         event.preventDefault()

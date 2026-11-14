@@ -140,6 +140,8 @@ export function LinkBanner({ status, onRetry }: { status: LinkStatus; onRetry: (
 // Open dialogs, innermost last: Escape closes only the top one (a file can
 // open over the process viewer).
 const openModals: object[] = []
+/** Whether a dialog is open; it gets keys (Escape) before the page does. */
+export const modalOpen = () => openModals.length > 0
 
 export function Modal({
   children,

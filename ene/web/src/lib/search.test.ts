@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { QueryCache, narrowMatches, pathMatchRanges, splitRanges, subsequenceRanges } from './search'
+import { QueryCache, narrowMatches, pathMatchRanges, splitRanges, subsequenceRanges, utf16Ranges } from './search'
 
 describe('subsequenceRanges', () => {
   it('merges adjacent hits and ignores case', () => {
@@ -40,6 +40,20 @@ describe('splitRanges', () => {
       { text: 'a', hit: false },
       { text: 'bc', hit: true },
     ])
+  })
+})
+
+describe('utf16Ranges', () => {
+  it('moves code point ranges past characters outside the BMP', () => {
+    const text = '🚀 deploy 🚀 now'
+    const ranges = utf16Ranges(text, [[2, 8], [9, 10], [11, 99]])
+    expect(ranges).toEqual([[3, 9], [10, 12], [13, 16]])
+    expect(splitRanges(text, ranges).filter((part) => part.hit).map((part) => part.text)).toEqual(['deploy', '🚀', 'now'])
+  })
+
+  it('keeps ranges of BMP-only text as they are', () => {
+    const ranges: Array<[number, number]> = [[1, 3]]
+    expect(utf16Ranges('héllo', ranges)).toBe(ranges)
   })
 })
 

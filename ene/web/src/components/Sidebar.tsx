@@ -1,8 +1,9 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { Bell, BellOff, Link2, LogOut, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Power, Search, Sun, SunMoon, Terminal, Unlink, X } from 'lucide-react'
 import type { RefObject } from 'react'
 
 import { basename, sessionTitle } from '../lib/format'
+import { MOD_KEY } from '../lib/platform'
 import type { SessionSummary } from '../lib/protocol'
 import type { LinkStatus } from '../lib/socket'
 import type { ThemeChoice } from '../lib/theme'
@@ -39,6 +40,9 @@ function SessionRow({
   onEnd: () => void
 }) {
   const [armed, setArmed] = useState(false)
+  // Each arm restarts the disarm delay; an earlier arm's timer must not cut it short.
+  const disarm = useRef(0)
+  useEffect(() => () => window.clearTimeout(disarm.current), [])
   const owned = session.attached_by === 'web'
   const terminal = session.attached_by === 'terminal'
   const title = sessionTitle(session)
@@ -91,7 +95,8 @@ function SessionRow({
               onEnd()
             } else {
               setArmed(true)
-              window.setTimeout(() => setArmed(false), 3000)
+              window.clearTimeout(disarm.current)
+              disarm.current = window.setTimeout(() => setArmed(false), 3000)
             }
           }}
         />
@@ -164,11 +169,11 @@ export function Sidebar({
     ]
     return (
       <nav className="sidebar rail glass" aria-label="Sessions">
-        <IconButton icon={PanelLeftOpen} label="Expand sidebar (Ctrl+B)" onClick={onToggleRail} />
+        <IconButton icon={PanelLeftOpen} label={`Expand sidebar (${MOD_KEY}B)`} onClick={onToggleRail} />
         <IconButton icon={Plus} label="New session" tone="accent" onClick={onNew} />
         <IconButton
           icon={Search}
-          label="Search sessions (Ctrl+K)"
+          label={`Search sessions (${MOD_KEY}K)`}
           onClick={() => {
             onToggleRail()
             window.setTimeout(() => searchRef.current?.focus(), 30)
@@ -221,7 +226,7 @@ export function Sidebar({
           <span className="brand" title={host}>{host}</span>
           <span className="grow" />
           <IconButton icon={Plus} label="New session" tone="accent" onClick={onNew} />
-          <IconButton icon={PanelLeftClose} label="Collapse sidebar (Ctrl+B)" className="hide-narrow" onClick={onToggleRail} />
+          <IconButton icon={PanelLeftClose} label={`Collapse sidebar (${MOD_KEY}B)`} className="hide-narrow" onClick={onToggleRail} />
           <IconButton icon={X} label="Close" className="show-narrow" onClick={onClose} />
         </div>
         <label className="filter">
@@ -230,13 +235,14 @@ export function Sidebar({
             {...NO_AUTOFILL}
             ref={searchRef}
             value={filter}
-            placeholder="Search sessions  ⌘K"
+            placeholder={`Search sessions  ${MOD_KEY}K`}
             onChange={(event) => setFilter(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && visible[0]) {
-                const first = visible[0]
-                if (first.attached_by === 'web') onSelect(first.id)
-                else if (!first.attached_by) onAttach(first.id)
+              if (event.key === 'Enter') {
+                // The first row shown that a click would act on (not one in a terminal).
+                const [first] = [...groups[0][1], ...groups[1][1]]
+                if (first?.attached_by === 'web') onSelect(first.id)
+                else if (first) onAttach(first.id)
               } else if (event.key === 'Escape') {
                 setFilter('')
                 event.currentTarget.blur()

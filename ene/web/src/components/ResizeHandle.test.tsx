@@ -56,6 +56,18 @@ describe('ResizeHandle', () => {
     expect(document.documentElement.classList.contains('resizing')).toBe(false)
   })
 
+  it('leaves the width alone after a click without a drag', () => {
+    // CSS has shrunk the panel to fit the window; a click must not pin that width.
+    layout(288, 700, 400)
+    const { container } = render(<ResizeHandle panel="inspector" />, { container: document.querySelector('.pane-main') as HTMLElement })
+    const handle = container.querySelector('.resize-handle')!
+    fireEvent.pointerDown(handle, { button: 0, clientX: 1000, pointerId: 1 })
+    fireEvent.pointerUp(handle, { clientX: 1000, pointerId: 1 })
+    expect(width('--inspector-w')).toBe('')
+    expect(localStorage.getItem('ene.inspector-w')).toBeNull()
+    expect(document.documentElement.classList.contains('resizing')).toBe(false)
+  })
+
   it('resizes the sidebar from the keyboard and resets on double-click', () => {
     layout(288, 900, 400)
     render(<ResizeHandle panel="sidebar" />, { container: document.body.appendChild(document.createElement('div')) })
