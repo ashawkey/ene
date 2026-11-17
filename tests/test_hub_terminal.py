@@ -241,6 +241,24 @@ def test_terminal_endpoints_require_login_and_csrf(tmp_path):
     hub.terminals.close_all(timeout=5)
 
 
+def test_terminal_opens_in_a_workspace_folder(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    hub = make_hub(tmp_path)
+    try:
+        with TestClient(hub.app) as client:
+            headers = {"x-csrf-token": login(client)}
+            created = client.post(
+                "/api/sessions/s1/terminals", json={"path": "pkg"}, headers=headers
+            ).json()["terminal"]
+            assert hub.terminals.get("s1", created["id"]).cwd == str((tmp_path / "pkg").resolve())
+            for path, status in (("..", 403), ("file.txt", 400), ("missing", 404)):
+                response = client.post("/api/sessions/s1/terminals", json={"path": path}, headers=headers)
+                assert response.status_code == status
+    finally:
+        hub.terminals.close_all(timeout=5)
+
+
 def test_terminal_websocket_round_trip_and_close(tmp_path):
     hub = make_hub(tmp_path)
     try:

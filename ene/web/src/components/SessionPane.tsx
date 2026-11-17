@@ -7,7 +7,7 @@ import type { GitBranch as GitBranchInfo, ProcessActivity, RoundStats, SessionSu
 import { contextFraction, roundsVersion } from '../lib/session'
 import { useSession } from '../lib/useSession'
 import { Composer } from './Composer'
-import { FileViewer } from './Files'
+import { FileViewer, type FileView } from './Files'
 import type { InspectorTab } from './Inspector'
 import { Inspector, lastInspectorTab } from './Inspector'
 import { ProcessViewer } from './ProcessViewer'
@@ -48,9 +48,9 @@ export function SessionPane({
   const { view } = session
   const connected = session.status === 'open'
   const timeline = useRef<TimelineHandle | null>(null)
-  const [viewing, setViewing] = useState<{ path: string; changed?: boolean; line?: number } | null>(null)
+  const [viewing, setViewing] = useState<{ path: string; changed?: boolean; line?: number; view?: FileView } | null>(null)
   const openFile = useCallback(
-    (path: string, changed?: boolean, line?: number) => setViewing({ path, changed, line }),
+    (path: string, changed?: boolean, line?: number, view?: FileView) => setViewing({ path, changed, line, view }),
     [],
   )
   const closeFile = useCallback(() => setViewing(null), [])
@@ -119,19 +119,20 @@ export function SessionPane({
   const draftRef = useRef(session.draft)
   draftRef.current = session.draft
   const { setDraft } = session
-  const mention = useCallback((path: string) => {
+  const insert = useCallback((token: string) => {
     const draft = draftRef.current
-    const token = `@${path} `
     setDraft(draft && !/\s$/.test(draft) ? `${draft} ${token}` : `${draft}${token}`)
     setViewing(null)
     setFocusSignal((value) => value + 1)
   }, [setDraft])
+  const mention = useCallback((path: string) => insert(`@${path} `), [insert])
 
   // On narrow screens the panel covers the composer, so close it first.
-  const mentionFromPanel = useCallback((path: string) => {
+  const fromPanel = useCallback((text: string) => {
     if (window.matchMedia?.('(max-width: 1100px)').matches) onInspector(null)
-    mention(path)
-  }, [mention, onInspector])
+    insert(text)
+  }, [insert, onInspector])
+  const mentionFromPanel = useCallback((path: string) => fromPanel(`@${path} `), [fromPanel])
 
   const contextTip = useMemo(() => {
     const context = view.context
@@ -282,6 +283,7 @@ export function SessionPane({
             filesRefresh={filesRefresh}
             onOpenFile={openFile}
             onMention={mentionFromPanel}
+            onAsk={fromPanel}
             onJumpRound={jumpRound}
             onOpenProcess={setProcessId}
           />
@@ -302,11 +304,12 @@ export function SessionPane({
 
       {active && viewing ? (
         <FileViewer
-          key={`${viewing.path}:${viewing.line ?? ''}`}
+          key={`${viewing.path}:${viewing.line ?? ''}:${viewing.view ?? ''}`}
           sessionId={summary.id}
           path={viewing.path}
           changed={viewing.changed}
           line={viewing.line}
+          view={viewing.view}
           onClose={closeFile}
           onMention={mention}
         />

@@ -53,7 +53,7 @@ from ene.context import (
     COMPACTION_INPUT_MAX_CHARS,
     COMPACTION_MIN_YIELD_RATIO,
     COMPACTION_RETRY_GROWTH_RATIO,
-    COMPACTION_SUMMARY_MAX_TOKENS,
+    DEFAULT_CHARS_PER_TOKEN,
     ContextManager,
     TokenEstimator,
     CompactionState,
@@ -969,35 +969,92 @@ class LLMAgent(
         if provider is not None:
             provider.cancel()
 
+    # Follow-up turn sent when a summary stops at the output limit; the partial
+    # summary is replayed as the assistant's own turn so the model picks it up.
+    _SUMMARY_CONTINUE_PROMPT = (
+        "Your summary was cut off by the output limit. Continue it exactly where "
+        "it stopped. Do not repeat anything already written, restart it, or add "
+        "any preamble."
+    )
+
+    def _summary_output_cap(self, model: str, owned: bool, prompt_chars: int) -> int:
+        """Output cap for one summary request: the model's own limit, fit to its window.
+
+        The summary is not capped below what the model can produce; a short cap
+        only gets the handoff cut off (reasoning tokens share the same budget).
+        """
+        if owned:
+            profile = resolve_model_profile(model)
+            cap, window = profile.max_output_tokens, profile.context_length
+        else:
+            cap = getattr(self, "max_output_tokens", None)
+            window = getattr(self, "context_length", 0)
+            if not cap:
+                profile = resolve_model_profile(model)
+                cap, window = profile.max_output_tokens, window or profile.context_length
+        estimator = getattr(self, "token_estimator", None)
+        cpt = estimator.chars_per_token if estimator is not None else DEFAULT_CHARS_PER_TOKEN
+        return request_output_tokens(window or 0, cap, int(prompt_chars / cpt))
+
     def _summarize(self, prompt: str) -> str:
         """Run a provider-neutral non-streaming compaction request.
 
         Deliberately not run at the session's reasoning effort: rewriting a
         conversation into a fixed section structure is a transcription task, and
         at the default "high" it costs far more latency than the summary is
-        worth. The output cap bounds what the pass writes back into the window.
+        worth. The request uses the model's full output limit, and a summary cut
+        short by it is continued up to MAX_AUTO_CONTINUES times, so compaction
+        works with any model whatever its output cap.
         """
         provider = None
         owned = False
+        parts: list[str] = []
         try:
             provider, model, owned = self._summary_provider()
             self._active_compaction_provider = provider
-            if self.cancellation is not None and self.cancellation.cancelled:
-                raise RequestInterrupted()
-            result = provider.complete(CompletionRequest(
-                model=model,
-                messages=[Message.user(prompt)],
-                stream=False,
-                # No short client timeout: this is a non-streaming round-trip
-                # that must prefill the whole summary input and then generate
-                # the handoff. On a local model that can take minutes (a 60 s
-                # cap timed out on a 27B/vLLM serving ~18K prompt tokens), and
-                # it competes for GPU time with other active sessions. The
-                # provider default (600 s) matches the main conversation calls;
-                # ESC still cancels the in-flight request.
-                max_output_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
-                reasoning_effort="low",
-            ))
+            messages = [Message.user(prompt)]
+            prompt_chars = len(prompt)
+            continues = 0
+            while True:
+                if self.cancellation is not None and self.cancellation.cancelled:
+                    raise RequestInterrupted()
+                result = provider.complete(CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    stream=False,
+                    # No short client timeout: this is a non-streaming round-trip
+                    # that must prefill the whole summary input and then generate
+                    # the handoff. On a local model that can take minutes (a 60 s
+                    # cap timed out on a 27B/vLLM serving ~18K prompt tokens), and
+                    # it competes for GPU time with other active sessions. The
+                    # provider default (600 s) matches the main conversation calls;
+                    # ESC still cancels the in-flight request.
+                    max_output_tokens=self._summary_output_cap(model, owned, prompt_chars),
+                    reasoning_effort="low",
+                ))
+                if result.usage is not None:
+                    self._accumulate_usage(result.usage)
+                text = result.message.text
+                parts.append(text)
+                if result.finish_reason != "length":
+                    break
+                if not text.strip():
+                    # Reasoning alone used the whole budget: there is no partial
+                    # summary to continue from.
+                    raise RuntimeError(
+                        "Compaction summary was truncated by the output token "
+                        "limit before any summary text was written"
+                    )
+                if continues >= self.MAX_AUTO_CONTINUES:
+                    # A summary that still has not finished is pathological
+                    # (likely a repetition loop); keep the history instead.
+                    raise RuntimeError(
+                        "Compaction summary is still unfinished after "
+                        f"{continues} automatic continuations"
+                    )
+                continues += 1
+                messages += [result.message, Message.user(self._SUMMARY_CONTINUE_PROMPT)]
+                prompt_chars += len(text) + len(self._SUMMARY_CONTINUE_PROMPT)
         except Exception:
             # Escape calls provider.cancel(), which tears down the in-flight
             # request and surfaces here as a transport error on the summarization
@@ -1012,15 +1069,9 @@ class LLMAgent(
                     provider.close()
             finally:
                 self._active_compaction_provider = None
-        if result.usage is not None:
-            self._accumulate_usage(result.usage)
-        summary = result.message.text
-        if not summary:
+        summary = "".join(parts)
+        if not summary.strip():
             raise RuntimeError("Compaction provider returned no summary text")
-        if result.finish_reason == "length":
-            # A summary cut off by the output cap would silently drop the
-            # trailing sections; fail the pass so the history is kept instead.
-            raise RuntimeError("Compaction summary was truncated by the output token limit")
         return summary
 
     def _mark_first_token(self) -> None:

@@ -88,7 +88,7 @@ const Block = memo(function Block({
   return (
     <>
       {lines.map((line, at) => (
-        <div className="s-row" key={at}>
+        <div className={`s-row ${line.left?.kind === 'ctx' && line.right?.kind === 'ctx' ? '' : 'chg'}`} key={at}>
           <Side cell={line.left} html={line.left ? htmlFor(line.left, true, oldHtml, newHtml) : null} />
           <Side cell={line.right} html={line.right ? htmlFor(line.right, false, oldHtml, newHtml) : null} />
         </div>

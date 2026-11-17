@@ -288,14 +288,15 @@ def test_summary_input_drops_the_middle_not_the_tail():
     seen, summarize = _capture()
     compact_context(messages, summarize)
 
-    prompt = seen["prompt"]
+    prompt, kept = seen["prompt"].split("<kept-verbatim>")
     # The oldest entries anchor what the session set out to do...
     assert "FIRST-REQUEST" in prompt
     assert "MID0 " in prompt
     # ...and the newest of the compacted range carry the current state.
     assert "MID398 " in prompt
-    # The in-flight round is kept verbatim, not summarized.
+    # The in-flight round is kept verbatim: shown only as a reference.
     assert "MID399 " not in prompt
+    assert "MID399 " in kept
     # The middle is what gets sacrificed.
     assert "MID200 " not in prompt
     assert "middle of the conversation omitted" in prompt
@@ -358,7 +359,8 @@ def test_compaction_replaces_everything_but_a_small_recent_slice():
     assert 12_000 <= sum(m.chars for m in kept) <= 20_000
     assert kept[0].is_assistant and kept[0].tool_calls  # never starts mid-pair
     assert kept[-1].text == "done"
-    assert "R29 " not in seen["prompt"] and "R20 " in seen["prompt"]
+    conversation = seen["prompt"].split("<kept-verbatim>")[0]
+    assert "R29 " not in conversation and "R20 " in conversation
 
 
 def test_in_flight_tool_results_survive_whatever_their_size():
@@ -581,3 +583,27 @@ def test_a_long_reply_followed_by_a_prompt_is_summarized():
 
     assert [m.text for m in result[1:]] == ["shorten it"]
     assert "LONG " in seen["prompt"]
+
+
+def test_summarizer_sees_the_kept_tail_as_reference_only():
+    # An idle /compact: the last reply is the final message and survives verbatim,
+    # but the summary's next steps must not re-list what it already answered.
+    messages = [Message.user("start")]
+    for i in range(40):
+        messages += _turn(f"c{i}", "read_file", {"file": f"f{i}.py"}, "x" * 2000)
+    messages.append(Message.user("FINAL-QUESTION"))
+    messages.append(Message.assistant(
+        "REPLY-HEAD " + "z" * 6000 + " REPLY-CONCLUSION"
+    ))
+
+    seen, summarize = _capture()
+    result, _ = compact_context(messages, summarize, context_length=128_000)
+
+    assert result[-1].text.endswith("REPLY-CONCLUSION")
+    conversation, kept = seen["prompt"].split("<kept-verbatim>")
+    assert "REPLY-HEAD" not in conversation
+    assert "FINAL-QUESTION" in kept
+    # Both ends of a long kept reply reach the summarizer.
+    assert "REPLY-HEAD" in kept and "REPLY-CONCLUSION" in kept
+    assert "characters omitted" in kept
+    assert "Next Steps as of their end" in conversation

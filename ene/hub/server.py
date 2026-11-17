@@ -1534,6 +1534,16 @@ class Hub:
             if session is None:
                 raise HTTPException(status_code=409, detail="The session is not attached.")
             cwd = str(session.meta.get("cwd", ""))
+            subdir = body.get("path")
+            if isinstance(subdir, str) and subdir.strip():
+                # A folder picked in the file browser; it must stay inside.
+                try:
+                    _, target = hubfiles.resolve_in_workspace(cwd, subdir)
+                except hubfiles.WorkspaceError as exc:
+                    raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+                if not target.is_dir():
+                    raise HTTPException(status_code=400, detail="Not a directory.")
+                cwd = str(target)
             loop = asyncio.get_running_loop()
             try:
                 terminal = await loop.run_in_executor(
@@ -1639,11 +1649,33 @@ class Hub:
             response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
             return response
 
+        @app.get("/api/sessions/{session_id}/download")
+        async def workspace_download(request: Request, session_id: str, path: str = ""):
+            require_login(request)
+            target = await browse_call(
+                hubfiles.download_target, session_workspace(session_id), path
+            )
+            response = FileResponse(
+                target, media_type="application/octet-stream", filename=target.name
+            )
+            response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+
         @app.get("/api/sessions/{session_id}/diff")
-        async def workspace_diff(request: Request, session_id: str, path: str = ""):
+        async def workspace_diff(
+            request: Request, session_id: str, path: str = "", commit: str = ""
+        ):
             require_login(request)
             return await browse_call(
-                hubfiles.git_diff, session_workspace(session_id), path
+                hubfiles.git_diff, session_workspace(session_id), path, commit
+            )
+
+        @app.get("/api/sessions/{session_id}/log")
+        async def workspace_log(request: Request, session_id: str, path: str = ""):
+            require_login(request)
+            return await browse_call(
+                hubfiles.git_log, session_workspace(session_id), path
             )
 
         @app.get("/api/sessions/{session_id}/changes")

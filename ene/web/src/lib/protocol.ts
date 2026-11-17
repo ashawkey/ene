@@ -228,8 +228,27 @@ export type FilePreview = {
 export type GitChange = {
   path: string
   status: 'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'conflict' | 'untracked'
+  /** Changes in the index; with `unstaged` too, the file is partially staged. */
   staged: boolean
+  /** Changes in the working tree not yet staged (always set for untracked files). */
+  unstaged: boolean
+  /** Lines added and removed against HEAD; null when unknown (binary, too large). */
+  added: number | null
+  removed: number | null
 }
+
+export type GitCommit = {
+  hash: string
+  short: string
+  author: string
+  /** Unix seconds. */
+  time: number
+  subject: string
+  /** The file's workspace-relative path at this commit; null when outside the workspace. */
+  path: string | null
+}
+
+export type GitLog = { path: string; commits: GitCommit[]; truncated: boolean }
 
 export type GitBranch = {
   git: boolean
@@ -269,6 +288,10 @@ export type GitChanges = {
   changes: GitChange[]
   /** Set when the folder is a repo but `git status` failed or timed out. */
   error?: string
+  /** Tracking branch, and commits ahead of and behind it, when there is one. */
+  upstream?: string
+  ahead?: number
+  behind?: number
 }
 
 export type GitDiff = {

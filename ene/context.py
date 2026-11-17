@@ -242,11 +242,11 @@ COMPACTION_RESERVE_TOKENS = 8_000
 # request_output_tokens), and a reply cut short is continued automatically.
 COMPACTION_OUTPUT_RESERVE_MAX_TOKENS = 32_000
 COMPACTION_MIN_TRIGGER_RATIO = 0.5  # floor, for tiny windows
-# Ceiling on the summarization response, and the allowance used when deciding
-# whether a pass can free enough: the summary is the one part of a compaction
-# that adds context back. Generous because reasoning tokens count against the
-# same budget, and a truncated handoff is worse than a slightly long one.
-COMPACTION_SUMMARY_MAX_TOKENS = 8_000
+# Expected size of the handoff, used only when deciding whether a pass can free
+# enough: the summary is the one part of a compaction that adds context back.
+# It is not a request cap: the summary request uses the model's own output
+# limit, and a summary cut short is continued (see LLMAgent._summarize).
+COMPACTION_SUMMARY_ESTIMATE_TOKENS = 8_000
 
 # Summarization input budget, as (window ratio, floor, ceiling) in characters.
 # The raw history is discarded entirely, so the summarizer gets a generous view
@@ -725,6 +725,11 @@ _TRANSCRIPT_HEADING = "## Full transcript"
 _SUMMARY_MESSAGE_CHARS = 2_000
 _SUMMARY_TOOL_RESULT_CHARS = 1_000
 
+# Messages that survive the pass verbatim are shown to the summarizer as a
+# read-only reference, so Progress and Next Steps describe the state after them
+# instead of re-listing work they already finished.
+_KEPT_REFERENCE_CHARS = 16_000
+
 # A prior summary stands in for everything before it, so it is passed to the
 # summarizer separately with a far larger budget than an ordinary message.
 _PRIOR_SUMMARY_CHAR_LIMIT = 16_000
@@ -772,7 +777,8 @@ _SUMMARY_FORMAT = """\
 
 _SUMMARY_RULES = """\
 The raw history is discarded once you answer: this summary, the user's own
-messages, and a list of touched files are all the next assistant will see.
+messages, a list of touched files, and any messages kept verbatim are all the
+next assistant will see.
 Do not copy the user's messages out again; record what was done and learned.
 Preserve exact file paths, function and class names, commands, and error text
 verbatim — never paraphrase an identifier. Keep each section concise."""
@@ -790,7 +796,7 @@ Use this EXACT section structure:
 
 <conversation>
 {conversation}
-</conversation>"""
+</conversation>{kept}"""
 
 _COMPACTION_UPDATE_PROMPT = """\
 You are updating an existing handoff summary with newer conversation history.
@@ -815,7 +821,18 @@ Use this EXACT section structure:
 
 <conversation>
 {conversation}
-</conversation>"""
+</conversation>{kept}"""
+
+_KEPT_REFERENCE = """
+
+These messages come right after the conversation above and stay in the history
+verbatim, directly after your summary. Do not summarize or repeat them, but
+write Progress and Next Steps as of their end: a question they already answered
+or work they already finished is not a next step.
+
+<kept-verbatim>
+{kept}
+</kept-verbatim>"""
 
 
 def compaction_trigger_tokens(context_length: int, max_output_tokens: int = 0) -> int:
@@ -944,11 +961,21 @@ def _tail_start(
     return start
 
 
-def _render_summary_input(messages: list[Message]) -> list[str]:
+def _clip_ends(text: str, limit: int) -> str:
+    """Keep both ends of *text*: a reply's conclusion is usually at its end."""
+    if len(text) <= limit:
+        return text
+    head = limit * 3 // 4
+    tail = limit - head
+    return f"{text[:head]}\n[... {len(text) - limit:,} characters omitted ...]\n{text[-tail:]}"
+
+
+def _render_summary_input(messages: list[Message], keep_ends: bool = False) -> list[str]:
     """Render each message for the summarizer, one entry per message.
 
     A prior summary is skipped: it is handed to the summarizer separately so it
-    can be updated rather than re-compressed.
+    can be updated rather than re-compressed. With *keep_ends*, long user and
+    assistant text keeps its end as well as its start.
     """
     parts: list[str] = []
     for msg in messages:
@@ -956,15 +983,18 @@ def _render_summary_input(messages: list[Message]) -> list[str]:
             continue
         limit = _SUMMARY_TOOL_RESULT_CHARS if msg.is_tool else _SUMMARY_MESSAGE_CHARS
 
+        def clip(text: str) -> str:
+            return _clip_ends(text, limit) if keep_ends else text[:limit]
+
         if msg.is_system:
-            parts.append(f"[System]: {msg.text[:limit]}")
+            parts.append(f"[System]: {clip(msg.text)}")
         elif msg.is_inbox:
-            parts.append(f"Inbox notifications: {msg.text[:limit]}")
+            parts.append(f"Inbox notifications: {clip(msg.text)}")
         elif msg.is_user:
-            parts.append(f"User: {msg.text[:limit]}")
+            parts.append(f"User: {clip(msg.text)}")
         elif msg.is_assistant:
             if msg.text:
-                parts.append(f"Assistant: {msg.text[:limit]}")
+                parts.append(f"Assistant: {clip(msg.text)}")
             for tool_call in msg.tool_calls or []:
                 digest = _call_digest(_parse_call_arguments(tool_call))
                 call = f"{tool_call.name}({digest})" if digest else tool_call.name
@@ -1247,13 +1277,13 @@ def _yields_enough(
 
     What a pass really frees is the compacted messages *minus* the handoff it
     writes back: the carried sections, measured exactly, plus the summary at its
-    maximum length. A pass that nets less than COMPACTION_MIN_YIELD_RATIO is not
+    expected length. A pass that nets less than COMPACTION_MIN_YIELD_RATIO is not
     worth a summarization request or the cache invalidation it causes.
     """
     freed = _context_budget_chars(to_compact, chars_per_token)
     written_back = (
         _build_summary_message(state).chars
-        + COMPACTION_SUMMARY_MAX_TOKENS * chars_per_token
+        + COMPACTION_SUMMARY_ESTIMATE_TOKENS * chars_per_token
     )
     min_yield = context_length * COMPACTION_MIN_YIELD_RATIO * chars_per_token
     return freed - written_back >= min_yield
@@ -1271,7 +1301,9 @@ def compact_context(
     """Replace the history with one LLM-written handoff message.
 
     Everything except the in-flight round and a small recent slice (see
-    :func:`_tail_start`) is summarized away. *messages* should **not** include
+    :func:`_tail_start`) is summarized away; the summarizer sees that kept tail
+    only as a reference, so the handoff's next steps start where it ends.
+    *messages* should **not** include
     the system prompt (it is managed separately by ContextManager). *summarize*
     receives the prepared prompt and returns summary text through the active
     provider. *state* carries the facts earlier passes summarized away; the
@@ -1304,18 +1336,25 @@ def compact_context(
         _render_summary_input(to_compact),
         summary_input_budget(context_length, chars_per_token),
     )
+    kept_parts = _render_summary_input(messages[split_index:], keep_ends=True)
+    kept = (
+        _KEPT_REFERENCE.format(kept=_fit_summary_input(kept_parts, _KEPT_REFERENCE_CHARS))
+        if kept_parts else ""
+    )
     if previous:
         prompt = _COMPACTION_UPDATE_PROMPT.format(
             sections=_SUMMARY_FORMAT,
             rules=_SUMMARY_RULES,
             previous=previous[:_PRIOR_SUMMARY_CHAR_LIMIT],
             conversation=conversation,
+            kept=kept,
         )
     else:
         prompt = _COMPACTION_PROMPT.format(
             sections=_SUMMARY_FORMAT,
             rules=_SUMMARY_RULES,
             conversation=conversation,
+            kept=kept,
         )
 
     def warn(text: str) -> None:

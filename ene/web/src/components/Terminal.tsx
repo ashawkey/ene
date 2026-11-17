@@ -193,7 +193,18 @@ function TerminalView({
   )
 }
 
-export function TerminalPanel({ sessionId, connected }: { sessionId: string; connected: boolean }) {
+export function TerminalPanel({
+  sessionId,
+  connected,
+  openAt = null,
+  onOpened,
+}: {
+  sessionId: string
+  connected: boolean
+  /** A workspace folder ('' for the root) to open a new terminal in, once per id. */
+  openAt?: { path: string; id: number } | null
+  onOpened?: () => void
+}) {
   const activeKey = `ene.terminal.${sessionId}`
   const [terminals, setTerminals] = useState<TerminalInfo[] | null>(null)
   const [supported, setSupported] = useState(true)
@@ -224,10 +235,10 @@ export function TerminalPanel({ sessionId, connected }: { sessionId: string; con
     return () => window.clearInterval(timer)
   }, [refresh])
 
-  const create = () => {
+  const create = (path?: string) => {
     if (creating) return
     setCreating(true)
-    createTerminal(sessionId, { cols: 80, rows: 24 })
+    createTerminal(sessionId, { cols: 80, rows: 24 }, path)
       .then((terminal) => {
         setTerminals((current) => [...(current ?? []), terminal])
         setActive(terminal.id)
@@ -235,6 +246,16 @@ export function TerminalPanel({ sessionId, connected }: { sessionId: string; con
       .catch((exc) => toast(errorMessage(exc, 'Could not open a terminal.')))
       .finally(() => setCreating(false))
   }
+
+  const latestCreate = useRef(create)
+  latestCreate.current = create
+  const handled = useRef<number | null>(null)
+  useEffect(() => {
+    if (openAt === null || handled.current === openAt.id) return
+    handled.current = openAt.id
+    onOpened?.()
+    latestCreate.current(openAt.path)
+  }, [openAt, onOpened])
 
   const close = (terminal: TerminalInfo) => {
     const list = terminals ?? []
@@ -272,7 +293,7 @@ export function TerminalPanel({ sessionId, connected }: { sessionId: string; con
             <IconButton icon={X} size="sm" label={`Close ${terminal.title}`} onClick={() => close(terminal)} />
           </div>
         ))}
-        <IconButton icon={Plus} size="sm" label="New terminal" busy={creating} disabled={!connected} onClick={create} />
+        <IconButton icon={Plus} size="sm" label="New terminal" busy={creating} disabled={!connected} onClick={() => create()} />
       </div>
       {error ? <div className="panel-error">{error}</div> : null}
       {terminals === null && !error ? (
@@ -295,7 +316,7 @@ export function TerminalPanel({ sessionId, connected }: { sessionId: string; con
         <div className="empty">
           <SquareTerminal size={28} strokeWidth={1.4} />
           <div>A shell in the session workspace.</div>
-          <button type="button" className="btn" disabled={!connected || creating} onClick={create}>
+          <button type="button" className="btn" disabled={!connected || creating} onClick={() => create()}>
             <Plus size={13} /> New terminal
           </button>
         </div>

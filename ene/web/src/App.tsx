@@ -231,7 +231,8 @@ export default function App() {
         event.preventDefault()
         setInspector('files')
         requestFilesFocus(key === 'p' ? 'find' : 'search')
-      } else if (mod && key === 'f' && !event.shiftKey && activeRef.current) {
+      } else if (mod && key === 'f' && !event.shiftKey && activeRef.current && !event.defaultPrevented) {
+        // A dialog that handled Cmd/Ctrl+F itself (the file viewer's find) keeps it.
         event.preventDefault()
         setFindOpen(true)
       } else if (mod && key === 'b' && !event.shiftKey) {

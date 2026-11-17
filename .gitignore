@@ -18,3 +18,4 @@ ene/web/vite.config.d.ts
 !ene/web/dist/**
 
 generated/
+credentials/

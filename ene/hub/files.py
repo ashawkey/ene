@@ -30,6 +30,9 @@ GIT_TIMEOUT = 3.0
 # far longer than a ref lookup in a large repo or on a network filesystem.
 GIT_STATUS_TIMEOUT = 15.0
 MAX_CHANGES = 500
+# Line counts for untracked files read them; stop counting past this budget.
+MAX_UNTRACKED_COUNT_BYTES = 8 * 1024 * 1024
+MAX_LOG_COMMITS = 100
 MAX_FIND_RESULTS = 50
 MAX_QUERY_CHARS = 1000
 # Full-text search limits: a broad query in a large tree stops early and is
@@ -198,6 +201,14 @@ def raw_image(root: str | Path, relative: str) -> tuple[Path, str]:
     return target, mime
 
 
+def download_target(root: str | Path, relative: str) -> Path:
+    """Return a workspace file's path for download as an attachment."""
+    _, target = resolve_in_workspace(root, relative)
+    if not target.is_file():
+        raise WorkspaceError("Not a file.")
+    return target
+
+
 _GIT_CODES = {
     "M": "modified",
     "A": "added",
@@ -274,6 +285,8 @@ def git_changes(root: str | Path) -> dict:
         message = detail[-1] if detail else "git status failed."
         return {"git": True, "branch": branch, "changes": [], "error": message[:300]}
     changes: list[dict] = []
+    numstat = _numstat(base)
+    budget = MAX_UNTRACKED_COUNT_BYTES
     records = status.stdout.decode("utf-8", errors="replace").split("\x00")
     index = 0
     while index < len(records) and len(changes) < MAX_CHANGES:
@@ -291,12 +304,88 @@ def git_changes(root: str | Path) -> dict:
             relative = absolute.relative_to(base).as_posix()
         except ValueError:
             continue
+        status_name = _GIT_CODES.get(letter, "modified")
+        counts = numstat.get(path) if status_name != "untracked" else None
+        if status_name == "untracked" and budget > 0:
+            counts, budget = _count_lines(absolute, budget)
         changes.append({
             "path": relative,
-            "status": _GIT_CODES.get(letter, "modified"),
+            "status": status_name,
             "staged": code[0] not in " ?",
+            # Partially staged files are both staged and unstaged.
+            "unstaged": code[1] != " ",
+            "added": counts[0] if counts else None,
+            "removed": counts[1] if counts else None,
         })
-    return {"git": True, "branch": branch, "changes": changes}
+    return {"git": True, "branch": branch, "changes": changes, **_tracking(base)}
+
+
+def _numstat(base: Path) -> dict[str, tuple[int, int]]:
+    """Lines added and removed per repo-relative path, working tree vs ``HEAD``.
+
+    Binary files and every failure (unborn ``HEAD``, timeout) yield no entry.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "diff", "--numstat", "-z", "HEAD", "--", "."],
+            cwd=base, capture_output=True, timeout=GIT_STATUS_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    counts: dict[str, tuple[int, int]] = {}
+    records = result.stdout.decode("utf-8", errors="replace").split("\x00")
+    index = 0
+    while index < len(records):
+        parts = records[index].split("\t", 2)
+        index += 1
+        if len(parts) != 3:
+            continue
+        added, removed, path = parts
+        if not path:
+            # A rename: the source and destination follow as their own records.
+            path = records[index + 1] if index + 1 < len(records) else ""
+            index += 2
+        if path and added.isdigit() and removed.isdigit():
+            counts[path] = (int(added), int(removed))
+    return counts
+
+
+def _count_lines(path: Path, budget: int) -> tuple[tuple[int, int] | None, int]:
+    """``((lines, 0), budget left)`` for a small untracked text file."""
+    try:
+        if not path.is_file() or path.stat().st_size > min(budget, MAX_TEXT_BYTES):
+            return None, budget
+        data = path.read_bytes()
+    except OSError:
+        return None, budget
+    budget -= len(data)
+    if _is_binary(data[:BINARY_SNIFF_BYTES]):
+        return None, budget
+    lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+    return (lines, 0), budget
+
+
+def _tracking(base: Path) -> dict:
+    """Upstream branch and how far ``HEAD`` is ahead of and behind it."""
+    try:
+        upstream = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+        if upstream.returncode != 0:
+            return {}
+        counts = subprocess.run(
+            ["git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+            cwd=base, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    numbers = counts.stdout.split()
+    if counts.returncode != 0 or len(numbers) != 2 or not all(n.isdigit() for n in numbers):
+        return {"upstream": upstream.stdout.strip()}
+    return {"upstream": upstream.stdout.strip(), "behind": int(numbers[0]), "ahead": int(numbers[1])}
 
 
 def _git_text(data: bytes | None) -> tuple[str, bool, bool]:
@@ -310,11 +399,11 @@ def _git_text(data: bytes | None) -> tuple[str, bool, bool]:
     return data.decode("utf-8", errors="replace"), False, False
 
 
-def git_diff(root: str | Path, relative: str) -> dict:
-    """Both sides of one file's working-tree change against ``HEAD``.
+def _git_path(root: str | Path, relative: str) -> tuple[Path, Path, Path, str]:
+    """``(workspace, target, repo, repo_path)`` for a path that may not exist.
 
-    The path may no longer exist (a deletion), so it is resolved without
-    requiring existence and then confined to the workspace like any other.
+    A deleted or historical path is resolved without requiring existence and
+    then confined to the workspace like any other.
     """
     base, _ = resolve_in_workspace(root, "")
     relative = (relative or "").strip()
@@ -335,17 +424,43 @@ def git_diff(root: str | Path, relative: str) -> dict:
             raise WorkspaceError("Not a Git repository.", 404)
         repo = Path(top.stdout.strip()).resolve()
         repo_path = target.relative_to(repo).as_posix()
-        head = subprocess.run(
-            ["git", "show", f"HEAD:{repo_path}"],
-            cwd=repo, capture_output=True, timeout=GIT_TIMEOUT,
-        )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise WorkspaceError("Could not read the Git history.") from exc
-    old_bytes = head.stdout if head.returncode == 0 else None
+    return base, target, repo, repo_path
+
+
+def _git_blob(repo: Path, spec: str) -> bytes | None:
+    """Contents of ``<rev>:<path>``, or None when it does not exist there."""
     try:
-        new_bytes = target.read_bytes() if target.is_file() else None
-    except OSError as exc:
-        raise WorkspaceError("File is not readable.", 403) from exc
+        result = subprocess.run(
+            ["git", "cat-file", "blob", spec], cwd=repo, capture_output=True, timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise WorkspaceError("Could not read the Git history.") from exc
+    return result.stdout if result.returncode == 0 else None
+
+
+def _commit(value: str) -> str:
+    value = (value or "").strip()
+    if not (4 <= len(value) <= 64) or any(char not in "0123456789abcdefABCDEF" for char in value):
+        raise WorkspaceError("Invalid commit.")
+    return value
+
+
+def git_diff(root: str | Path, relative: str, commit: str = "") -> dict:
+    """Both sides of one file's change: the working tree against ``HEAD``,
+    or, given *commit*, that commit against its first parent."""
+    base, target, repo, repo_path = _git_path(root, relative)
+    if commit:
+        commit = _commit(commit)
+        old_bytes = _git_blob(repo, f"{commit}^:{repo_path}")
+        new_bytes = _git_blob(repo, f"{commit}:{repo_path}")
+    else:
+        old_bytes = _git_blob(repo, f"HEAD:{repo_path}")
+        try:
+            new_bytes = target.read_bytes() if target.is_file() else None
+        except OSError as exc:
+            raise WorkspaceError("File is not readable.", 403) from exc
     if old_bytes is None and new_bytes is None:
         raise WorkspaceError("Path not found.", 404)
     old, old_binary, old_large = _git_text(old_bytes)
@@ -363,6 +478,57 @@ def git_diff(root: str | Path, relative: str) -> dict:
         "new": new,
         "binary": old_binary or new_binary,
         "too_large": old_large or new_large,
+    }
+
+
+def git_log(root: str | Path, relative: str) -> dict:
+    """Recent commits touching one file, following renames.
+
+    Each commit carries the file's workspace-relative path at that commit, or
+    None when it then lived outside the workspace.
+    """
+    base, _, repo, repo_path = _git_path(root, relative)
+    try:
+        result = subprocess.run(
+            [
+                "git", "-c", "core.quotepath=off", "--literal-pathspecs", "log", "--follow",
+                f"-n{MAX_LOG_COMMITS + 1}", "--name-only",
+                "--format=%x1e%H%x1f%h%x1f%an%x1f%at%x1f%s", "--", repo_path,
+            ],
+            cwd=repo, capture_output=True, timeout=GIT_STATUS_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise WorkspaceError("Could not read the Git history.") from exc
+    if result.returncode != 0:
+        # An unborn branch has no history yet.
+        return {"path": relative, "commits": [], "truncated": False}
+    commits: list[dict] = []
+    current = repo_path
+    for record in result.stdout.decode("utf-8", errors="replace").split("\x1e"):
+        lines = record.split("\n")
+        fields = lines[0].split("\x1f")
+        if len(fields) != 5:
+            continue
+        names = [line for line in lines[1:] if line]
+        # Merge commits list no names; the path is the one seen last.
+        current = names[0] if names else current
+        try:
+            path: str | None = (repo / current).relative_to(base).as_posix()
+        except ValueError:
+            path = None
+        full, short, author, timestamp, subject = fields
+        commits.append({
+            "hash": full,
+            "short": short,
+            "author": author,
+            "time": int(timestamp) if timestamp.isdigit() else 0,
+            "subject": subject,
+            "path": path,
+        })
+    return {
+        "path": relative,
+        "commits": commits[:MAX_LOG_COMMITS],
+        "truncated": len(commits) > MAX_LOG_COMMITS,
     }
 
 

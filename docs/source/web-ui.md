@@ -104,36 +104,68 @@ Open the side panel with the panel icon in the session header (it reopens the la
 
 | Panel | Contents |
 | --- | --- |
-| **Files** | Browse the session workspace; Git-changed files are marked, with a changed-only view. A changed file opens as a side-by-side diff against `HEAD` (unified on narrow screens); toggle to the file preview (syntax highlighting, rendered Markdown, raster images) or mention it in the composer. |
+| **Files** | A folder tree of the session workspace with Git-changed files marked, and a changed-only view. See [Files](#files). |
 | **Terminal** | Interactive shells in the session workspace; see [Terminal](#terminal). |
 | **Statistics** | Rounds, agent time, model and tool time, tokens (input / cached / output), speed (tokens/s and TTFT), context usage, and per-round charts. Click a round to jump to it. |
 | **Processes** | Running and recently exited background processes with runtime, exit code, and latest output. Open one to view its output, or stop it (click twice). |
 | **Info** | Model, context, reasoning, persona, skills, and IDs. |
 
-- File browsing is read-only. Listing, find, search, and diffs stay inside the workspace; opening a file link or image may preview any file the hub user can read.
-- Previews are capped: text shows the first 512 KB, highlighting stops above 200,000 characters, and images over 16 MB are not shown.
 - **Resize:** drag the panel's left edge, up to half the window; double-click it to reset. The conversation keeps a minimum readable width, and on narrow windows the panel floats over it instead.
-- **Mention:** hover a file or folder row and click `@` to insert its workspace-relative path into the message box.
+- See [process output](#process-output) for the viewer opened from **Processes**.
+- Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
+- TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
+
+## Files
+
+- **Tabs:** **Files** (the tree), **Changes** (Git-changed files, with their count), and **Search** (text search).
+- **Tree:** click a folder to expand it in place; open folders are remembered per session. **Browse into folder** makes a folder the tree's root; the breadcrumbs above the tree lead back.
+- **Sort:** the sort button cycles name, last modified, and size; folders stay first.
+- **Keys:** Down from the filter enters the list; Up/Down move, Right/Left expand or collapse (Left on a file goes to its folder), Enter opens.
+- **Mention:** hover a row and click `@` to insert its workspace-relative path into the message box.
+- **Changes:** lists changed files in **Staged**, **Changes** (including partially staged), and **Untracked** groups, with lines added and removed. The caption shows commits ahead (↑) and behind (↓) the upstream branch.
+- File browsing is read-only. Listing, find, search, diffs, history, and downloads stay inside the workspace; opening a file link or image may preview any file the hub user can read.
+
+### File actions
+
+Right-click a row, press the context-menu key, or click the `…` button that appears when hovering it. Rows in the tree, the changed-files view, find results, and text search results all have the menu.
+
+| Action | Effect |
+| --- | --- |
+| Open, Open changes, File history | Open the viewer on the file, its diff against `HEAD`, or its Git history. |
+| Reveal in file tree | Expand the tree to a find, search, or changed-file result. |
+| Mention in message | Insert `@path`. |
+| Ask to explain / review changes / write tests | Put a prompt naming the file in the message box; nothing is sent. |
+| Copy relative path, Copy absolute path, Copy contents | Copy to the clipboard (contents: text files, first 512 KB). |
+| Download | Save the file through the browser. |
+| Open in terminal | Open a new [terminal](#terminal) in the folder (a file's parent). |
+
+### File viewer
+
+- **Views:** tabs under the path switch between **Changes** (a side-by-side diff against `HEAD`, unified on narrow screens), **File** (syntax highlighting, raster images), **Preview** and **Source** for Markdown, and **History** in a Git repository. A changed file opens on **Changes**.
+- **Actions:** `@` mentions the file; `…` copies its path or contents, downloads it, or reloads it. Tools for the current view (find, wrap, change navigation) sit at the right of the tabs.
+- **Diff navigation:** the arrow buttons or Alt+Up/Down jump between changed blocks.
+- **History:** the file's last 100 commits, following renames. Click one to see what it changed in the file.
+- **Line references:** click a line number (Shift+click extends), or select text, then **Mention** inserts `@path:12-20`. **Copy lines** copies them.
+- **Find:** Ctrl/Cmd+F finds text in the source or in rendered Markdown (case-insensitive unless the query has capitals); Enter and Shift+Enter step through matches. Type `:120`, or press Ctrl/Cmd+G, to go to a line of the source.
+- **Wrap:** the wrap button toggles long-line wrapping; the choice is remembered.
+- Previews are capped: text shows the first 512 KB, highlighting stops above 200,000 characters, and images over 16 MB are not shown.
 
 ### Finding files and text
 
 | Action | How |
 | --- | --- |
 | Find files | Type in the **Files** filter (or press Ctrl/Cmd+P). It filters the open folder and fuzzy-matches paths across the whole workspace; Enter opens the first match. |
-| Search text | The search icon in the **Files** toolbar (or Ctrl/Cmd+Shift+F). Toggle match case, whole word, and regular expressions; the `…` button adds comma-separated include/exclude globs. Click a hit to open the file at that line. |
+| Search text | The **Search** tab in **Files** (or Ctrl/Cmd+Shift+F). Toggle match case, whole word, and regular expressions; the `…` button adds comma-separated include/exclude globs. Click a hit to open the file at that line. |
 
 - Both skip ignored files and `.git`; text search does not follow symlinks.
 - Text search needs `rg` (ripgrep) on the hub host and is search-only; ask the agent to make replacements.
 - Limits keep large workspaces responsive: 50 path matches; 1,000 text matches across at most 300 files, 50 per file; files over 1 MB are skipped; searches stop after 5 seconds. A capped result says so, and a file with more than 50 matching lines shows `50+`.
-- See [process output](#process-output) for the viewer opened from **Processes**.
-- Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
-- TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
 
 ## Terminal
 
 The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal, starting in the session workspace.
 
-- **New:** **+** in the terminal tab bar; each tab is a separate shell. Close a tab with its **×**.
+- **New:** **+** in the terminal tab bar; each tab is a separate shell. Close a tab with its **×**. **Open in terminal** in the [file actions](#file-actions) starts one in a workspace folder.
 - **Persistence:** shells belong to the hub, not the browser. Closing the panel, switching sessions, or reloading keeps them running; reopening replays the last 256 KB of output.
 - **Exit:** an exited shell shows its exit code; **Restart** replaces it with a new shell.
 - **Lifetime:** detaching or ending the session, the worker exiting, or stopping the hub closes its shells.
@@ -162,6 +194,8 @@ Open a process from **Processes** or from the link under its `start_process` cal
 | Ctrl/Cmd+F | Find in conversation |
 | Ctrl/Cmd+P | Find files in the workspace |
 | Ctrl/Cmd+Shift+F | Search text in workspace files |
+| Ctrl/Cmd+F, Ctrl/Cmd+G | In the file viewer: find in the file, go to a line |
+| Alt+Up/Down | In the file viewer: previous or next change |
 | Escape | Close dialogs and suggestions, dismiss a question, or stop the round |
 
 On macOS the shortcuts use Cmd; Ctrl+B, Ctrl+F, Ctrl+K, and Ctrl+P keep their text-editing meaning.

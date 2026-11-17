@@ -7,6 +7,7 @@ import type {
   FindResult,
   GitChanges,
   GitDiff,
+  GitLog,
   SearchOptions,
   SearchResult,
   NewSessionRequest,
@@ -114,7 +115,12 @@ export const searchText = (id: string, query: string, options: SearchOptions) =>
   })
 export const rawFileUrl = (id: string, path: string) =>
   `${sid(id)}/raw?${new URLSearchParams({ path }).toString()}`
-export const fileDiff = (id: string, path: string) => get<GitDiff>(`${sid(id)}/diff`, { path })
+export const downloadUrl = (id: string, path: string) =>
+  `${sid(id)}/download?${new URLSearchParams({ path }).toString()}`
+/** The working tree against HEAD, or with *commit*, that commit against its parent. */
+export const fileDiff = (id: string, path: string, commit?: string) =>
+  get<GitDiff>(`${sid(id)}/diff`, commit ? { path, commit } : { path })
+export const fileLog = (id: string, path: string) => get<GitLog>(`${sid(id)}/log`, { path })
 export const gitBranch = (id: string) => get<GitBranch>(`${sid(id)}/branch`)
 export const listChanges = (id: string) => get<GitChanges>(`${sid(id)}/changes`)
 export const pathCompletions = (id: string, query: string) =>
@@ -145,8 +151,9 @@ export function errorMessage(exc: unknown, fallback = 'The action failed.') {
 }
 
 export const listTerminals = (id: string) => get<TerminalListing>(`${sid(id)}/terminals`)
-export const createTerminal = (id: string, size: { cols: number; rows: number }) =>
-  post<{ terminal: TerminalInfo }>(`${sid(id)}/terminals`, size).then((data) => data.terminal)
+/** A new shell in the workspace, or in *path*, a folder inside it. */
+export const createTerminal = (id: string, size: { cols: number; rows: number }, path?: string) =>
+  post<{ terminal: TerminalInfo }>(`${sid(id)}/terminals`, path ? { ...size, path } : size).then((data) => data.terminal)
 export const closeTerminal = (id: string, terminalId: string) =>
   post<{ ok: boolean }>(`${sid(id)}/terminals/${encodeURIComponent(terminalId)}/close`)
 export const terminalSocketUrl = (id: string, terminalId: string) => {

@@ -1,5 +1,5 @@
 import { CaseSensitive, ChevronDown, ChevronRight, Ellipsis, Regex, Search, WholeWord, X } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, memo, useEffect, useMemo, useRef, useState } from 'react'
 
 import { errorMessage, searchText } from '../lib/api'
 import { NO_AUTOFILL } from '../lib/noAutofill'
@@ -45,12 +45,15 @@ export const TextSearch = memo(function TextSearch({
   onMention,
   refreshKey,
   focusSignal,
+  onMenu,
 }: {
   sessionId: string
   onOpen: (path: string, line: number) => void
   onMention: (path: string) => void
   refreshKey: number
   focusSignal: number
+  /** Opens the file actions menu for a result file. */
+  onMenu?: (event: ReactMouseEvent<HTMLElement>, path: string) => void
 }) {
   const initial = useMemo(() => loadState(sessionId), [sessionId])
   const [query, setQuery] = useState(initial.query)
@@ -167,7 +170,13 @@ export const TextSearch = memo(function TextSearch({
           const open = !collapsed.has(file.path)
           return (
             <div key={file.path} className="search-file">
-              <FileItem path={file.path} onMention={onMention} onClick={() => fold(file.path)} expanded={open}>
+              <FileItem
+                path={file.path}
+                onMention={onMention}
+                onClick={() => fold(file.path)}
+                expanded={open}
+                onMenu={onMenu ? (event) => onMenu(event, file.path) : undefined}
+              >
                 {open ? <ChevronDown size={13} className="file-icon" /> : <ChevronRight size={13} className="file-icon" />}
                 <Icon size={15} className="file-icon" />
                 <span className="file-name">

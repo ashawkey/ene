@@ -1,5 +1,5 @@
 import { Activity, Bot, ChartColumn, CircleCheck, CircleX, Eye, FolderOpen, Info, MessagesSquare, Square, SquareTerminal, X } from 'lucide-react'
-import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 
 import { errorMessage, stopProcess } from '../lib/api'
 import { duration } from '../lib/format'
@@ -8,7 +8,7 @@ import type { ContextSnapshot, RoundStats, SessionSummary } from '../lib/protoco
 import type { LiveProcesses } from '../lib/session'
 import { toast } from '../lib/toast'
 import { CopyButton } from './Markdown'
-import { FileBrowser } from './Files'
+import { FileBrowser, type FileView } from './Files'
 import { StatsPanel } from './Stats'
 import { Empty, IconButton, Spinner, useNow } from './ui'
 
@@ -163,6 +163,7 @@ export function Inspector({
   filesRefresh,
   onOpenFile,
   onMention,
+  onAsk,
   onJumpRound,
   onOpenProcess,
 }: {
@@ -179,13 +180,22 @@ export function Inspector({
   info: Record<string, string>
   connected: boolean
   filesRefresh: number
-  onOpenFile: (path: string, changed?: boolean, line?: number) => void
+  onOpenFile: (path: string, changed?: boolean, line?: number, view?: FileView) => void
   /** Insert ``@path`` into the composer. */
   onMention: (path: string) => void
+  /** Put a prompt into the composer without sending it. */
+  onAsk: (text: string) => void
   onJumpRound: (round: RoundStats) => void
   onOpenProcess: (processId: string) => void
 }) {
   const current = INSPECTOR_TABS.find((item) => item.id === tab)!
+  // A terminal the file browser asked for, opened once the terminal tab mounts.
+  const [terminalAt, setTerminalAt] = useState<{ path: string; id: number } | null>(null)
+  const openTerminal = useCallback((path: string) => {
+    setTerminalAt({ path, id: Date.now() })
+    onTab('terminal')
+  }, [onTab])
+  const terminalOpened = useCallback(() => setTerminalAt(null), [])
   return (
     <aside className="inspector glass" aria-label={current.label}>
       <div className="inspector-tabs" role="tablist">
@@ -206,10 +216,10 @@ export function Inspector({
         <IconButton icon={X} label="Close panel" size="sm" onClick={onClose} />
       </div>
       <div className="inspector-body">
-        {tab === 'files' ? <FileBrowser sessionId={sessionId} onOpen={onOpenFile} onMention={onMention} refreshKey={filesRefresh} /> : null}
+        {tab === 'files' ? <FileBrowser sessionId={sessionId} onOpen={onOpenFile} onMention={onMention} onAsk={onAsk} onTerminal={openTerminal} refreshKey={filesRefresh} /> : null}
         {tab === 'terminal' ? (
           <Suspense fallback={<div className="center-pad"><Spinner /></div>}>
-            <TerminalPanel sessionId={sessionId} connected={connected} />
+            <TerminalPanel sessionId={sessionId} connected={connected} openAt={terminalAt} onOpened={terminalOpened} />
           </Suspense>
         ) : null}
         {tab === 'stats' ? (

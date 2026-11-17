@@ -191,19 +191,54 @@ def test_context_overflow_detected_from_error_code():
     assert backend._is_context_overflow_error(error) is True
 
 
-def test_truncated_compaction_summary_fails_the_pass():
-    provider = NS(
-        complete=lambda request: CompletionResult(
-            message=Message.assistant("partial summ"), usage=None, finish_reason="length",
-        ),
-    )
+def _summary_agent(provider):
     agent = LLMAgent.__new__(LLMAgent)
     agent.cancellation = None
     agent._active_compaction_provider = None
     agent._summary_provider = lambda: (provider, "model", False)
+    agent.token_totals = {
+        "total": 0, "prompt": 0, "cached_prompt": 0, "completion": 0, "reasoning": 0,
+    }
+    return agent
 
-    with pytest.raises(RuntimeError, match="truncated"):
-        agent._summarize("summarize this")
+
+def test_truncated_compaction_summary_is_continued():
+    replies = iter([("## Goal\npartial summ", "length"), ("ary\n## Next Steps\nnone", "stop")])
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        text, reason = next(replies)
+        return CompletionResult(
+            message=Message.assistant(text), usage=None, finish_reason=reason,
+        )
+
+    agent = _summary_agent(NS(complete=complete))
+    agent.max_output_tokens = 2_000
+    agent.context_length = 0
+
+    assert agent._summarize("summarize this") == (
+        "## Goal\npartial summary\n## Next Steps\nnone"
+    )
+    assert requests[0].max_output_tokens == 2_000
+    followup = requests[1].messages
+    assert [m.role for m in followup] == ["user", "assistant", "user"]
+    assert followup[1].text == "## Goal\npartial summ"
+    assert "cut off" in followup[2].text
+
+
+def test_compaction_summary_fails_when_never_finished_or_empty():
+    endless = NS(complete=lambda request: CompletionResult(
+        message=Message.assistant("more"), usage=None, finish_reason="length",
+    ))
+    with pytest.raises(RuntimeError, match="still unfinished"):
+        _summary_agent(endless)._summarize("summarize this")
+
+    reasoning_only = NS(complete=lambda request: CompletionResult(
+        message=Message.assistant(""), usage=None, finish_reason="length",
+    ))
+    with pytest.raises(RuntimeError, match="before any summary text"):
+        _summary_agent(reasoning_only)._summarize("summarize this")
 
 
 def test_oauth_commands_use_current_provider():
@@ -531,7 +566,8 @@ def test_compaction_uses_configured_summary_alias_and_closes_provider(monkeypatc
     assert created[0][1].api == "responses"
     assert requests[0].model == "cheap-model"
     assert requests[0].reasoning_effort == "low"
-    assert requests[0].max_output_tokens == 8_000
+    # The model's own output limit, not a compaction-specific cap.
+    assert requests[0].max_output_tokens == 32_000
     assert agent.token_totals["total"] == 25
     assert closed == [True]
     assert agent._active_compaction_provider is None

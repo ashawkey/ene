@@ -56,8 +56,21 @@ describe('terminal panel', () => {
     render(<TerminalPanel sessionId="s1" connected />)
     const open = await screen.findByRole('button', { name: /New terminal/ })
     await act(async () => fireEvent.click(open))
-    expect(api.createTerminal).toHaveBeenCalledWith('s1', { cols: 80, rows: 24 })
+    expect(api.createTerminal).toHaveBeenCalledWith('s1', { cols: 80, rows: 24 }, undefined)
     expect(await screen.findByRole('tab', { name: 'Terminal 1' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('opens a terminal in a requested folder once', async () => {
+    api.listTerminals.mockResolvedValue({ supported: true, terminals: [] })
+    api.createTerminal.mockResolvedValue(info('1'))
+    const onOpened = vi.fn()
+    const request = { path: 'src/pkg', id: 1 }
+    const { rerender } = render(<TerminalPanel sessionId="s1" connected openAt={request} onOpened={onOpened} />)
+    expect(await screen.findByRole('tab', { name: 'Terminal 1' })).toHaveAttribute('aria-selected', 'true')
+    rerender(<TerminalPanel sessionId="s1" connected openAt={{ ...request }} onOpened={onOpened} />)
+    await act(async () => {})
+    expect(api.createTerminal).toHaveBeenCalledExactlyOnceWith('s1', { cols: 80, rows: 24 }, 'src/pkg')
+    expect(onOpened).toHaveBeenCalledOnce()
   })
 
   it('closes a terminal and selects its neighbour', async () => {

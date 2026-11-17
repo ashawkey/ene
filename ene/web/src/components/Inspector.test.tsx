@@ -35,7 +35,7 @@ const renderTasks = () => render(
     connected
     filesRefresh={0}
     onOpenFile={() => {}}
-    onMention={() => {}}
+    onMention={() => {}} onAsk={() => {}}
     onJumpRound={() => {}}
     onOpenProcess={() => {}}
   />,

@@ -164,6 +164,7 @@ It never triggers below 50% of the window.
 Until then, history is append-only, so every request reuses the provider's prompt cache. Large tool results are still shortened when they first arrive.
 
 - **Full handoff:** the whole history is replaced by one summary message. Only the newest rounds survive verbatim, up to 5% of the window (at most 12,000 tokens).
+- **Kept rounds:** the summarizer reads them as reference only, so its progress and next steps start where they end.
 - **Shown:** the model-written summary is displayed like a model response in the terminal and Web UI, and again when the session is replayed.
 - **Always kept:** the round in progress: tool results not yet seen, an unanswered prompt, or a reply being continued. A reply before an unanswered prompt is kept when under 16,000 characters.
 - **Carried exactly:** the original request, later user messages (verbatim, newest 32,000 characters), touched files, and loaded skills.
@@ -171,6 +172,7 @@ Until then, history is append-only, so every request reuses the provider's promp
 - **Undo:** each pass first saves a session revision; `/rewind` to an earlier prompt restores the uncompacted history.
 - **Skipped:** when a pass would free less than 5% of the window.
 - **Output cap:** when prompt plus max output would overrun the window, the request asks for less output. A reply cut short continues automatically.
+- **Summary length:** the summary request uses the model's full output limit. A summary cut short continues automatically, up to 3 times; if it still fails, the history is kept.
 
 ### Summary models
 

@@ -1329,7 +1329,106 @@ def test_git_changes_reports_workspace_relative_paths(tmp_path):
     (sub / "new.py").write_text("x", encoding="utf-8")
     changes = hubfiles.git_changes(sub)
     assert changes["git"] is True
-    assert changes["changes"] == [{"path": "new.py", "status": "untracked", "staged": False}]
+    assert changes["changes"] == [{
+        "path": "new.py", "status": "untracked", "staged": False, "unstaged": True, "added": 1, "removed": 0,
+    }]
+
+
+def test_git_changes_counts_lines_and_staging(tmp_path):
+    import shutil
+    import subprocess
+
+    from ene.hub import files as hubfiles
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path, check=True, capture_output=True,
+        )
+
+    git("init", "-q", "-b", "trunk")
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (tmp_path / "old.txt").write_text("x\n" * 20, encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / "a.py").write_text("one\n2\nthree\nfour\n", encoding="utf-8")
+    git("add", "a.py")
+    (tmp_path / "a.py").write_text("one\n2\nthree\nfour\nfive\n", encoding="utf-8")
+    git("mv", "old.txt", "new.txt")
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01")
+
+    result = hubfiles.git_changes(tmp_path)
+    by_path = {change["path"]: change for change in result["changes"]}
+    a = by_path["a.py"]
+    assert (a["staged"], a["unstaged"], a["added"], a["removed"]) == (True, True, 3, 1)
+    renamed = by_path["new.txt"]
+    assert (renamed["status"], renamed["added"], renamed["removed"]) == ("renamed", 0, 0)
+    binary = by_path["blob.bin"]
+    assert (binary["status"], binary["added"]) == ("untracked", None)
+    # No upstream: nothing to be ahead of.
+    assert "ahead" not in result
+
+
+def test_git_log_and_commit_diff_follow_one_file(tmp_path):
+    import shutil
+    import subprocess
+
+    from ene.hub import files as hubfiles
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path, check=True, capture_output=True,
+        )
+
+    git("init", "-q", "-b", "trunk")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("one\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "add a")
+    git("mv", "pkg/a.py", "pkg/b.py")
+    git("commit", "-qm", "rename to b")
+    (tmp_path / "pkg" / "b.py").write_text("one\ntwo\n", encoding="utf-8")
+    git("commit", "-qam", "extend b")
+
+    log = hubfiles.git_log(tmp_path / "pkg", "b.py")
+    assert [commit["subject"] for commit in log["commits"]] == ["extend b", "rename to b", "add a"]
+    assert [commit["path"] for commit in log["commits"]] == ["b.py", "b.py", "a.py"]
+    latest = log["commits"][0]
+    diff = hubfiles.git_diff(tmp_path / "pkg", latest["path"], latest["hash"])
+    assert (diff["status"], diff["old"], diff["new"]) == ("modified", "one\n", "one\ntwo\n")
+    first = hubfiles.git_diff(tmp_path / "pkg", "a.py", log["commits"][-1]["short"])
+    assert (first["status"], first["new"]) == ("added", "one\n")
+    with pytest.raises(hubfiles.WorkspaceError):
+        hubfiles.git_diff(tmp_path / "pkg", "b.py", "HEAD; rm -rf /")
+    with pytest.raises(hubfiles.WorkspaceError):
+        hubfiles.git_log(tmp_path / "pkg", "../outside.py")
+
+
+def test_download_endpoint_serves_workspace_files_as_attachments(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "page.html").write_text("<script>alert(1)</script>", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("nope", encoding="utf-8")
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(workspace))
+    with TestClient(hub.app) as client:
+        assert client.get("/api/sessions/s1/download", params={"path": "page.html"}).status_code == 403
+        login(client)
+        response = client.get("/api/sessions/s1/download", params={"path": "page.html"})
+        assert response.status_code == 200
+        assert response.content == b"<script>alert(1)</script>"
+        assert response.headers["content-type"] == "application/octet-stream"
+        assert response.headers["content-disposition"].startswith("attachment")
+        assert "sandbox" in response.headers["content-security-policy"]
+        assert client.get("/api/sessions/s1/download", params={"path": "../secret.txt"}).status_code == 403
+        assert client.get("/api/sessions/s1/download", params={"path": ""}).status_code == 400
 
 
 def test_git_changes_keeps_repo_when_status_fails_or_times_out(tmp_path, monkeypatch):
