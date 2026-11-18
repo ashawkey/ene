@@ -5,7 +5,7 @@ import { browseDirectories, conversations, createSession, errorMessage, recentWo
 import { basename } from '../lib/format'
 import type { ConversationSummary, FsListing, SessionOptions, SessionSummary } from '../lib/protocol'
 import { store } from '../lib/storage'
-import { IconButton, Modal, Spinner } from './ui'
+import { IconButton, LoadingHint, Modal, Spinner } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 
 const LAST = 'ene.new.last'
@@ -73,9 +73,11 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
   const [persona, setPersona] = useState(last.persona ?? '')
   const [effort, setEffort] = useState(last.reasoning_effort ?? '')
   const [resume, setResume] = useState('')
-  const [recents, setRecents] = useState<string[]>([])
+  const [recents, setRecents] = useState<string[] | null>(null)
   const [options, setOptions] = useState<SessionOptions | null>(null)
   const [saved, setSaved] = useState<ConversationSummary[]>([])
+  // Requests for the typed folder's options and conversations still running.
+  const [checking, setChecking] = useState(0)
   const [browsing, setBrowsing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -95,6 +97,8 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
     setResume('')
     if (!cwd.startsWith('/') && !cwd.startsWith('~') && !/^[A-Za-z]:[\\/]/.test(cwd)) return
     let cancelled = false
+    setChecking(2)
+    const done = () => !cancelled && setChecking((value) => Math.max(0, value - 1))
     const timer = window.setTimeout(() => {
       sessionOptions(cwd)
         .then((data) => {
@@ -104,13 +108,16 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
           setPersona((current) => (current && data.personas.includes(current) ? current : ''))
         })
         .catch(() => !cancelled && setOptions(null))
+        .finally(done)
       conversations(cwd)
         .then((list) => !cancelled && setSaved(list))
         .catch(() => !cancelled && setSaved([]))
+        .finally(done)
     }, 250)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      setChecking(0)
     }
   }, [cwd])
 
@@ -160,7 +167,8 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
           </div>
         </label>
         {browsing ? <DirectoryPicker path={cwd} onPick={(path) => { setCwd(path); setBrowsing(false) }} /> : null}
-        {recents.length ? (
+        {recents === null ? <LoadingHint className="recents">Loading recent folders…</LoadingHint> : null}
+        {recents?.length ? (
           <div className="recents">
             {recents.slice(0, 8).map((path) => (
               <button type="button" key={path} className={`chip ${path === cwd ? 'selected' : ''}`} onClick={() => setCwd(path)} data-tip={path}>
@@ -176,7 +184,7 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
             <input {...NO_AUTOFILL} value={name} onChange={(event) => setName(event.target.value)} placeholder="optional" />
           </label>
           <label className="field">
-            <span className="field-label"><Cpu size={14} />Model</span>
+            <span className="field-label"><Cpu size={14} />Model{checking ? <span className="field-note"><Spinner size={11} />loading…</span> : null}</span>
             <select value={model} onChange={(event) => setModel(event.target.value)}>
               {(options?.models ?? (model ? [model] : [])).map((item) => <option key={item} value={item}>{item}</option>)}
               {!options?.models.length ? <option value="">default</option> : null}
@@ -199,7 +207,7 @@ export function NewSessionDialog({ onClose, onCreated }: { onClose: () => void; 
         </div>
 
         <label className="field">
-          <span className="field-label"><History size={14} />Resume</span>
+          <span className="field-label"><History size={14} />Resume{checking ? <span className="field-note"><Spinner size={11} />loading…</span> : null}</span>
           <select value={resume} onChange={(event) => setResume(event.target.value)}>
             <option value="">New conversation</option>
             {saved.map((item) => (

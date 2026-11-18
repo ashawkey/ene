@@ -40,6 +40,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  Fragment,
   memo,
   useCallback,
   useDeferredValue,
@@ -63,7 +64,7 @@ import { ContextMenu, type MenuEntry, useContextMenu } from './ContextMenu'
 import { CopyButton, Markdown } from './Markdown'
 import { Highlighted, TextSearch } from './Search'
 import { SplitDiff } from './SplitDiff'
-import { Empty, IconButton, Modal, Spinner, copyText } from './ui'
+import { Empty, IconButton, LoadingHint, Modal, Spinner, copyText } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i
@@ -257,7 +258,9 @@ export const FileBrowser = memo(function FileBrowser({
 }) {
   const [path, setPath] = useState(() => store.get(`ene.files.${sessionId}`) ?? '')
   const [listing, setListing] = useState<DirListing | null>(null)
-  const [changes, setChanges] = useState<GitChanges | null>(null)
+  // Git status and the session it answers; kept while a refresh runs.
+  const [changeState, setChangeState] = useState<{ session: string; data: GitChanges | null; error: string } | null>(null)
+  const [changesLoading, setChangesLoading] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showHidden, setShowHidden] = useState(() => store.get('ene.files.hidden') === '1')
@@ -334,9 +337,11 @@ export const FileBrowser = memo(function FileBrowser({
 
   useEffect(() => {
     let cancelled = false
+    setChangesLoading(true)
     listChanges(sessionId)
-      .then((data) => !cancelled && setChanges(data))
-      .catch(() => !cancelled && setChanges(null))
+      .then((data) => !cancelled && setChangeState({ session: sessionId, data, error: '' }))
+      .catch((exc) => !cancelled && setChangeState({ session: sessionId, data: null, error: errorMessage(exc, 'Could not load changes.') }))
+      .finally(() => !cancelled && setChangesLoading(false))
     return () => {
       cancelled = true
     }
@@ -346,6 +351,9 @@ export const FileBrowser = memo(function FileBrowser({
     store.set(`ene.files.open.${sessionId}`, open.size ? JSON.stringify([...open].slice(-MAX_REMEMBERED_OPEN)) : null)
   }, [sessionId, open])
 
+  const current = changeState?.session === sessionId ? changeState : null
+  const changes = current?.data ?? null
+  const changesError = changes?.error || current?.error || ''
   const root = listing?.path ?? null
   const generation = `${tick}:${refreshKey}`
   // Open folders shown under the current root: every folder between them open too.
@@ -605,20 +613,19 @@ export const FileBrowser = memo(function FileBrowser({
           <button type="button" role="tab" aria-selected={mode === 'browse'} aria-label="Files" className={mode === 'browse' ? 'on' : ''} onClick={() => setMode('browse')}>
             <FolderTree size={14} /><span className="tab-label">Files</span>
           </button>
-          {changes?.git ? (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'changes'}
-              aria-label={`Changes${changeCount ? ` (${changeCount})` : ''}`}
-              className={mode === 'changes' ? 'on' : ''}
-              data-tip={`Changed files${changes.branch ? ` on ${changes.branch}` : ''}`}
-              onClick={() => setMode('changes')}
-            >
-              <GitBranch size={14} /><span className="tab-label">Changes</span>
-              {changeCount ? <span className="tab-count">{changeCount}</span> : null}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'changes'}
+            aria-label={`Changes${changeCount ? ` (${changeCount})` : ''}`}
+            aria-busy={changesLoading || undefined}
+            className={mode === 'changes' ? 'on' : ''}
+            data-tip={changesLoading ? 'Running git status…' : `Changed files${changes?.branch ? ` on ${changes.branch}` : ''}`}
+            onClick={() => setMode('changes')}
+          >
+            <GitBranch size={14} /><span className="tab-label">Changes</span>
+            {changesLoading && !current ? <Spinner size={12} /> : changeCount ? <span className="tab-count">{changeCount}</span> : null}
+          </button>
           <button
             type="button"
             role="tab"
@@ -657,7 +664,7 @@ export const FileBrowser = memo(function FileBrowser({
             setShowHidden(!showHidden)
           }}
         />
-        <IconButton icon={RefreshCw} size="sm" label="Refresh" busy={loading} onClick={() => setTick(tick + 1)} />
+        <IconButton icon={RefreshCw} size="sm" label="Refresh" busy={loading || changesLoading} onClick={() => setTick(tick + 1)} />
       </div>
       {mode === 'browse' && crumbs.length ? (
         <div className="crumbs" role="navigation" aria-label="Folder path">
@@ -713,8 +720,10 @@ export const FileBrowser = memo(function FileBrowser({
       ) : mode === 'changes' ? (
         <div className="file-list" ref={list} onKeyDown={(event) => onTreeKey(event, toggle)}>
           {branchInfo}
-          {changes?.error ? <div className="panel-error">{changes.error}</div> : null}
-          {changeCount === 0 && !changes?.error ? <Empty icon={GitBranch}>Working tree clean.</Empty> : null}
+          {changesLoading && !current ? <LoadingHint>Running git status…</LoadingHint> : null}
+          {changesError ? <div className="panel-error">{changesError}</div> : null}
+          {changes && !changes.git && !changesError ? <Empty icon={GitBranch}>Not a git repository.</Empty> : null}
+          {changes?.git && changeCount === 0 && !changesError ? <Empty icon={GitBranch}>Working tree clean.</Empty> : null}
           {changeGroups.map((group) => (
             <div key={group.label} role="group" aria-label={group.label}>
               <div className="list-caption">{group.label}<span className="count">{group.items.length}</span></div>
@@ -761,7 +770,7 @@ export const FileBrowser = memo(function FileBrowser({
             const status = isDir ? undefined : changeMap.get(full)?.status
             const dirty = isDir && dirtyDirs.has(full)
             const expanded = isDir && !needle ? open.has(full) : undefined
-            return (
+            const row = (
               <FileItem
                 key={full}
                 path={isDir ? `${full}/` : full}
@@ -783,6 +792,13 @@ export const FileBrowser = memo(function FileBrowser({
                 {dirty ? <span className="dirty-dot" data-tip="Contains changes" /> : null}
                 {isDir ? null : <span className="file-size">{bytes(entry.size)}</span>}
               </FileItem>
+            )
+            // A fragment either way, so the row is not remounted when the hint goes.
+            return (
+              <Fragment key={full}>
+                {row}
+                {expanded && !children[full] ? <LoadingHint indent={(depth + 1) * 14}>Loading…</LoadingHint> : null}
+              </Fragment>
             )
           })}
           {needle && workspaceHits.length ? <div className="list-caption">Workspace</div> : null}
@@ -817,7 +833,7 @@ export const FileBrowser = memo(function FileBrowser({
             : null}
           {needle && found?.truncated ? <div className="list-caption">Showing the best {found.results.length} workspace matches.</div> : null}
           {listing?.truncated ? <div className="list-caption">Showing the first 2000 entries.</div> : null}
-          {!listing && loading ? <div className="center-pad"><Spinner /></div> : null}
+          {!listing && loading ? <LoadingHint>Loading files…</LoadingHint> : null}
         </div>
       )}
       {menu ? <ContextMenu menu={menu} onClose={closeMenu} /> : null}

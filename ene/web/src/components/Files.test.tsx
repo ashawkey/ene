@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, fileDiff, fileLog, findFiles, listChanges, listFiles, readFile } from '../lib/api'
-import type { DirEntry, DirListing, GitChange } from '../lib/protocol'
+import type { DirEntry, DirListing, GitChange, GitChanges } from '../lib/protocol'
 import { FileBrowser, FileViewer } from './Files'
 import { Toasts, copyText } from './ui'
 
@@ -164,6 +164,33 @@ describe('file browser', () => {
     expect(group('Untracked').getByText('+7')).toBeInTheDocument()
     expect(screen.getByText('↑2')).toBeInTheDocument()
     expect(screen.queryByText(/↓/)).toBeNull()
+  })
+
+  it('notes a folder that is still listing under its row', async () => {
+    serveFolders()
+    let resolve: (value: DirListing) => void = () => {}
+    const served = vi.mocked(listFiles).getMockImplementation()!
+    vi.mocked(listFiles).mockImplementation((session, path) => (
+      path === 'src' ? new Promise<DirListing>((done) => { resolve = done }) : served(session, path)
+    ))
+    render(<Browser />)
+    fireEvent.click(await screen.findByText('src'))
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    await act(async () => resolve(FOLDERS.src))
+    expect(screen.queryByText('Loading…')).toBeNull()
+    expect(screen.getByText('main.py')).toBeInTheDocument()
+  })
+
+  it('shows the Changes tab while git status is still running', async () => {
+    serveFolders()
+    let resolve: (value: GitChanges) => void = () => {}
+    vi.mocked(listChanges).mockReturnValue(new Promise<GitChanges>((done) => { resolve = done }))
+    render(<Browser />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Changes' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Running git status…')
+    await act(async () => resolve({ git: true, branch: 'main', changes: [] }))
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByText('Working tree clean.')).toBeInTheDocument()
   })
 
   it('opens the first match for the query typed when Enter is pressed', async () => {

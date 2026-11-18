@@ -31,6 +31,19 @@ afterEach(() => {
 })
 
 describe('new session dialog', () => {
+  it('notes recent folders and folder options while they load', async () => {
+    let resolve: (list: string[]) => void = () => {}
+    vi.mocked(recentWorkspaces).mockReturnValue(new Promise<string[]>((done) => { resolve = done }))
+    render(<NewSessionDialog onClose={() => {}} onCreated={() => {}} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Loading recent folders…')
+    await act(async () => resolve([]))
+    expect(screen.queryByRole('status')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText('/path/to/project'), { target: { value: '/a' } })
+    expect(screen.getAllByText('loading…')).toHaveLength(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.queryByText('loading…')).toBeNull()
+  })
+
   it('resumes the conversation picked for the working directory', async () => {
     render(<NewSessionDialog onClose={() => {}} onCreated={() => {}} />)
     fireEvent.change(screen.getByPlaceholderText('/path/to/project'), { target: { value: '/a' } })

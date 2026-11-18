@@ -207,6 +207,7 @@ a { color: var(--accent); }
 em.fail { font-style: normal; }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.loading-hint { display: flex; align-items: center; gap: 7px; padding: 8px 14px; color: var(--text-3); font-size: 12.5px; }
 .center-pad { display: grid; place-items: center; padding: 28px; color: var(--text-3); }
 .kbd { font-family: var(--mono); font-size: 10.5px; border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; }
 
@@ -1005,6 +1006,8 @@ button.step-head:hover { background: var(--hover); }
   text-align: left;
   font-size: 13px;
 }
+.suggestions .loading-hint { padding: 7px 10px; }
+.suggestions .s-none { padding: 7px 10px; color: var(--text-3); font-size: 12.5px; }
 .suggestions button.selected { background: var(--accent-soft); color: var(--text); }
 .s-label { flex: none; font-family: var(--mono); font-size: 12.5px; color: var(--text); }
 .s-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
@@ -1182,6 +1185,7 @@ button.step-head:hover { background: var(--hover); }
 .modal form { padding-bottom: 16px; }
 .field { display: flex; flex-direction: column; gap: 5px; padding: 8px 20px 0; min-width: 0; }
 .field-label { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.field-note { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--text-3); font-weight: 400; }
 .field input, .field select {
   width: 100%;
   height: 38px;

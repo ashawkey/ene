@@ -217,6 +217,16 @@ export function useNow(active: boolean, interval = 1000) {
   return now
 }
 
+/** Inline "still loading" note, shown in place of content that has not arrived. */
+export function LoadingHint({ children, className = '', indent }: { children: ReactNode; className?: string; indent?: number }) {
+  return (
+    <div className={`loading-hint ${className}`} role="status" style={indent ? { paddingLeft: indent } : undefined}>
+      <Spinner size={12} />
+      <span>{children}</span>
+    </div>
+  )
+}
+
 export function Empty({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
   return (
     <div className="empty">

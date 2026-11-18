@@ -22,7 +22,7 @@ import { compactNumber, duration, latency, tokenRate } from '../lib/format'
 import type { LiveIndicator } from '../lib/session'
 import type { PendingMessage } from '../lib/protocol'
 import type { OutboxEntry } from '../lib/useSession'
-import { IconButton, Spinner, useNow } from './ui'
+import { IconButton, LoadingHint, Spinner, useNow } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 import { caretRows, lineBounds } from '../lib/caret'
 import { QueryCache, narrowMatches } from '../lib/search'
@@ -193,6 +193,13 @@ export function Composer({
 
   useEffect(() => setIndex(0), [suggestions.length, commandQuery, pathQuery])
 
+  // While an @ query is in flight, or after it found nothing, keep the popup
+  // open with a note instead of showing it only once results arrive.
+  const pathOpen = pathQuery !== null && commandQuery === null && dismissed !== draft
+  const pathAnswered = paths.session === sessionId && paths.query === pathQuery
+  const pathNote = !pathOpen ? null : !pathAnswered ? 'searching' : paths.items.length ? null : 'none'
+  const popup = suggestions.length > 0 || pathNote !== null
+
   const setText = useCallback((text: string, caret = text.length) => {
     onDraft(text)
     setCursor(caret)
@@ -287,11 +294,11 @@ export function Composer({
         apply(suggestions[Math.min(index, suggestions.length - 1)])
         return
       }
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setDismissed(draft)
-        return
-      }
+    }
+    if (popup && event.key === 'Escape') {
+      event.preventDefault()
+      setDismissed(draft)
+      return
     }
     if (event.key === 'Escape' && busy) {
       event.preventDefault()
@@ -359,7 +366,7 @@ export function Composer({
         </div>
       ) : null}
       <div className={`composer glass ${connected ? '' : 'offline'}`}>
-        {suggestions.length ? (
+        {popup ? (
           <div className="suggestions" role="listbox" id={`suggest-${sessionId}`}>
             {suggestions.map((item, position) => (
               <button
@@ -380,6 +387,8 @@ export function Composer({
                 {position === index ? <CornerDownLeft size={12} className="s-enter" /> : null}
               </button>
             ))}
+            {pathNote === 'searching' ? <LoadingHint>Searching files…</LoadingHint> : null}
+            {pathNote === 'none' ? <div className="s-none">No matching files.</div> : null}
           </div>
         ) : null}
         <textarea
@@ -393,8 +402,8 @@ export function Composer({
               : (busy ? 'Queue a follow-up…' : 'Message ene  ·  / commands  ·  @ files  ·  ! shell')
           }
           aria-label="Message"
-          aria-controls={suggestions.length ? `suggest-${sessionId}` : undefined}
-          aria-expanded={suggestions.length > 0}
+          aria-controls={popup ? `suggest-${sessionId}` : undefined}
+          aria-expanded={popup}
           onChange={(event) => {
             onDraft(event.target.value)
             setCursor(event.target.selectionStart ?? event.target.value.length)

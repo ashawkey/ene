@@ -81,6 +81,33 @@ describe('composer completion', () => {
   })
 })
 
+describe('composer file lookup notes', () => {
+  it('opens the popup with a note while files are searched, then lists them', async () => {
+    let resolve: (items: string[]) => void = () => {}
+    vi.mocked(pathCompletions).mockReturnValue(new Promise<string[]>((done) => { resolve = done }))
+    render(<Input />)
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    // A query no earlier test cached.
+    fireEvent.change(field, { target: { value: '@en' } })
+    expect(screen.getByRole('status')).toHaveTextContent('Searching files…')
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    await act(async () => resolve(['@ene/']))
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('option', { name: 'ene/' })).toBeInTheDocument()
+  })
+
+  it('says when nothing matches, and Escape closes the note', async () => {
+    vi.mocked(pathCompletions).mockResolvedValue([])
+    render(<Input />)
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(field, { target: { value: '@zzz' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(screen.getByText('No matching files.')).toBeInTheDocument()
+    fireEvent.keyDown(field, { key: 'Escape' })
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+})
+
 describe('composer status strip', () => {
   it('shows running background processes while idle', () => {
     const onProcesses = vi.fn()
