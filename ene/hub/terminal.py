@@ -4,7 +4,9 @@ The hub runs on the same machine as its workers, so a browser terminal is a
 local pseudo-terminal running the user's login shell in the session workspace.
 Each :class:`Terminal` is owned by the hub, not by a browser connection:
 closing the panel or reloading the page keeps the shell alive, and a new
-connection first replays the retained scrollback.
+connection first replays the retained scrollback, preceded by the terminal
+modes (alternate screen, cursor keys, mouse, bracketed paste) that were in
+effect where the retained window starts.
 
 POSIX only; :data:`SUPPORTED` is false elsewhere and creation is refused.
 """
@@ -12,6 +14,7 @@ POSIX only; :data:`SUPPORTED` is false elsewhere and creation is refused.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import select
 import signal
@@ -38,6 +41,55 @@ DEFAULT_COLS, DEFAULT_ROWS = 80, 24
 # Input a program has not read yet (a busy full-screen app, a hung ssh) waits
 # here once the pty's own buffer is full; beyond this it is dropped.
 MAX_PENDING_INPUT = 1024 * 1024
+
+# DEC private modes whose state is carried past the scrollback cut: without
+# them a replay that no longer holds the switching sequence would draw a
+# full-screen program on the main screen, or send it the wrong key codes.
+# Value: the mode's power-on state.
+TRACKED_MODES = {
+    1: False,     # application cursor keys
+    25: True,     # cursor visible
+    47: False,    # alternate screen (legacy)
+    1000: False,  # mouse: clicks
+    1002: False,  # mouse: drags
+    1003: False,  # mouse: all motion
+    1004: False,  # focus events
+    1006: False,  # mouse: SGR encoding
+    1047: False,  # alternate screen
+    1049: False,  # alternate screen, saving the cursor
+    2004: False,  # bracketed paste
+}
+_MODE_SEQUENCE = re.compile(rb"\x1b\[\?([0-9;]+)([hl])")
+
+# Variables describing the terminal the hub was started from. Inherited, they
+# would make tmux refuse to nest, or programs that probe the terminal (Claude
+# Code, Codex, editors) enable features xterm.js lacks.
+INHERITED_TERMINAL_PREFIXES = (
+    "TERM_",            # TERM_PROGRAM, TERM_PROGRAM_VERSION, TERM_SESSION_ID
+    "TMUX",             # TMUX, TMUX_PANE
+    "ITERM_",
+    "KITTY_",
+    "WEZTERM_",
+    "GHOSTTY_",
+    "ALACRITTY_",
+    "KONSOLE_",
+    "GNOME_TERMINAL_",
+    "VTE_",
+    "WT_",              # Windows Terminal
+)
+INHERITED_TERMINAL_NAMES = {
+    "STY",              # GNU screen
+    "WINDOWID",
+    "COLORFGBG",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "TERMINAL_EMULATOR",
+    "CLAUDECODE",       # set inside Claude Code; `claude` refuses to nest
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+}
+ALTERNATE_SCREEN_MODES = (47, 1047, 1049)
 
 # A subscriber receives ("data", bytes) and finally ("exit", exit_code).
 Subscriber = Callable[[str, object], None]
@@ -77,6 +129,38 @@ def _set_size(fd: int, cols: int, rows: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def shell_environment(base: dict[str, str]) -> dict[str, str]:
+    """The environment for a browser shell: *base* without the hub's own
+    terminal identity, describing xterm.js instead."""
+    env = {
+        key: value
+        for key, value in base.items()
+        if key not in INHERITED_TERMINAL_NAMES
+        and not key.startswith(INHERITED_TERMINAL_PREFIXES)
+        and key not in ("COLUMNS", "LINES")
+    }
+    env.update({"TERM": "xterm-256color", "COLORTERM": "truecolor"})
+    return env
+
+
+def apply_modes(modes: dict[int, bool], data: bytes | bytearray) -> None:
+    """Update *modes* with the tracked mode switches found in *data*."""
+    for match in _MODE_SEQUENCE.finditer(data):
+        enable = match.group(2) == b"h"
+        for part in match.group(1).split(b";"):
+            if part.isdigit() and int(part) in TRACKED_MODES:
+                modes[int(part)] = enable
+
+
+def mode_prefix(modes: dict[int, bool]) -> bytes:
+    """Escape sequences that restore *modes* on a freshly reset terminal."""
+    return b"".join(
+        b"\x1b[?%d%s" % (mode, b"h" if on else b"l")
+        for mode, on in sorted(modes.items())
+        if on != TRACKED_MODES[mode]
+    )
+
+
 class Terminal:
     """One shell on a pseudo-terminal, with scrollback and live subscribers."""
 
@@ -89,6 +173,8 @@ class Terminal:
         self.exit_code: int | None = None
         self.cols, self.rows = cols, rows
         self._scrollback = bytearray()
+        # Tracked modes in effect where the retained scrollback starts.
+        self._base_modes: dict[int, bool] = {}
         self._subscribers: set[Subscriber] = set()
         self._lock = threading.Lock()
         # Guards the master fd for writers: input, resizes, and the final close.
@@ -99,10 +185,7 @@ class Terminal:
         self._done = threading.Event()
 
         shell = _shell()
-        env = dict(os.environ)
-        env.update({"TERM": "xterm-256color", "COLORTERM": "truecolor"})
-        env.pop("COLUMNS", None)
-        env.pop("LINES", None)
+        env = shell_environment(dict(os.environ))
         master, slave = os.openpty()
         try:
             _set_size(master, cols, rows)
@@ -149,14 +232,23 @@ class Terminal:
         }
 
     def subscribe(self, callback: Subscriber) -> tuple[bytes, bool]:
-        """Register *callback*; return the scrollback so far and liveness.
+        """Register *callback*; return the replay so far and liveness.
 
-        Atomic with the reader, so the subscriber sees every byte exactly once.
+        The replay is the retained scrollback, prefixed with the modes that
+        were in effect where it starts. Atomic with the reader, so the
+        subscriber sees every byte exactly once.
         """
         with self._lock:
             if self.alive:
                 self._subscribers.add(callback)
-            return bytes(self._scrollback), self.alive
+            return mode_prefix(self._base_modes) + bytes(self._scrollback), self.alive
+
+    def alternate_screen(self) -> bool:
+        """True while the output so far leaves the alternate screen active."""
+        with self._lock:
+            modes = dict(self._base_modes)
+            apply_modes(modes, self._scrollback)
+        return any(modes.get(mode) for mode in ALTERNATE_SCREEN_MODES)
 
     def unsubscribe(self, callback: Subscriber) -> None:
         with self._lock:
@@ -232,6 +324,26 @@ class Terminal:
             except OSError:
                 pass
 
+    def nudge(self, shifted: bool) -> None:
+        """Shift the pty a row off its size, or (``shifted=False``) restore it.
+
+        A full-screen program repaints itself on the resulting SIGWINCH, which
+        repairs what a partial scrollback replay could not draw. The recorded
+        size never changes, so a real resize in between is never undone.
+        """
+        if not self.alive:
+            return
+        rows = self.rows
+        if shifted:
+            rows = rows - 1 if rows > MIN_SIZE else rows + 1
+        with self._write_lock:
+            if self._fd_closed:
+                return
+            try:
+                _set_size(self.master, self.cols, rows)
+            except OSError:
+                pass
+
     def close(self) -> None:
         """Hang up the shell's process group; the reader escalates to SIGKILL."""
         if not self.alive or self._closing_at is not None:
@@ -258,6 +370,7 @@ class Terminal:
                 # Cut at a line boundary so replay does not start mid-sequence.
                 newline = self._scrollback.find(b"\n", excess)
                 cut = newline + 1 if 0 <= newline < excess + 4096 else excess
+                apply_modes(self._base_modes, self._scrollback[:cut])
                 del self._scrollback[:cut]
             subscribers = list(self._subscribers)
         for callback in subscribers:

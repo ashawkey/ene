@@ -166,10 +166,16 @@ Right-click a row, press the context-menu key, or click the `…` button that ap
 The **Terminal** panel runs your login shell (`$SHELL -l`) on a pseudo-terminal, starting in the session workspace.
 
 - **New:** **+** in the terminal tab bar; each tab is a separate shell. Close a tab with its **×**. **Open in terminal** in the [file actions](#file-actions) starts one in a workspace folder.
-- **Persistence:** shells belong to the hub, not the browser. Closing the panel, switching sessions, or reloading keeps them running; reopening replays the last 256 KB of output.
+- **Persistence:** shells belong to the hub, not the browser. Closing the panel, switching sessions, reloading, or signing in again keeps them running.
+- **Reconnecting:** replays the last 256 KB of output and restores terminal modes such as the alternate screen. A full-screen program (tmux, vim) is briefly resized so it redraws; inline ones (Claude Code, Codex) are not.
+- **Tabs:** every open tab stays connected, so switching tabs is instant.
 - **Exit:** an exited shell shows its exit code; **Restart** replaces it with a new shell.
 - **Lifetime:** detaching or ending the session, the worker exiting, or stopping the hub closes its shells.
 - **Keys:** a focused terminal receives every key, including the page shortcuts below. On macOS, **⌘←** / **⌘→** jump to the line's start / end and **⌘⌫** deletes to its start.
+- **New lines:** **Shift+Enter** sends Ctrl+J, a new line in Claude Code and Codex prompts.
+- **Browser keys:** browsers keep **Ctrl+W**, **Ctrl+T**, and **Ctrl+N**. Closing the page from a focused terminal asks first.
+- **Copy and links:** programs can copy to the clipboard with OSC 52 (tmux `set-clipboard`, editors); clipboard reads are refused. URLs open in a new tab when clicked.
+- **Environment:** `TERM=xterm-256color`. Variables naming the hub's own terminal (`TMUX`, `TERM_PROGRAM`, `CLAUDECODE`, …) are removed, so tmux and Claude Code start normally.
 - **Resizing:** the shell is resized once, when a panel drag ends. Narrowing re-wraps lines at a shell prompt; while a program runs, lines are clipped instead so its redraw leaves no copies, and widening restores them.
 - **Limits:** 8 shells per session, 32 per hub.
 - **Typing ahead:** input that a busy program has not read yet waits for it, up to 1 MB.

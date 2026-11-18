@@ -1,4 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -8,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { closeTerminal, createTerminal, errorMessage, listTerminals, terminalSocketUrl } from '../lib/api'
 import type { TerminalInfo } from '../lib/protocol'
 import { store } from '../lib/storage'
-import { lineEditSequence, TerminalSocket, type TerminalLinkStatus } from '../lib/terminalSocket'
+import { inTerminal, keySequence, osc52Text, TerminalSocket, type TerminalLinkStatus } from '../lib/terminalSocket'
 import { toast } from '../lib/toast'
 import { Empty, IconButton, Spinner } from './ui'
 
@@ -81,16 +83,27 @@ function watchTheme(apply: () => void) {
 
 const binaryString = (data: string) => Uint8Array.from(data, (char) => char.charCodeAt(0) & 0xff)
 
+/**
+ * One terminal, mounted for as long as its tab exists. Inactive views stay
+ * connected but hidden, so switching tabs only shows them: no new socket, no
+ * scrollback replay, and xterm pauses rendering while they are hidden.
+ */
 function TerminalView({
   sessionId,
   terminal,
+  active,
   onExit,
 }: {
   sessionId: string
   terminal: TerminalInfo
+  active: boolean
   onExit: () => void
 }) {
   const host = useRef<HTMLDivElement>(null)
+  // Set while mounted: refit to the (possibly changed) panel size and focus.
+  const show = useRef<(() => void) | null>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
   const [status, setStatus] = useState<TerminalLinkStatus>('connecting')
   const [exitCode, setExitCode] = useState<number | null | undefined>(terminal.alive ? undefined : terminal.exit_code)
   const exitRef = useRef(onExit)
@@ -100,7 +113,8 @@ function TerminalView({
     const element = host.current
     if (!element) return
     const term = new XTerm({
-      allowProposedApi: false,
+      // The Unicode 11 width table is a proposed API.
+      allowProposedApi: true,
       convertEol: false,
       cursorBlink: true,
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--mono').trim() || 'monospace',
@@ -111,6 +125,11 @@ function TerminalView({
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
+    // Emoji and other wide characters take the widths current programs
+    // assume; the default Unicode 6 table misplaces the cursor after them.
+    term.loadAddon(new Unicode11Addon())
+    term.unicode.activeVersion = '11'
+    term.loadAddon(new WebLinksAddon())
     term.open(element)
     // GPU rendering keeps typing and output responsive; xterm falls back to
     // its DOM renderer when WebGL is unavailable or its context is lost.
@@ -122,10 +141,27 @@ function TerminalView({
       // keep the DOM renderer
     }
     let programRunning = false
+    // While a connection's scrollback replays, xterm re-answers the terminal
+    // queries in it (cursor position, device attributes) and re-runs its
+    // clipboard writes. Those answers would reach the shell as typed input,
+    // so input is dropped until the replay is parsed. A counter keeps a late
+    // callback from an earlier connection from ending a newer replay.
+    let replaying = true
+    let connection = 0
     const socket = new TerminalSocket({
       url: terminalSocketUrl(sessionId, terminal.id),
       onData: (data) => term.write(data),
-      onReconnect: () => term.reset(),
+      onReconnect: () => {
+        connection += 1
+        replaying = true
+        term.reset()
+      },
+      onReplayed: () => {
+        const current = connection
+        term.write('', () => {
+          if (current === connection) replaying = false
+        })
+      },
       onExit: (code) => {
         setExitCode(code)
         term.write(`\r\n\x1b[2m[process exited${code === null ? '' : ` with code ${code}`}]\x1b[0m\r\n`)
@@ -160,31 +196,52 @@ function TerminalView({
     // Glyph metrics can change once the monospace font finishes loading.
     document.fonts?.ready.then(scheduleRefit).catch(() => {})
     term.attachCustomKeyEventHandler((event) => {
-      const sequence = lineEditSequence(event)
+      const sequence = keySequence(event)
       if (sequence === null) return true
       event.preventDefault()
-      socket.input(sequence)
+      if (sequence && !replaying) socket.input(sequence)
       return false
     })
-    const data = term.onData((input) => socket.input(input))
-    const binary = term.onBinary((input) => socket.input(binaryString(input)))
+    const data = term.onData((input) => {
+      if (!replaying) socket.input(input)
+    })
+    const binary = term.onBinary((input) => {
+      if (!replaying) socket.input(binaryString(input))
+    })
+    // OSC 52: programs (tmux, editors) copy to the browser clipboard. Reads
+    // are swallowed unanswered. Browsers may refuse writes without focus.
+    const clipboard = term.parser.registerOscHandler(52, (payload) => {
+      const text = osc52Text(payload)
+      if (text !== null && !replaying) navigator.clipboard?.writeText(text).catch(() => {})
+      return true
+    })
     const stopTheme = watchTheme(() => {
       term.options.theme = terminalTheme()
     })
-    term.focus()
+    show.current = () => {
+      refit()
+      term.focus()
+    }
+    if (activeRef.current) term.focus()
     return () => {
+      show.current = null
       window.clearTimeout(timer)
       observer.disconnect()
       stopTheme()
       data.dispose()
       binary.dispose()
+      clipboard.dispose()
       socket.dispose()
       term.dispose()
     }
   }, [sessionId, terminal.id])
 
+  useEffect(() => {
+    if (active) show.current?.()
+  }, [active])
+
   return (
-    <div className="term-view">
+    <div className="term-view" hidden={!active} role="tabpanel" aria-label={terminal.title}>
       <div className="term-host" ref={host} />
       {status === 'reconnecting' && exitCode === undefined ? (
         <div className="term-status"><Spinner size={12} /> Reconnecting…</div>
@@ -227,6 +284,18 @@ export function TerminalPanel({
       (exc) => setError(errorMessage(exc, 'Could not list terminals.')),
     )
   }, [sessionId])
+
+  useEffect(() => {
+    // Browsers keep Ctrl+W (delete a word in a shell) and Ctrl+T/N for
+    // themselves; ask before closing the page from inside a terminal.
+    const guard = (event: BeforeUnloadEvent) => {
+      if (!inTerminal(document.activeElement)) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [])
 
   useEffect(() => {
     refresh()
@@ -300,7 +369,15 @@ export function TerminalPanel({
         <div className="empty"><Spinner /></div>
       ) : active ? (
         <>
-          <TerminalView key={active.id} sessionId={sessionId} terminal={active} onExit={refresh} />
+          {list.map((terminal) => (
+            <TerminalView
+              key={terminal.id}
+              sessionId={sessionId}
+              terminal={terminal}
+              active={terminal.id === active.id}
+              onExit={refresh}
+            />
+          ))}
           {active.alive ? null : (
             <div className="term-exited">
               <span className="muted small">

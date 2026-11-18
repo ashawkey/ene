@@ -121,6 +121,104 @@ def test_scrollback_is_bounded(tmp_path, monkeypatch):
         manager.close_all(timeout=5)
 
 
+def test_mode_tracking_and_prefix():
+    modes = {}
+    terminal_module.apply_modes(modes, b"\x1b[?1049h\x1b[?1;2004h\x1b[?25l\x1b[?7l\x1b[?1l")
+    assert modes == {1049: True, 1: False, 2004: True, 25: False}
+    # Only modes away from their power-on state are restored.
+    assert terminal_module.mode_prefix(modes) == b"\x1b[?25l\x1b[?1049h\x1b[?2004h"
+    assert terminal_module.mode_prefix({}) == b""
+
+
+def test_replay_restores_modes_switched_before_the_cut(tmp_path, monkeypatch):
+    monkeypatch.setattr(terminal_module, "SCROLLBACK_BYTES", 2048)
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path))
+    try:
+        terminal.subscribe(Collector())
+        terminal.write(
+            b"printf '\\033[?1049h\\033[?2004h'; "
+            b"i=0; while [ $i -lt 400 ]; do echo line-$i; i=$((i+1)); done; echo end\n"
+        )
+        assert wait_until(lambda: b"end" in terminal.subscribe(Collector())[0][-64:])
+        snapshot, _ = terminal.subscribe(Collector())
+        assert snapshot.startswith(b"\x1b[?1049h\x1b[?2004h")
+        assert b"line-0\r\n" not in snapshot
+    finally:
+        manager.close_all(timeout=5)
+
+
+def test_alternate_screen_follows_the_output(tmp_path):
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path))
+    try:
+        out = Collector()
+        terminal.subscribe(out)
+        terminal.write(b"printf '\\033[?1049hin-alt\\n'\n")
+        assert wait_until(lambda: b"in-alt\r\n" in out.data)
+        assert terminal.alternate_screen()
+        terminal.write(b"printf '\\033[?1049lback\\n'\n")
+        assert wait_until(lambda: b"back\r\n" in out.data)
+        assert not terminal.alternate_screen()
+    finally:
+        manager.close_all(timeout=5)
+
+
+def test_shell_environment_drops_the_hub_terminal_identity():
+    env = terminal_module.shell_environment({
+        "HOME": "/home/me",
+        "PATH": "/bin",
+        "TERM": "tmux-256color",
+        "TERM_PROGRAM": "iTerm.app",
+        "TMUX": "/tmp/tmux-1/default,1,0",
+        "TMUX_PANE": "%1",
+        "KITTY_WINDOW_ID": "3",
+        "CLAUDECODE": "1",
+        "COLUMNS": "80",
+        "TERMINFO": "/usr/share/terminfo",
+    })
+    assert env == {
+        "HOME": "/home/me",
+        "PATH": "/bin",
+        "TERMINFO": "/usr/share/terminfo",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+    }
+
+
+def test_shell_does_not_inherit_tmux(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1/default,1,0")
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path))
+    try:
+        out = Collector()
+        terminal.subscribe(out)
+        terminal.write(b"echo tmux=${TMUX-unset}\n")
+        assert wait_until(lambda: b"tmux=unset\r\n" in out.data)
+    finally:
+        manager.close_all(timeout=5)
+
+
+def test_nudge_shifts_the_size_without_forgetting_it(tmp_path):
+    manager = TerminalManager()
+    terminal = manager.create("s1", str(tmp_path), 80, 24)
+    try:
+        out = Collector()
+        terminal.subscribe(out)
+        terminal.nudge(True)
+        terminal.write(b"stty size; echo one\n")
+        assert wait_until(lambda: b"one\r\n" in out.data)
+        assert b"23 80" in out.data
+        # A real resize while shifted wins over the restore.
+        terminal.resize(100, 30)
+        terminal.nudge(False)
+        terminal.write(b"stty size; echo two\n")
+        assert wait_until(lambda: b"two\r\n" in out.data)
+        assert b"30 100" in out.data.split(b"one\r\n", 1)[1]
+    finally:
+        manager.close_all(timeout=5)
+
+
 def test_close_session_hangs_up_its_terminals_only(tmp_path):
     manager = TerminalManager()
     mine = manager.create("s1", str(tmp_path))
@@ -273,11 +371,12 @@ def test_terminal_websocket_round_trip_and_close(tmp_path):
 
             url = f"/api/sessions/s1/terminals/{created['id']}/ws"
             with client.websocket_connect(url, headers=ORIGIN) as sock:
-                # After any scrollback replay: the shell itself owns the terminal.
+                # After any scrollback replay: its end, then who owns the terminal.
                 message = sock.receive()
                 while message.get("bytes"):
                     message = sock.receive()
-                assert json.loads(message["text"]) == {"type": "foreground", "busy": False}
+                assert json.loads(message["text"]) == {"type": "replayed"}
+                assert sock.receive_json() == {"type": "foreground", "busy": False}
                 sock.send_json({"type": "ping"})
                 sock.send_json({"type": "resize", "cols": 70, "rows": 15})
                 sock.send_bytes(b"stty size; echo hello-$((6*7))\n")
@@ -299,6 +398,30 @@ def test_terminal_websocket_round_trip_and_close(tmp_path):
                 f"/api/sessions/s1/terminals/{created['id']}/close", json={}, headers=headers
             ).json() == {"ok": True}
             assert client.get("/api/sessions/s1/terminals").json()["terminals"] == []
+    finally:
+        hub.terminals.close_all(timeout=5)
+
+
+def test_terminal_websocket_reconnect_repaints_a_full_screen_program(tmp_path):
+    hub = make_hub(tmp_path)
+    try:
+        with TestClient(hub.app) as client:
+            headers = {"x-csrf-token": login(client)}
+            created = client.post(
+                "/api/sessions/s1/terminals", json={"cols": 80, "rows": 24}, headers=headers
+            ).json()["terminal"]
+            terminal = hub.terminals.get("s1", created["id"])
+            terminal.write(
+                b"sh -c 'trap \"echo winch-seen\" WINCH; printf \"\\033[?1049h\"; echo started; "
+                b"while :; do sleep 0.05; done'\n"
+            )
+            assert wait_until(terminal.foreground_busy)
+            assert wait_until(lambda: b"started\r\n" in terminal.subscribe(Collector())[0])
+            assert terminal.alternate_screen()
+            url = f"/api/sessions/s1/terminals/{created['id']}/ws"
+            with client.websocket_connect(url, headers=ORIGIN) as sock:
+                receive_until(sock, b"\nwinch-seen\r\n")
+                assert terminal.cols == 80 and terminal.rows == 24
     finally:
         hub.terminals.close_all(timeout=5)
 

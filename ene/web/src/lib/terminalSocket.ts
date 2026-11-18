@@ -11,6 +11,8 @@ export type TerminalSocketOptions = {
   onExit: (code: number | null) => void
   /** Whether a program other than the shell currently owns the terminal. */
   onForeground?: (busy: boolean) => void
+  /** The scrollback replay of this connection has been sent in full. */
+  onReplayed?: () => void
   onStatus: (status: TerminalLinkStatus) => void
 }
 
@@ -79,7 +81,9 @@ export class TerminalSocket {
       } catch {
         return
       }
-      if (message?.type === 'foreground') {
+      if (message?.type === 'replayed') {
+        this.options.onReplayed?.()
+      } else if (message?.type === 'foreground') {
         this.options.onForeground?.(message.busy === true)
       } else if (message?.type === 'exit') {
         this.exited = true
@@ -137,6 +141,38 @@ export class TerminalSocket {
 /** True for keyboard events aimed at a terminal, which must not trigger page shortcuts. */
 export const inTerminal = (target: EventTarget | null) =>
   target instanceof Element && target.closest('.xterm') !== null
+
+/**
+ * Input for keys xterm.js does not distinguish: ⌘ line editing (below) and
+ * Shift+Enter, which xterm.js sends as a plain Enter. Shift+Enter becomes a
+ * line feed (Ctrl+J): a new line in Claude Code and Codex prompts, and the
+ * same as Enter for a shell or most other programs.
+ */
+export function keySequence(event: Pick<KeyboardEvent, 'type' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>) {
+  if (isShiftEnter(event)) return event.type === 'keydown' ? '\n' : ''
+  return lineEditSequence(event)
+}
+
+const isShiftEnter = (event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>) =>
+  event.key === 'Enter' && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+
+/**
+ * The text an OSC 52 sequence (`Pc;Pd`) asks to put on the clipboard, or null
+ * for a read request, an empty payload, or malformed data. Reads are never answered: a program
+ * in the terminal must not see what the browser has copied.
+ */
+export function osc52Text(data: string): string | null {
+  const separator = data.indexOf(';')
+  if (separator < 0) return null
+  const payload = data.slice(separator + 1)
+  if (payload === '?' || payload === '') return null
+  try {
+    const bytes = Uint8Array.from(atob(payload), (char) => char.charCodeAt(0))
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return null
+  }
+}
 
 /**
  * Readline sequences for the ⌘ (Meta) line-editing shortcuts that macOS

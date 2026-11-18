@@ -1447,6 +1447,7 @@ button.step-head:hover { background: var(--hover); }
 .term-tab .icon-btn { width: 22px; height: 22px; opacity: 0.6; }
 .term-tab .icon-btn:hover { opacity: 1; }
 .term-view { position: relative; flex: 1; min-height: 0; margin: 0 8px 8px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--line); background: #fbfcfe; }
+.term-view[hidden] { display: none; }
 .term-host { position: absolute; inset: 6px 4px 4px 8px; }
 .term-host .xterm, .term-host .xterm-viewport { background: transparent !important; }
 .term-status { position: absolute; top: 8px; right: 10px; display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 8px; background: var(--glass-strong); color: var(--text-2); font-size: 12px; box-shadow: var(--shadow); }

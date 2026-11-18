@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chunkBytes, inTerminal, lineEditSequence, TerminalSocket } from './terminalSocket'
+import { chunkBytes, inTerminal, keySequence, lineEditSequence, osc52Text, TerminalSocket } from './terminalSocket'
 
 class FakeSocket {
   static instances: FakeSocket[] = []
@@ -38,13 +38,14 @@ afterEach(() => {
 })
 
 function connect() {
-  const events = { data: [] as Uint8Array[], exits: [] as Array<number | null>, statuses: [] as string[], foreground: [] as boolean[], resets: 0 }
+  const events = { data: [] as Uint8Array[], exits: [] as Array<number | null>, statuses: [] as string[], foreground: [] as boolean[], resets: 0, replayed: 0 }
   const socket = new TerminalSocket({
     url: 'ws://hub/t',
     onData: (data) => events.data.push(data),
     onReconnect: () => { events.resets += 1 },
     onExit: (code) => events.exits.push(code),
     onForeground: (busy) => events.foreground.push(busy),
+    onReplayed: () => { events.replayed += 1 },
     onStatus: (status) => events.statuses.push(status),
   })
   return { socket, events, ws: () => FakeSocket.instances.at(-1)! }
@@ -91,6 +92,13 @@ describe('terminal socket', () => {
     expect(FakeSocket.instances).toHaveLength(2)
   })
 
+  it('reports the end of each replay', () => {
+    const { events, ws } = connect()
+    ws().open()
+    ws().onmessage?.({ data: JSON.stringify({ type: 'replayed' }) })
+    expect(events.replayed).toBe(1)
+  })
+
   it('reports which program owns the terminal', () => {
     const { events, ws } = connect()
     ws().open()
@@ -127,5 +135,40 @@ describe('mac line editing', () => {
     expect(lineEditSequence(key('ArrowLeft', { metaKey: false }))).toBeNull()
     expect(lineEditSequence(key('ArrowLeft', { shiftKey: true }))).toBeNull()
     expect(lineEditSequence(key('ArrowLeft', { type: 'keyup' }))).toBeNull()
+  })
+})
+
+describe('keys xterm does not distinguish', () => {
+  const key = (key: string, extra: Partial<KeyboardEvent> = {}) =>
+    ({ type: 'keydown', key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra })
+
+  it('sends Shift+Enter as a line feed and swallows its other events', () => {
+    expect(keySequence(key('Enter', { shiftKey: true }))).toBe('\n')
+    expect(keySequence(key('Enter', { shiftKey: true, type: 'keypress' }))).toBe('')
+    expect(keySequence(key('Enter', { shiftKey: true, type: 'keyup' }))).toBe('')
+  })
+
+  it('leaves plain and other modified Enter to xterm', () => {
+    expect(keySequence(key('Enter'))).toBeNull()
+    expect(keySequence(key('Enter', { shiftKey: true, ctrlKey: true }))).toBeNull()
+    expect(keySequence(key('Enter', { shiftKey: true, altKey: true }))).toBeNull()
+    expect(keySequence(key('ArrowLeft', { metaKey: true }))).toBe('\x01')
+  })
+})
+
+describe('OSC 52 clipboard', () => {
+  const encode = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)))
+
+  it('decodes text to copy, including UTF-8', () => {
+    expect(osc52Text(`c;${encode('hello')}`)).toBe('hello')
+    expect(osc52Text(`;${encode('终端 ✓')}`)).toBe('终端 ✓')
+  })
+
+  it('never answers reads and ignores empty or malformed data', () => {
+    expect(osc52Text('c;?')).toBeNull()
+    expect(osc52Text('c;')).toBeNull()
+    expect(osc52Text('c;not base64!')).toBeNull()
+    expect(osc52Text(`c;${btoa('\xff\xfe')}`)).toBeNull()
+    expect(osc52Text('nosemicolon')).toBeNull()
   })
 })

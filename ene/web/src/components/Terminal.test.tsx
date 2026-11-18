@@ -13,23 +13,47 @@ vi.mock('../lib/api', () => ({
   errorMessage: (_exc: unknown, fallback: string) => fallback,
 }))
 
+const xterm = vi.hoisted(() => ({
+  instances: [] as Array<{
+    emit: (data: string) => void
+    osc: (payload: string) => void
+  }>,
+}))
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     cols = 80
     rows = 24
     options = {}
+    unicode = { activeVersion: '6' }
+    private dataHandler = (_data: string) => {}
+    private oscHandler = (_payload: string) => true
+    parser = {
+      registerOscHandler: (_id: number, handler: (payload: string) => boolean) => {
+        this.oscHandler = handler
+        return { dispose() {} }
+      },
+    }
+    constructor() {
+      xterm.instances.push({ emit: (data) => this.dataHandler(data), osc: (payload) => this.oscHandler(payload) })
+    }
     loadAddon() {}
     open() {}
-    write() {}
+    write(_data: unknown, callback?: () => void) { callback?.() }
     reset() {}
     focus() {}
     dispose() {}
-    onData() { return { dispose() {} } }
+    onData(handler: (data: string) => void) {
+      this.dataHandler = handler
+      return { dispose() {} }
+    }
     onBinary() { return { dispose() {} } }
     attachCustomKeyEventHandler() {}
   },
 }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
+vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
+vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 
@@ -44,6 +68,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  xterm.instances.length = 0
   vi.unstubAllGlobals()
   vi.clearAllMocks()
   localStorage.clear()
@@ -82,6 +107,59 @@ describe('terminal panel', () => {
     expect(api.closeTerminal).toHaveBeenCalledWith('s1', '2')
     await waitFor(() => expect(screen.queryByRole('tab', { name: 'Terminal 2' })).toBeNull())
     expect(screen.getByRole('tab', { name: 'Terminal 1' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('keeps every terminal connected and switches by showing it', async () => {
+    const sockets: string[] = []
+    vi.stubGlobal('WebSocket', class {
+      constructor(url: string) { sockets.push(url) }
+      close() {}
+      send() {}
+    })
+    api.listTerminals.mockResolvedValue({ supported: true, terminals: [info('1'), info('2')] })
+    render(<TerminalPanel sessionId="s1" connected />)
+    await screen.findByRole('tab', { name: 'Terminal 2' })
+    const panel = (name: string) =>
+      screen.getAllByRole('tabpanel', { hidden: true }).find((item) => item.getAttribute('aria-label') === name)
+    expect(panel('Terminal 1')).not.toBeVisible()
+    expect(panel('Terminal 2')).toBeVisible()
+    await act(async () => fireEvent.click(screen.getByRole('tab', { name: 'Terminal 1' })))
+    expect(panel('Terminal 1')).toBeVisible()
+    expect(panel('Terminal 2')).not.toBeVisible()
+    expect(sockets.sort()).toEqual(['ws://hub/s1/1', 'ws://hub/s1/2'])
+  })
+
+  it('drops replies and clipboard writes generated while the scrollback replays', async () => {
+    const sockets: Array<{ sent: unknown[]; onopen?: () => void; onmessage?: (event: { data: unknown }) => void; readyState: number }> = []
+    vi.stubGlobal('WebSocket', Object.assign(class {
+      sent: unknown[] = []
+      readyState = 0
+      constructor() { sockets.push(this as never) }
+      close() {}
+      send(data: unknown) { this.sent.push(data) }
+    }, { OPEN: 1 }))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    api.listTerminals.mockResolvedValue({ supported: true, terminals: [info('1')] })
+    render(<TerminalPanel sessionId="s1" connected />)
+    await screen.findByRole('tab', { name: 'Terminal 1' })
+    const ws = sockets[0]
+    const term = xterm.instances[0]
+    act(() => {
+      ws.readyState = 1
+      ws.onopen?.()
+    })
+    const copy = `c;${btoa('copied')}`
+    term.emit('\x1b[24;1R') // xterm answering a replayed cursor query
+    term.osc(copy)
+    const input = () => ws.sent.filter((frame) => typeof frame !== 'string').map((frame) => Array.from(frame as Uint8Array))
+    expect(input()).toEqual([])
+    expect(writeText).not.toHaveBeenCalled()
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: 'replayed' }) }))
+    term.emit('x')
+    term.osc(copy)
+    expect(input()).toEqual([[120]])
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('copied')
   })
 
   it('shows how a finished shell exited', async () => {

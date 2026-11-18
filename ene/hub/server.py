@@ -91,6 +91,7 @@ MAX_ACTION_ID_LENGTH = 128
 MAX_ROUNDS = 500                # round statistics kept per attached session
 MAX_TERMINAL_INPUT = 64 * 1024  # largest keyboard/paste frame from a browser
 MAX_TERMINAL_BACKLOG = 4 * 1024 * 1024  # unsent output before a slow viewer is dropped
+TERMINAL_REDRAW_NUDGE = 0.1  # seconds a reconnect shifts a busy terminal's size
 # Largest websocket frame a browser may send; a bigger one closes its socket
 # with 1009, so the state frame reports this limit for the UI to check first.
 MAX_WS_FRAME_BYTES = 256 * 1024
@@ -2030,12 +2031,13 @@ class Hub:
     ) -> None:
         """Relay one terminal: binary frames carry raw bytes both ways.
 
-        On connect the retained scrollback is replayed. Text frames from the
-        browser are ``ping`` / ``resize``; the hub sends ``pong``,
-        ``{"type": "foreground", "busy": ...}`` whenever a program other than
-        the shell takes or returns the terminal (checked as output arrives),
-        and, once the shell is gone, ``{"type": "exit", "code": ...}``. A
-        viewer that falls too far behind is closed with 1013 and replays on
+        On connect the retained scrollback is replayed, followed by
+        ``{"type": "replayed"}``; if a full-screen program is running, its
+        size is briefly shifted so it repaints. Text frames from the browser
+        are ``ping`` / ``resize``; the hub sends ``pong``, ``{"type": "foreground", "busy": ...}`` whenever a program
+        other than the shell takes or returns the terminal (checked as output
+        arrives), and, once the shell is gone, ``{"type": "exit", "code": ...}``.
+        A viewer that falls too far behind is closed with 1013 and replays on
         reconnect.
         """
         terminal = self.terminals.get(session_id, terminal_id)
@@ -2075,8 +2077,21 @@ class Hub:
             require_login()
             if snapshot:
                 await websocket.send_bytes(snapshot)
+            # Queries in the replay (cursor position, device attributes) were
+            # answered long ago; the browser drops what it generates until here.
+            await websocket.send_json({"type": "replayed"})
             if alive:
                 await report_foreground()
+                if foreground["busy"] and terminal.alternate_screen():
+                    # A replay cut by the scrollback limit leaves a full-screen
+                    # program half drawn; a brief size change makes it repaint.
+                    # Inline programs (Claude Code, Codex) are left alone: on
+                    # the main screen a repaint can reprint their output.
+                    terminal.nudge(True)
+                    try:
+                        await asyncio.sleep(TERMINAL_REDRAW_NUDGE)
+                    finally:
+                        terminal.nudge(False)
             else:
                 await websocket.send_json({"type": "exit", "code": terminal.exit_code})
 
