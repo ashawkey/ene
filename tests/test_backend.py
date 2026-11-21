@@ -196,10 +196,129 @@ def _summary_agent(provider):
     agent.cancellation = None
     agent._active_compaction_provider = None
     agent._summary_provider = lambda: (provider, "model", False)
+    agent.retry_waits = []
+    agent.retry_messages = []
+    agent._interruptible_sleep = agent.retry_waits.append
+    agent.console = NS(system=agent.retry_messages.append)
     agent.token_totals = {
         "total": 0, "prompt": 0, "cached_prompt": 0, "completion": 0, "reasoning": 0,
     }
     return agent
+
+
+@pytest.mark.parametrize("error", [
+    _StatusError(408), _StatusError(429), _StatusError(503),
+    ConnectionError("disconnected"), TimeoutError("timed out"),
+    ProviderError("temporary", status_code=400, retryable=True),
+])
+def test_compaction_summary_retries_transient_errors(error):
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        if len(requests) == 1:
+            raise error
+        return CompletionResult(
+            Message.assistant("summary"), ProviderUsage(20, 5, 25), "stop",
+        )
+
+    agent = _summary_agent(NS(complete=complete))
+
+    assert agent._summarize("summarize this") == "summary"
+    assert len(requests) == 2
+    assert requests[0] is requests[1]
+    assert agent.retry_waits == [agent.INITIAL_BACKOFF]
+    assert "Compaction retry 1" in agent.retry_messages[0]
+    assert agent.token_totals["total"] == 25
+    assert agent._active_compaction_provider is None
+
+
+@pytest.mark.parametrize("error", [
+    _StatusError(400), _StatusError(401),
+    ProviderError("subscription limit", status_code=429, retryable=False),
+    ProviderError("quota exhausted", code="insufficient_quota"),
+    ValueError("invalid request"), RequestInterrupted(),
+])
+def test_compaction_summary_does_not_retry_permanent_errors_or_interruption(error):
+    requests = []
+    closed = []
+
+    def complete(request):
+        requests.append(request)
+        raise error
+
+    provider = NS(complete=complete, close=lambda: closed.append(True))
+    agent = _summary_agent(provider)
+    agent._summary_provider = lambda: (provider, "model", True)
+
+    with pytest.raises(type(error)) as raised:
+        agent._summarize("summarize this")
+
+    assert raised.value is error
+    assert len(requests) == 1
+    assert agent.retry_waits == []
+    assert closed == [True]
+    assert agent._active_compaction_provider is None
+
+
+@pytest.mark.parametrize("phase", ["request", "backoff"])
+def test_compaction_summary_cancellation_stops_retries(phase):
+    requests = []
+    closed = []
+    cancellation = NS(cancelled=False)
+
+    def complete(request):
+        requests.append(request)
+        if phase == "request":
+            cancellation.cancelled = True
+        raise ConnectionError("request cancelled or disconnected")
+
+    def sleep(seconds):
+        agent.retry_waits.append(seconds)
+        cancellation.cancelled = True
+        raise RequestInterrupted()
+
+    provider = NS(complete=complete, close=lambda: closed.append(True))
+    agent = _summary_agent(provider)
+    agent._summary_provider = lambda: (provider, "model", True)
+    agent.cancellation = cancellation
+    agent._interruptible_sleep = sleep
+
+    with pytest.raises(RequestInterrupted):
+        agent._summarize("summarize this")
+
+    assert len(requests) == 1
+    assert agent.retry_waits == ([] if phase == "request" else [agent.INITIAL_BACKOFF])
+    assert closed == [True]
+    assert agent._active_compaction_provider is None
+
+
+def test_compaction_summary_backoff_is_capped_and_resets_for_continuations():
+    requests = []
+    closed = []
+
+    def complete(request):
+        requests.append(request)
+        if len(requests) <= 9 or len(requests) == 11:
+            raise _StatusError(429)
+        text, reason = ("partial ", "length") if len(requests) == 10 else ("summary", "stop")
+        return CompletionResult(
+            Message.assistant(text), ProviderUsage(20, 5, 25), reason,
+        )
+
+    provider = NS(complete=complete, close=lambda: closed.append(True))
+    agent = _summary_agent(provider)
+    agent._summary_provider = lambda: (provider, "model", True)
+
+    assert agent._summarize("summarize this") == "partial summary"
+    assert agent.retry_waits == [1, 2, 4, 8, 16, 32, 64, 64, 64, 1]
+    assert all(request is requests[0] for request in requests[:10])
+    assert requests[10] is requests[11]
+    assert [message.role for message in requests[11].messages] == ["user", "assistant", "user"]
+    assert requests[11].messages[1].text == "partial "
+    assert agent.token_totals["total"] == 50
+    assert closed == [True]
+    assert agent._active_compaction_provider is None
 
 
 def test_truncated_compaction_summary_is_continued():

@@ -173,6 +173,7 @@ Until then, history is append-only, so every request reuses the provider's promp
 - **Skipped:** when a pass would free less than 5% of the window.
 - **Output cap:** when prompt plus max output would overrun the window, the request asks for less output. A reply cut short continues automatically.
 - **Summary length:** the summary request uses the model's full output limit. A summary cut short continues automatically, up to 3 times; if it still fails, the history is kept.
+- **Retries:** rate limits and transient failures retry indefinitely with exponential backoff capped at 64 seconds. Escape cancels; permanent failures keep the history unchanged.
 
 ### Summary models
 

@@ -1004,7 +1004,9 @@ class LLMAgent(
         at the default "high" it costs far more latency than the summary is
         worth. The request uses the model's full output limit, and a summary cut
         short by it is continued up to MAX_AUTO_CONTINUES times, so compaction
-        works with any model whatever its output cap.
+        works with any model whatever its output cap. Transient failures use the
+        conversation's capped exponential backoff; cancellation and permanent
+        errors are never retried.
         """
         provider = None
         owned = False
@@ -1016,9 +1018,7 @@ class LLMAgent(
             prompt_chars = len(prompt)
             continues = 0
             while True:
-                if self.cancellation is not None and self.cancellation.cancelled:
-                    raise RequestInterrupted()
-                result = provider.complete(CompletionRequest(
+                request = CompletionRequest(
                     model=model,
                     messages=messages,
                     stream=False,
@@ -1031,7 +1031,30 @@ class LLMAgent(
                     # ESC still cancels the in-flight request.
                     max_output_tokens=self._summary_output_cap(model, owned, prompt_chars),
                     reasoning_effort="low",
-                ))
+                )
+                # Retry only this request, not already completed summary parts.
+                retry_count = 0
+                wait_time = self.INITIAL_BACKOFF
+                while True:
+                    if self.cancellation is not None and self.cancellation.cancelled:
+                        raise RequestInterrupted()
+                    try:
+                        result = provider.complete(request)
+                        break
+                    except RequestInterrupted:
+                        raise
+                    except Exception as exc:
+                        if self.cancellation is not None and self.cancellation.cancelled:
+                            raise RequestInterrupted() from None
+                        if _is_fatal_api_error(exc):
+                            raise
+                        retry_count += 1
+                        self.console.system(
+                            f"[Compaction retry {retry_count}] {exc} — "
+                            f"retrying in {wait_time:.1f}s…"
+                        )
+                        self._interruptible_sleep(wait_time)
+                        wait_time = min(wait_time * 2, self.MAX_BACKOFF)
                 if result.usage is not None:
                     self._accumulate_usage(result.usage)
                 text = result.message.text
