@@ -44,6 +44,22 @@ export function fullTime(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString()
 }
 
+/** Coarse local-date bucket for grouping lists: Today, Yesterday, This week, then month. */
+export function dateGroup(epochSeconds: number, now = Date.now()): string {
+  if (!epochSeconds) return 'Older'
+  const day = (time: number) => {
+    const date = new Date(time)
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  }
+  const days = Math.round((day(now) - day(epochSeconds * 1000)) / 86_400_000)
+  if (days <= 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days < 7) return 'This week'
+  const date = new Date(epochSeconds * 1000)
+  const sameYear = date.getFullYear() === new Date(now).getFullYear()
+  return date.toLocaleDateString([], sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' })
+}
+
 export function relativeTime(epochSeconds: number, now = Date.now() / 1000): string {
   const delta = Math.max(0, now - epochSeconds)
   if (delta < 60) return 'just now'

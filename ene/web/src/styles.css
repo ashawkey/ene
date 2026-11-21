@@ -1204,6 +1204,38 @@ button.step-head:hover { background: var(--hover); }
 .modal .form-error { padding: 0 20px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 18px 20px 0; }
 
+/* New session: folder on the left, options and conversation on the right. */
+/* A fixed height: the folder and conversation lists scroll, the footer stays. */
+.modal.new-session { width: min(980px, 100%); height: min(720px, calc(100dvh - 32px)); display: flex; flex-direction: column; overflow: hidden; }
+.new-session form { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ns-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.ns-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.ns-col .field-grid .field:first-child { padding-right: 6px; }
+.ns-col .field-grid .field:last-child { padding-left: 6px; }
+.new-session .dir-picker { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.new-session .dir-list { flex: 1; min-height: 0; max-height: none; }
+.dir-new { display: flex; align-items: center; gap: 6px; margin: 2px 8px 4px; padding: 3px 4px 3px 10px; border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 0 0 3px var(--accent-soft); }
+.dir-new input { flex: 1; min-width: 0; height: 28px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
+.dir-missing { display: flex; align-items: center; gap: 8px; }
+.dir-missing .btn { flex: none; height: 28px; padding: 0 10px; font-size: 12.5px; }
+.dir-empty { padding: 14px 10px; color: var(--text-3); font-size: 12.5px; text-align: center; }
+.conv-field { flex: 1; min-height: 0; }
+.conv-field .field-note { max-width: 60%; }
+.conv-picker { display: flex; flex-direction: column; flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.conv-picker .filter { flex: none; margin: 8px 8px 4px; }
+.field .conv-picker .filter input { height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.conv-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 6px; }
+.conv-list h3 { margin: 10px 8px 2px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.conv-row { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; }
+.conv-row:hover:not(:disabled) { background: var(--hover); }
+.conv-row:disabled { opacity: 0.5; }
+.conv-row.selected { border-color: var(--accent); background: var(--accent-soft); }
+.conv-row.selected .conv-icon { color: var(--accent); }
+.conv-icon { flex: none; color: var(--text-3); }
+.conv-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.conv-title { font-size: 13px; font-weight: 560; }
+.conv-sub { color: var(--text-3); font-size: 11.5px; }
+
 .viewer { width: min(1320px, 100%); height: min(90dvh, 1100px); display: flex; flex-direction: column; overflow: hidden; background: var(--popover); }
 .viewer-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 6px 16px; color: var(--text-2); }
 .viewer-title { display: flex; flex-direction: column; min-width: 0; color: var(--text); font-size: 13px; }
@@ -1344,6 +1376,12 @@ button.step-head:hover { background: var(--hover); }
   .viewer-title .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .modal-backdrop { padding: 8px; }
   .field-grid { grid-template-columns: 1fr; }
+  .ns-body { grid-template-columns: minmax(0, 1fr); }
+  .modal.new-session { height: auto; max-height: calc(100dvh - 16px); overflow: auto; }
+  .new-session form, .ns-body { display: block; }
+  .new-session .dir-list { height: 200px; flex: none; }
+  .conv-list { height: 220px; flex: none; }
+  .ns-col .field-grid .field:first-child, .ns-col .field-grid .field:last-child { padding-left: 20px; padding-right: 20px; }
   .toasts { left: 16px; right: 16px; bottom: 90px; max-width: none; }
   .global-banner { top: auto; bottom: 120px; }
 }

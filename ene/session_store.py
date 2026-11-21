@@ -899,7 +899,11 @@ def saved_session_summaries(work_dir: str | Path | None = None) -> list[dict[str
     except OSError:
         return []
     summaries: list[dict[str, Any]] = []
-    for path in sorted(paths, key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in paths:
+        try:
+            modified = (path / "history.jsonl").stat().st_mtime
+        except OSError:
+            modified = 0.0
         try:
             meta = SessionStore.load_summary(sessions_dir, path.name)
             summaries.append({
@@ -908,6 +912,7 @@ def saved_session_summaries(work_dir: str | Path | None = None) -> list[dict[str
                 "message_count": meta.get("message_count", 0),
                 "round_id": meta.get("round_id", 0),
                 "last_user_message": meta.get("last_user_message", ""),
+                "updated_at": modified,
             })
         except Exception:
             summaries.append({
@@ -916,5 +921,7 @@ def saved_session_summaries(work_dir: str | Path | None = None) -> list[dict[str
                 "message_count": "?",
                 "round_id": "?",
                 "last_user_message": "unreadable",
+                "updated_at": modified,
             })
+    summaries.sort(key=lambda summary: summary["updated_at"], reverse=True)
     return summaries

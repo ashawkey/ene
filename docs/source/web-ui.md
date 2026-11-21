@@ -37,10 +37,10 @@ ene hub --port 8765
 
 Select **+** in the sidebar (or **New session** on the empty screen):
 
-- **Working directory:** type a path, browse folders, or pick a recent workspace.
+- **Working directory:** type a path, browse folders, or pick a recent workspace. **New folder** in the browser creates a folder in the one shown; a typed path that does not exist offers to create it.
 - **Name:** optional, as with `ene new NAME`.
-- **Model / Persona / Reasoning:** CLI-equivalent choices, including the workspace's personas.
-- **Resume:** continue a saved conversation; live conversations cannot be selected twice.
+- **Model / Persona / Reasoning:** CLI-equivalent choices, including the workspace's personas. Persona starts at `coder` and reasoning at the model's configured effort (else `high`), so both are always shown explicitly.
+- **Conversation:** start fresh, or resume a saved conversation. Saved ones are grouped by date (newest first) and searchable by title, last request, or ID; live conversations cannot be selected twice.
 
 The hub starts and attaches the worker, then opens it. The dialog remembers your last choices.
 

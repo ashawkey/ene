@@ -1268,6 +1268,36 @@ class Hub:
             # serves every browser stream; authentication stays on it.
             return await asyncio.get_running_loop().run_in_executor(None, listing)
 
+        @app.post("/api/fs/mkdir")
+        async def make_directory(request: Request):
+            """Create a folder for the workspace picker, e.g. a new project."""
+            require_csrf(request)
+            body = await read_json_body(request, MAX_BODY_BYTES)
+            name = str(body.get("name", "")).strip()
+            if (
+                not name
+                or len(name) > 255
+                or name in (".", "..")
+                or any(char in "/\\" or ord(char) < 32 for char in name)
+            ):
+                raise HTTPException(status_code=400, detail="Invalid folder name.")
+
+            def create() -> dict:
+                target = resolved_directory(str(body.get("path", ""))) / name
+                try:
+                    target.mkdir()
+                except FileExistsError as exc:
+                    raise HTTPException(
+                        status_code=409, detail="A file or folder with that name already exists."
+                    ) from exc
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=403, detail="Cannot create a folder here."
+                    ) from exc
+                return {"path": str(target)}
+
+            return await asyncio.get_running_loop().run_in_executor(None, create)
+
         @app.get("/api/sessions/{session_id}/path-completions")
         async def path_completions(
             request: Request, session_id: str, query: str = ""
@@ -1332,9 +1362,12 @@ class Hub:
             require_login(request)
             from ene.config import conf
             from ene.models import REASONING_EFFORTS
-            from ene.personas import list_personas
+            from ene.personas import DEFAULT_PERSONA, list_personas
 
-            models = list(conf.get("openai", {}) or {})
+            configured = conf.get("openai")
+            if not isinstance(configured, dict):
+                configured = {}
+            models = list(configured)
 
             def find_personas() -> list[str]:
                 work_dir = str(resolved_directory(cwd)) if cwd else None
@@ -1349,7 +1382,16 @@ class Hub:
                 "models": models,
                 "default_model": models[0] if models else "",
                 "personas": personas,
+                "default_persona": DEFAULT_PERSONA,
                 "reasoning_efforts": list(REASONING_EFFORTS),
+                # The effort each model starts at when none is chosen.
+                "default_reasoning_efforts": {
+                    alias: str(
+                        (entry if isinstance(entry, dict) else {}).get("reasoning_effort")
+                        or "high"
+                    )
+                    for alias, entry in configured.items()
+                },
             }
 
         @app.get("/api/conversations")

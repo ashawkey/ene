@@ -313,7 +313,10 @@ export type SessionOptions = {
   models: string[]
   default_model: string
   personas: string[]
+  default_persona: string
   reasoning_efforts: string[]
+  /** Model alias → the effort it starts at when none is chosen. */
+  default_reasoning_efforts: Record<string, string>
 }
 
 export type ConversationSummary = {
@@ -322,6 +325,8 @@ export type ConversationSummary = {
   message_count: number | string
   round_id: number | string
   last_user_message: string
+  /** Last saved, in epoch seconds. */
+  updated_at: number
   live: boolean
 }
 

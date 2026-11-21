@@ -150,7 +150,7 @@ describe('queued message chip', () => {
 
 describe('model picker', () => {
   beforeEach(() => {
-    vi.mocked(sessionOptions).mockResolvedValue({ models: ['fast', 'smart'], default_model: 'fast', personas: [], reasoning_efforts: ['low', 'high'] })
+    vi.mocked(sessionOptions).mockResolvedValue({ models: ['fast', 'smart'], default_model: 'fast', personas: [], default_persona: 'coder', reasoning_efforts: ['low', 'high'], default_reasoning_efforts: {} })
   })
 
   it('sets reasoning effort through its select, even mid-round', async () => {

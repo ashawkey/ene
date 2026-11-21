@@ -944,6 +944,34 @@ def test_fs_endpoint_lists_only_directories(tmp_path):
         ).status_code == 400
 
 
+def test_fs_mkdir_endpoint_creates_one_folder(tmp_path):
+    (tmp_path / "taken").mkdir()
+    hub = make_hub()
+    with TestClient(hub.app) as client:
+        body = {"path": str(tmp_path), "name": "fresh"}
+        assert client.post("/api/fs/mkdir", json=body).status_code == 403
+        headers = {"x-csrf-token": login(client)}
+        created = client.post("/api/fs/mkdir", json=body, headers=headers)
+
+        assert created.status_code == 200
+        assert created.json()["path"] == str(tmp_path / "fresh")
+        assert (tmp_path / "fresh").is_dir()
+        for name in ("", "..", "a/b", "a\\b", "bad\nname"):
+            reply = client.post(
+                "/api/fs/mkdir", json={"path": str(tmp_path), "name": name}, headers=headers
+            )
+            assert reply.status_code == 400, name
+        taken = client.post(
+            "/api/fs/mkdir", json={"path": str(tmp_path), "name": "taken"}, headers=headers
+        )
+        assert taken.status_code == 409
+        relative = client.post(
+            "/api/fs/mkdir", json={"path": "rel", "name": "x"}, headers=headers
+        )
+        assert relative.status_code == 400
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["fresh", "taken"]
+
+
 def test_path_completion_endpoint_uses_session_workspace(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "widget.py").write_text("x", encoding="utf-8")
@@ -986,12 +1014,15 @@ def test_conversations_endpoint_marks_live_conversations(tmp_path):
 
     assert [item["id"] for item in listed] == ["20260101_000000"]
     assert listed[0]["live"] is True
+    assert listed[0]["updated_at"] > 0
 
 
 def test_options_endpoint_reports_models_and_personas(monkeypatch, tmp_path):
     from ene.config import conf
 
-    monkeypatch.setitem(conf, "openai", {"gpt": {"model": "gpt-x"}, "fast": {}})
+    monkeypatch.setitem(
+        conf, "openai", {"gpt": {"model": "gpt-x", "reasoning_effort": "low"}, "fast": {}}
+    )
     hub = make_hub()
     with TestClient(hub.app) as client:
         login(client)
@@ -1000,7 +1031,9 @@ def test_options_endpoint_reports_models_and_personas(monkeypatch, tmp_path):
     assert options["models"] == ["gpt", "fast"]
     assert options["default_model"] == "gpt"
     assert "coder" in options["personas"]
+    assert options["default_persona"] == "coder"
     assert "high" in options["reasoning_efforts"]
+    assert options["default_reasoning_efforts"] == {"gpt": "low", "fast": "high"}
 
 
 def test_workspaces_endpoint_lists_recent_directories():

@@ -138,6 +138,9 @@ export const stopProcess = (id: string, processId: string) =>
   post<{ ok: boolean }>(`${sid(id)}/processes/${encodeURIComponent(processId)}/stop`)
 
 export const browseDirectories = (path: string) => get<FsListing>('/api/fs', path ? { path } : {})
+/** Create folder *name* inside *path*; resolves to the new folder's path. */
+export const makeDirectory = (path: string, name: string) =>
+  post<{ path: string }>('/api/fs/mkdir', { path, name }).then((data) => data.path)
 export const recentWorkspaces = () =>
   get<{ workspaces: string[] }>('/api/workspaces').then((data) => data.workspaces)
 export const sessionOptions = (cwd: string) => get<SessionOptions>('/api/options', cwd ? { cwd } : {})
