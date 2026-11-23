@@ -78,6 +78,8 @@ export type SessionView = {
   commands: Record<string, string>
   info: Record<string, string>
   rounds: RoundStats[]
+  /** Live statistics of the running round (`round_progress`), not yet in `rounds`. */
+  activeRound: RoundStats | null
   history: string[]
   /** Seq to request older events before, or null when nothing older is retained. */
   historyBefore: number | null
@@ -123,6 +125,7 @@ export function initialView(): SessionView {
     commands: {},
     info: {},
     rounds: [],
+    activeRound: null,
     history: [],
     historyBefore: null,
     detailFrom: null,
@@ -414,6 +417,10 @@ export function applyState(view: SessionView, frame: StateFrame): [SessionView, 
     commands: frame.commands ?? {},
     info: frame.info ?? base.info,
     rounds,
+    activeRound:
+      frame.operation_id !== null && frame.active_round
+        ? parseRound(frame.active_round as Record<string, unknown>, base.roundStartSeq)
+        : null,
   }
   return [next, [{
     kind: 'state',
@@ -593,10 +600,14 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
     case 'round_history':
       next.rounds = parseRounds(data.rounds, next.rounds)
       break
+    case 'round_progress':
+      next.activeRound = parseRound(data, next.roundStartSeq) ?? next.activeRound
+      break
     case 'round_stats': {
       const round = parseRound(data, next.roundStartSeq)
       if (!round) break
       next.rounds = upsertRound(next.rounds, round)
+      if (next.activeRound?.id === round.id) next.activeRound = null
       const index = items.findIndex((item) => item.kind === 'round' && item.round.id === round.id)
       if (index >= 0) {
         const copy = items.slice()
@@ -621,6 +632,7 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
     case 'operation_end':
       next.operationId = null
       next.operationSince = null
+      next.activeRound = null
       next.indicator = null
       // A stream left open by an interrupted reply stops pulsing.
       next.items = items.map((item) =>
@@ -718,6 +730,12 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
  */
 export function roundsVersion(rounds: RoundStats[]): number {
   return rounds.at(-1)?.ended_at ?? rounds.length
+}
+
+/** Finished rounds plus the running one, for statistics that update live. */
+export function withActiveRound(rounds: RoundStats[], active: RoundStats | null): RoundStats[] {
+  if (!active || rounds.some((round) => round.id === active.id)) return rounds
+  return [...rounds, active]
 }
 
 /** Context fill as 0..1, or null when the limit is unknown. */

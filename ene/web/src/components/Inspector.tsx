@@ -154,6 +154,7 @@ export function Inspector({
   sessionId,
   summary,
   rounds,
+  activeRound,
   busy,
   context,
   operationSince,
@@ -173,6 +174,7 @@ export function Inspector({
   sessionId: string
   summary: SessionSummary
   rounds: RoundStats[]
+  activeRound: RoundStats | null
   busy: boolean
   context: ContextSnapshot | null
   operationSince: number | null
@@ -223,7 +225,7 @@ export function Inspector({
           </Suspense>
         ) : null}
         {tab === 'stats' ? (
-          <StatsPanel rounds={rounds} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
+          <StatsPanel rounds={rounds} activeRound={activeRound} active={busy} context={context} operationSince={operationSince} onJump={onJumpRound} />
         ) : null}
         {tab === 'tasks' ? <TasksPanel sessionId={sessionId} processes={processes} connected={connected} onOpenProcess={onOpenProcess} /> : null}
         {tab === 'info' ? <InfoPanel summary={summary} info={info} /> : null}

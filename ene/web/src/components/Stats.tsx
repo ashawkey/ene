@@ -3,7 +3,7 @@ import { memo, useMemo, useState } from 'react'
 
 import { compactNumber, duration, latency, percent, tokenRate } from '../lib/format'
 import type { ContextSnapshot, RoundStats } from '../lib/protocol'
-import { contextFraction, totals } from '../lib/session'
+import { contextFraction, totals, withActiveRound } from '../lib/session'
 import { ContextRing, Empty, useNow } from './ui'
 
 const CHART_ROUNDS = 40
@@ -87,7 +87,7 @@ function BarChart({
                 return (
                   <path
                     key={part.key}
-                    className={`bar s-${part.key} ${round.cancelled ? 'cancelled' : ''}`}
+                    className={`bar s-${part.key} ${round.cancelled ? 'cancelled' : ''} ${round.ended_at === null ? 'live' : ''}`}
                     d={roundedTop(x, y1, bar, h, isTop ? Math.min(4, bar / 2, h) : 0)}
                     transform={gap ? `translate(0 ${-gap})` : undefined}
                   />
@@ -116,7 +116,7 @@ function BarChart({
       </svg>
       {hover ? (
         <div className="chart-tip glass" style={{ left: `${Math.min(78, Math.max(22, hover.x * 100))}%` }}>
-          <div className="tip-title">Round {hover.round.index} · {duration(hover.round.duration)}</div>
+          <div className="tip-title">Round {hover.round.index} · {duration(hover.round.duration)}{hover.round.ended_at === null ? ' so far' : ''}</div>
           {series.map((item) => (
             <div className="tip-row" key={item.key}>
               <span className={`swatch s-${item.key}`} />
@@ -142,24 +142,29 @@ function roundedTop(x: number, y: number, w: number, h: number, r: number) {
 // Memoized: the inspector re-renders on every streamed update, and the round
 // table and charts must not re-render with it.
 export const StatsPanel = memo(function StatsPanel({
-  rounds,
+  rounds: finished,
+  activeRound,
   active,
   context,
   operationSince,
   onJump,
 }: {
   rounds: RoundStats[]
+  /** The running round's live statistics, shown alongside finished rounds. */
+  activeRound: RoundStats | null
   active: boolean
   context: ContextSnapshot | null
   operationSince: number | null
   onJump: (round: RoundStats) => void
 }) {
+  const rounds = useMemo(() => withActiveRound(finished, activeRound), [finished, activeRound])
   const sum = useMemo(() => totals(rounds), [rounds])
+  const done = useMemo(() => totals(finished), [finished])
   const recent = rounds.slice(-CHART_ROUNDS)
   const now = useNow(active)
   const fraction = contextFraction(context)
   const hit = sum.input > 0 ? sum.cached / sum.input : 0
-  const avg = sum.rounds ? sum.duration / sum.rounds : 0
+  const avg = done.rounds ? done.duration / done.rounds : 0
 
   return (
     <div className="stats">
@@ -250,7 +255,7 @@ export const StatsPanel = memo(function StatsPanel({
               <span>#</span><span>Prompt</span><span>Time</span><span>Tokens</span><span>tok/s</span><span>Tools</span>
             </div>
             {[...rounds].reverse().map((round) => (
-              <button type="button" className={`rt-row ${round.cancelled ? 'cancelled' : ''}`} key={round.id} onClick={() => onJump(round)}>
+              <button type="button" className={`rt-row ${round.cancelled ? 'cancelled' : ''} ${round.ended_at === null ? 'live' : ''}`} key={round.id} onClick={() => onJump(round)}>
                 <span className="muted">{round.index}</span>
                 <span className="clamp">{round.prompt || <em className="muted">{round.kind === 'notification' ? 'notification' : 'continued'}</em>}</span>
                 <span>{duration(round.duration)}</span>

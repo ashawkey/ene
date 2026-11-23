@@ -27,6 +27,7 @@ const renderTasks = () => render(
     sessionId="s1"
     summary={{ id: 's1', cwd: '/work' } as SessionSummary}
     rounds={[]}
+    activeRound={null}
     busy={false}
     context={null}
     operationSince={null}

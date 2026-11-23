@@ -125,6 +125,7 @@ Input whose first word contains another `/`, such as `/data/run/ckpt`, is sent t
 | `/system_prompt` | Print the current full system prompt |
 | `/compact` | Force [context compaction](#context-compaction) now |
 | `/recap` | Summarize the conversation's task in one sentence, focusing on user requests |
+| `/tr [cn\|en]` | Translate the last assistant response into Chinese (default) or English; unavailable while the agent is working; not added to history |
 | `/export <path/filename>` | Export the last assistant response as UTF-8 text; relative paths are resolved from the working directory |
 | `/continue` | Resume an unfinished round without a new user message; warn if already complete |
 | `/usage` | Show token usage for this session, plus time, tokens, and tool calls for recent rounds |
@@ -180,12 +181,12 @@ Until then, history is append-only, so every request reuses the provider's promp
 Set aliases in `~/.ene.yaml` to use smaller models for summaries:
 
 ```yaml
-recap_model: fast    # model used by /recap
+recap_model: fast    # model used by /recap and /tr
 summary_model: fast  # model used by automatic and /compact compaction
 ```
 
 - Values name entries under `openai`; omitted settings use the active model.
-- Both operations count toward token usage. Recaps are not added to conversation history.
+- Both operations count toward token usage. Recaps and translations are not added to conversation history.
 
 ## Bash shortcut
 

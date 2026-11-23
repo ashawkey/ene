@@ -22,8 +22,8 @@ describe('statistics panel', () => {
   it('does not re-render for a streamed frame that changed none of its props', () => {
     const rounds = [round(1), round(2)]
     const onJump = vi.fn()
-    const panel = (list: RoundStats[]) => (
-      <StatsPanel rounds={list} active={false} context={null} operationSince={null} onJump={onJump} />
+    const panel = (list: RoundStats[], live: RoundStats | null = null) => (
+      <StatsPanel rounds={list} activeRound={live} active={false} context={null} operationSince={null} onJump={onJump} />
     )
     const { rerender } = render(panel(rounds))
     const initial = renders.count
@@ -32,5 +32,14 @@ describe('statistics panel', () => {
     rerender(panel([...rounds, round(3)]))
     expect(renders.count).toBe(initial + 1)
     expect(screen.getByText('task 3')).toBeInTheDocument()
+  })
+
+  it('includes the running round in totals and the round table', () => {
+    const live = { ...round(2), ended_at: null, duration: 60, tool_calls: 7 }
+    render(<StatsPanel rounds={[round(1)]} activeRound={live} active={false} context={null} operationSince={null} onJump={vi.fn()} />)
+    expect(screen.getByText('task 2').closest('button')).toHaveClass('live')
+    expect(screen.getByText('8 calls')).toBeInTheDocument()
+    // The average covers finished rounds only.
+    expect(screen.getByText('avg 2.0s')).toBeInTheDocument()
   })
 })

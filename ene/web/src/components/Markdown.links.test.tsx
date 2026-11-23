@@ -1,17 +1,29 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { existingFiles } from '../lib/api'
 import { Markdown, OpenFileContext, SessionIdContext } from './Markdown'
 
+vi.mock('../lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/api')>()),
+  existingFiles: vi.fn(async (_id: string, paths: string[]) => paths.filter((path) => !path.includes('missing'))),
+}))
+
 describe('Markdown links', () => {
-  it('opens file paths in the viewer without changing the text', () => {
+  it('opens resolvable file paths in the viewer without changing the text', async () => {
     const open = vi.fn()
     const { container } = render(
-      <OpenFileContext.Provider value={open}>
-        <Markdown text={'Changed `ene/ui.py:12` and src/app.ts; see [docs](docs/index.md) or https://example.com.'} />
-      </OpenFileContext.Provider>,
+      <SessionIdContext.Provider value="links">
+        <OpenFileContext.Provider value={open}>
+          <Markdown text={'Changed `ene/ui.py:12` and src/app.ts; see [docs](docs/index.md) or https://example.com. Not src/missing.ts.'} />
+        </OpenFileContext.Provider>
+      </SessionIdContext.Provider>,
     )
-    expect(container.textContent).toBe('Changed ene/ui.py:12 and src/app.ts; see docs or https://example.com.')
+    expect(container.textContent).toBe('Changed ene/ui.py:12 and src/app.ts; see docs or https://example.com. Not src/missing.ts.')
+    await waitFor(() => expect(container.querySelectorAll('.file-link')).toHaveLength(3))
+    // One batched check for every path in the reply.
+    expect(existingFiles).toHaveBeenCalledTimes(1)
+    expect([...container.querySelectorAll('.file-link')].map((link) => link.textContent)).not.toContain('src/missing.ts')
     fireEvent.click(screen.getByText('ene/ui.py:12'))
     fireEvent.click(screen.getByText('src/app.ts'))
     fireEvent.click(screen.getByText('docs'))

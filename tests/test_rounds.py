@@ -63,6 +63,31 @@ def test_rounds_record_tokens_tools_and_reach_clients(monkeypatch, tmp_path):
 
         published = [e.data for e in events.snapshot() if e.type == "round_stats"]
         assert [item["id"] for item in published] == [first["id"], second["id"]]
+
+        # Live snapshots after each model response and tool batch share the
+        # final record's id and accumulate toward it.
+        progress = [e.data for e in events.snapshot() if e.type == "round_progress"]
+        first_progress = [item for item in progress if item["id"] == first["id"]]
+        assert [
+            (item["model_calls"], item["tool_calls"], item["input_tokens"]) for item in first_progress
+        ] == [(1, 0, 1000), (1, 1, 1000), (2, 1, 2200)]
+        assert all(item["ended_at"] is None and item["outcome"] == "" for item in progress)
+        assert agent.active_round() is None
+    finally:
+        agent.close()
+
+
+def test_active_round_is_a_live_snapshot(monkeypatch, tmp_path):
+    agent = make_agent(monkeypatch, tmp_path, [])
+    try:
+        with agent._track_round():
+            agent._note_tool_result(True, edits=2)
+            agent._note_model_call(1.5)
+            live = agent.active_round()
+            assert (live["tool_calls"], live["edits"], live["model_time"]) == (1, 2, 1.5)
+            assert live["ended_at"] is None and not live["cancelled"]
+        assert agent.round_history[-1]["id"] == live["id"]
+        assert agent.round_history[-1]["ended_at"] is not None
     finally:
         agent.close()
 

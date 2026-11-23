@@ -44,6 +44,8 @@ Select **+** in the sidebar (or **New session** on the empty screen):
 
 The hub starts and attaches the worker, then opens it. The dialog remembers your last choices.
 
+A worker has 60 seconds to start. If it fails or times out, the error names the startup step it reached and quotes its output.
+
 ## Sessions
 
 The sidebar groups every live session on the machine:
@@ -75,7 +77,7 @@ The sidebar groups every live session on the machine:
 - **Long output:** a tool call keeps the newest 200,000 characters of its command output and says how many earlier lines it no longer shows.
 - **Message times:** each message and notification shows when it was sent (replies: when they started), with the date for earlier days; hover for the full time. Sessions saved before message timestamps existed show none.
 - **Reasoning:** folded; while streaming it previews the newest lines. Unfold it at any time to read the whole thought so far.
-- **Links:** web URLs open in a new tab. Workspace file paths in replies (for example `src/app.py:42`) open in the file viewer. Only the display changes, never the reply text.
+- **Links:** web URLs open in a new tab. File paths in replies (for example `src/app.py:42`) open in the file viewer; only paths that resolve to a readable file become links. Only the display changes, never the reply text.
 - **Round summary:** next to the copy button under the reply that ends a round, a chip shows its time split into model and tool time, mean time to first token (TTFT), output speed (tokens/s), tokens, cache hit rate, and tool calls; click it for statistics.
 - **Diffs:** click the file name to open the file.
 - **Images:** a `read_image` call shows a thumbnail; click it to open the image in the file viewer. Unreadable or unsupported images show only the text result.
@@ -113,6 +115,7 @@ Open the side panel with the panel icon in the session header (it reopens the la
 - **Resize:** drag the panel's left edge, up to half the window; double-click it to reset. The conversation keeps a minimum readable width, and on narrow windows the panel floats over it instead.
 - See [process output](#process-output) for the viewer opened from **Processes**.
 - Statistics are recorded by the agent for every session, including terminal-started ones, and saved in its history: they survive resume and follow `/rewind` and `/fork`. Sessions saved before this feature have none.
+- A running round counts in the totals and appears as a faded bar and highlighted row. It updates after each model response and tool batch.
 - TTFT and tokens/s need streamed responses; rounds without them show "—". Speed counts output tokens (including reasoning) after the first token.
 
 ## Files

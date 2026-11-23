@@ -94,6 +94,8 @@ def test_launch_worker_uses_private_environment_not_argv_or_files(monkeypatch, t
     launched = []
 
     class FakeWorker:
+        returncode = None
+
         def wait(self):
             return 0
 

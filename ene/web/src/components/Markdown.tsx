@@ -7,6 +7,7 @@ import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { rawFileUrl } from '../lib/api'
+import { useFileExists } from '../lib/fileExists'
 import { highlight } from '../lib/highlight'
 import { fileTarget, isExternalHref, isWebUrl, remarkLinks } from '../lib/links'
 import { copyText } from './ui'
@@ -84,11 +85,15 @@ function MarkdownImage({ src, alt }: { src: string; alt: string }) {
 
 function SmartLink({ href, children }: { href: string; children: ReactNode }) {
   const openFile = useContext(OpenFileContext)
-  if (isWebUrl(href) || href.startsWith('#')) {
+  const sessionId = useContext(SessionIdContext)
+  const web = isWebUrl(href) || href.startsWith('#')
+  const target = !web && (!isExternalHref(href) || /^file:/i.test(href)) ? fileTarget(decode(href)) : null
+  // Only paths the hub can open become links; the rest stay plain text.
+  const exists = useFileExists(openFile ? sessionId : null, target?.path ?? null)
+  if (web) {
     return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
   }
-  const target = !isExternalHref(href) || /^file:/i.test(href) ? fileTarget(decode(href)) : null
-  if (target && openFile) {
+  if (target && openFile && exists) {
     return (
       <button type="button" className="file-link" data-tip={`Open ${target.path}`} onClick={() => openFile(target.path)}>
         {children}

@@ -1239,6 +1239,8 @@ def test_relayed_events_keep_worker_timestamps_and_relay_rounds():
     session.ingest({"type": "user_message", "data": {"text": "do it"}, "timestamp": 100.0})
     session.ingest({"type": "operation_start", "data": {"id": "op"}, "timestamp": 101.0})
     assert session.active_round == {"started_at": 101.0}
+    session.ingest({"type": "round_progress", "data": {"id": "r1", "duration": 4.0, "ended_at": None}, "timestamp": 105.0})
+    assert session.active_round == {"id": "r1", "duration": 4.0, "ended_at": None}
     session.ingest({"type": "operation_end", "data": {"id": "op"}, "timestamp": 111.0})
     session.ingest({"type": "round_stats", "data": {"id": "r1", "duration": 10.0}, "timestamp": 111.0})
     session.ingest({"type": "round_stats", "data": {"id": "r1", "duration": 10.5}, "timestamp": 112.0})
@@ -1303,6 +1305,13 @@ def test_workspace_browsing_endpoints(tmp_path):
             assert listing.status_code == 403
             assert client.get("/api/sessions/s1/file", params={"path": "missing"}).status_code == 404
             assert client.get("/api/sessions/unknown/files").status_code == 404
+
+            # Reply links: only paths a preview can open count.
+            checked = ["src/app.py", "app.py", "src", str(outside), "missing.py"]
+            exists = client.get("/api/sessions/s1/files/exists", params={"path": checked})
+            assert exists.json() == {"files": ["src/app.py", str(outside)]}
+            too_many = client.get("/api/sessions/s1/files/exists", params={"path": ["a"] * 101})
+            assert too_many.status_code == 400
 
             image = client.get("/api/sessions/s1/raw", params={"path": "logo.png"})
             assert image.status_code == 200

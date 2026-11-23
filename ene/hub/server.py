@@ -302,6 +302,8 @@ class RemoteSession:
         self.info: dict[str, str] = {}
         # Per-round statistics, owned and persisted by the agent; the hub only
         # relays them (see ``round_stats`` / ``round_history`` events).
+        # ``active_round`` is the running round's latest ``round_progress``
+        # snapshot (just ``started_at`` before the first one).
         self.rounds: list[dict] = []
         self.active_round: dict | None = None
         # Called when the summary shown in session lists may have changed, so
@@ -510,6 +512,8 @@ class RemoteSession:
             self.active_round = {"started_at": float(timestamp)}
         elif etype == "operation_end":
             self.active_round = None
+        elif etype == "round_progress" and isinstance(data.get("id"), str):
+            self.active_round = dict(data)
         elif etype == "round_stats" and isinstance(data.get("id"), str):
             self.rounds = [item for item in self.rounds if item.get("id") != data["id"]]
             self.rounds = [*self.rounds, dict(data)][-MAX_ROUNDS:]
@@ -1641,6 +1645,16 @@ class Hub:
             return await browse_call(
                 hubfiles.read_file, session_workspace(session_id), path
             )
+
+        @app.get("/api/sessions/{session_id}/files/exists")
+        async def workspace_exists(request: Request, session_id: str):
+            """Which ``path`` params name files a preview can open (for reply links)."""
+            require_login(request)
+            paths = request.query_params.getlist("path")
+            files = await browse_call(
+                hubfiles.existing_files, session_workspace(session_id), paths
+            )
+            return {"files": files}
 
         @app.get("/api/sessions/{session_id}/files/find")
         async def workspace_find(request: Request, session_id: str, query: str = ""):

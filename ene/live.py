@@ -24,7 +24,11 @@ LIVE_DIR = Path.home() / ".ene" / "live"
 REGISTRY_LOCK = LIVE_DIR / ".lock"
 CONNECT_TIMEOUT = 1.0
 REQUEST_TIMEOUT = 5.0
-START_TIMEOUT = 15.0
+# Generous: cold imports on slow shared filesystems (e.g. busy login nodes)
+# can take tens of seconds before the worker binds its control port.
+START_TIMEOUT = 60.0
+# Bytes of worker startup output quoted in a startup failure message.
+STARTUP_LOG_TAIL_BYTES = 4000
 # Covers the worker's two shutdown watchdog phases (agent join, then cleanup).
 STOP_TIMEOUT = 35.0
 STOP_RECORD_GRACE = 40.0
@@ -385,6 +389,21 @@ def _reap(process: subprocess.Popen) -> None:
     process.wait()
 
 
+def _startup_error(message: str, log_path: Path) -> LiveError:
+    """Build a startup failure that quotes the worker's output.
+
+    The log is removed with the failed record, so the message must carry it.
+    """
+    try:
+        with log_path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - STARTUP_LOG_TAIL_BYTES))
+            tail = log.read().decode("utf-8", "replace").strip()
+    except OSError:
+        tail = ""
+    return LiveError(f"{message}\nWorker output:\n{tail}" if tail else message)
+
+
 def launch_worker(record: dict[str, Any], *, api_key: str | None = None) -> dict[str, Any]:
     path = record_path(str(record["runtime_id"]))
     log_path = path.with_suffix(".log")
@@ -417,17 +436,33 @@ def launch_worker(record: dict[str, Any], *, api_key: str | None = None) -> dict
     ).start()
     try:
         deadline = time.monotonic() + START_TIMEOUT
+        current: dict[str, Any] | None = record
         while time.monotonic() < deadline:
+            # Read exit state first so an error the worker recorded before
+            # exiting is reported instead of a bare exit code.
+            exited = process.returncode is not None
             current = read_record(path)
             if current is None:
-                raise LiveError("Worker exited during startup")
+                raise _startup_error("Worker record disappeared during startup", log_path)
             if current.get("status") == "error":
-                unlink_record(path)
-                raise LiveError(str(current.get("error", "Worker failed to start")))
+                raise _startup_error(
+                    str(current.get("error", "Worker failed to start")), log_path
+                )
             if current.get("status") == "ready" and probe(current) is not None:
                 return current
+            # The reaper thread sets returncode once the worker exits.
+            if exited:
+                raise _startup_error(
+                    f"Worker exited during startup (exit code {process.returncode})",
+                    log_path,
+                )
             time.sleep(0.05)
-        raise LiveError(f"Worker did not become ready; see {log_path}")
+        stage = (current or {}).get("startup_stage") or "starting Python and importing Ene"
+        raise _startup_error(
+            f"Worker did not become ready within {START_TIMEOUT:g}s "
+            f"(still {stage}); the host or its filesystem may be slow",
+            log_path,
+        )
     except BaseException:
         # The caller drops the record, so a worker left running here could
         # never be attached or stopped again.

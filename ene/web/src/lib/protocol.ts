@@ -157,7 +157,8 @@ export type StateFrame = {
   pending: PendingMessage | null
   info?: Record<string, string>
   rounds?: RoundStats[]
-  active_round?: { started_at: number } | null
+  /** The running round: its latest live snapshot, or only its start before one. */
+  active_round?: (Partial<RoundStats> & { started_at: number }) | null
   /**
    * Same link, rebuilt timeline (this browser fell behind retained history):
    * actions in flight are still answered on it.

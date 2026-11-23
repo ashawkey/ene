@@ -274,6 +274,7 @@ export function SessionPane({
             sessionId={summary.id}
             summary={summary}
             rounds={view.rounds}
+            activeRound={view.activeRound}
             busy={busy}
             context={view.context}
             operationSince={view.operationSince}

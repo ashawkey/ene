@@ -1524,6 +1524,9 @@ class LLMAgent(
             # cancellation must preserve the turn (including tool results from
             # completed iterations) rather than withdrawing the user's prompt.
             turn_has_response = True
+            publish_progress = getattr(self, "_publish_round_progress", None)
+            if publish_progress is not None:
+                publish_progress()
             content = message.text
             if content:
                 # The stream sink renders buffered Markdown and emits the final
@@ -1601,6 +1604,9 @@ class LLMAgent(
                 note_tool_time = getattr(self, "_note_tool_time", None)
                 if note_tool_time is not None:
                     note_tool_time(time.monotonic() - t_tools)
+                publish_progress = getattr(self, "_publish_round_progress", None)
+                if publish_progress is not None:
+                    publish_progress()
             # A skill loaded this round may contribute tools; `self.tools` is a
             # live registry view, so the next loop iteration advertises them
             # automatically with no manual rebuild.
@@ -1881,6 +1887,7 @@ class LLMAgent(
                             self._run_command(text)
                         else:
                             try:
+                                self.check_submission(text)
                                 self.input_broker.submit(text, source="terminal")
                             except ValueError as exc:
                                 await prompts.restart(text)

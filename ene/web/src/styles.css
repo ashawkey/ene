@@ -382,7 +382,8 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .login p { margin: 0 0 20px; }
 .login-field { display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); color: var(--text-2); }
 .login-field input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; height: 34px; color: var(--text); }
-.form-error { margin: 12px 0 0; color: var(--red); font-size: 13px; }
+/* Errors may quote multi-line worker output: keep its lines, cap its height. */
+.form-error { margin: 12px 0 0; color: var(--red); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
 .boot-error { max-width: 420px; padding: 0 16px; text-align: center; line-height: 1.5; }
 
 /* ---------- app layout ---------- */
@@ -1106,6 +1107,7 @@ button.step-head:hover { background: var(--hover); }
 .chart g:not(.hovered) .bar { transition: opacity 0.15s; }
 .chart svg:hover g:not(.hovered) .bar { opacity: 0.55; }
 .bar.cancelled { opacity: 0.5; }
+.bar.live { opacity: 0.6; }
 .chart-tip {
   position: absolute;
   top: -6px;
@@ -1138,6 +1140,7 @@ button.step-head:hover { background: var(--hover); }
 .rt-row { border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; color: var(--text); }
 .rt-row:hover { background: var(--hover); }
 .rt-row.cancelled { color: var(--text-3); }
+.rt-row.live > span:first-child { color: var(--accent); }
 .rt-row > span:nth-child(n + 3), .rt-head > span:nth-child(n + 3) { text-align: right; }
 
 /* tasks */
@@ -1287,7 +1290,7 @@ button.step-head:hover { background: var(--hover); }
 .toast.error > svg:first-child { color: var(--red); }
 .toast.success > svg:first-child { color: var(--green); }
 .toast.info > svg:first-child { color: var(--accent); }
-.toast span { flex: 1; }
+.toast span { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
 .toast button { border: 0; background: transparent; color: var(--text-3); display: grid; place-items: center; padding: 2px; }
 
 /* ---------- highlight.js (theme-aware) ---------- */

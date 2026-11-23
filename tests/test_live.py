@@ -670,6 +670,27 @@ def test_live_worker_runs_instant_terminal_command_despite_pending_input():
     assert inputs.submission == queued
 
 
+def test_live_worker_rejects_idle_only_command_while_working():
+    from ene.backend.commands import AgentCommandsMixin
+
+    events = EventHub()
+    inputs = InputBroker(events)
+    token = CancellationToken(events)
+    worker = Worker.__new__(Worker)
+    worker.inputs = inputs
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.cancellation = token
+    worker.agent = agent
+
+    with token.operation("agent response"):
+        with pytest.raises(ValueError, match="/tr is unavailable"):
+            worker._submit_attached("/tr")
+    assert inputs.submission is None
+
+    worker._submit_attached("/tr en")
+    assert inputs.submission.text == "/tr en"
+
+
 def test_live_worker_detach_preserves_round_waiting_for_prompt_response():
     events = EventHub()
     worker = Worker.__new__(Worker)
@@ -2186,6 +2207,8 @@ def test_launch_worker_terminates_and_reaps_worker_that_never_starts(monkeypatch
     calls = []
 
     class Process:
+        returncode = None
+
         def terminate(self):
             calls.append("terminate")
             exited.set()
@@ -2194,12 +2217,45 @@ def test_launch_worker_terminates_and_reaps_worker_that_never_starts(monkeypatch
             exited.wait(5)
             calls.append("wait")
 
-    monkeypatch.setattr(live.subprocess, "Popen", lambda *args, **kwargs: Process())
+    def popen(*args, stdout, **kwargs):
+        stdout.write(b"slow import\n")
+        return Process()
 
-    with pytest.raises(live.LiveError, match="did not become ready"):
+    monkeypatch.setattr(live.subprocess, "Popen", popen)
+
+    with pytest.raises(live.LiveError, match="did not become ready") as excinfo:
         live.launch_worker(record)
 
+    message = str(excinfo.value)
+    assert "still starting Python and importing Ene" in message
+    assert "slow import" in message
     assert wait_for(lambda: calls == ["terminate", "wait"])
+
+
+def test_launch_worker_reports_early_exit_with_startup_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(live, "LIVE_DIR", tmp_path / "live")
+    monkeypatch.setattr(live, "REGISTRY_LOCK", tmp_path / "live" / ".lock")
+    record = live.create_record(name="", workspace=str(tmp_path), options={})
+
+    class Process:
+        returncode = 1
+
+        def terminate(self):
+            pass
+
+        def wait(self):
+            return 1
+
+    def popen(*args, stdout, **kwargs):
+        stdout.write(b"ModuleNotFoundError: No module named 'x'\n")
+        return Process()
+
+    monkeypatch.setattr(live.subprocess, "Popen", popen)
+
+    with pytest.raises(live.LiveError, match=r"exited during startup \(exit code 1\)") as excinfo:
+        live.launch_worker(record)
+
+    assert "No module named 'x'" in str(excinfo.value)
 
 
 def wait_for(predicate, timeout=2.0):

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ServerEvent, StateFrame } from './protocol'
 import type { SessionView, TimelineItem } from './session'
-import { MAX_OUTPUT_CHARS, applyHistory, initialView, messageTime, reduce, roundsVersion, totals } from './session'
+import { MAX_OUTPUT_CHARS, applyHistory, initialView, messageTime, reduce, roundsVersion, totals, withActiveRound } from './session'
 
 function state(overrides: Partial<StateFrame> = {}): ServerEvent {
   return {
@@ -139,6 +139,28 @@ describe('session reducer', () => {
     // A rewind replaces the list but keeps anchors learned from the stream.
     const rewound = run([ev(4, 'round_history', { rounds: [{ id: 'r1' }] })], view).view
     expect(rewound.rounds.map((item) => [item.id, item.start_seq])).toEqual([['r1', 1]])
+  })
+
+  it('tracks the running round live until it finishes', () => {
+    const live = { id: 'r1', index: 1, duration: 30, ended_at: null, tool_calls: 3, input_tokens: 100 }
+    const { view } = run([
+      state({ rounds: [{ id: 'saved', duration: 10, input_tokens: 50 }] as never }),
+      ev(1, 'operation_start', { id: 'op' }),
+      ev(2, 'round_progress', { ...live, tool_calls: 1 }),
+      ev(3, 'round_progress', live),
+    ])
+    expect(view.items.filter((item) => item.kind === 'round')).toHaveLength(0)
+    expect(view.activeRound).toMatchObject({ id: 'r1', tool_calls: 3, ended_at: null, start_seq: 1 })
+    expect(totals(withActiveRound(view.rounds, view.activeRound))).toMatchObject({ rounds: 2, duration: 40, input: 150, tools: 3 })
+
+    const done = run([ev(4, 'round_stats', { ...live, ended_at: 200 }), ev(5, 'operation_end', { id: 'op' })], view).view
+    expect(done.activeRound).toBeNull()
+    expect(withActiveRound(done.rounds, done.activeRound).map((round) => round.id)).toEqual(['saved', 'r1'])
+
+    // A browser joining mid-round gets the snapshot in its state frame.
+    const joined = run([state({ operation_id: 'op', active_round: { ...live, started_at: 5 } as never })]).view
+    expect(joined.activeRound).toMatchObject({ id: 'r1', tool_calls: 3 })
+    expect(joined.operationSince).toBe(5)
   })
 
   it('parses model/tool time and streaming latency, averaging measured rounds', () => {

@@ -438,6 +438,8 @@ def test_oauth_commands_use_current_provider():
         ("/compact", False),
         ("/recap", False),
         ("/export response.md", False),
+        ("/tr", False),
+        ("/tr en", False),
         ("/continue", False),
         ("/rewind", False),
         ("/fork", False),
@@ -739,6 +741,173 @@ def test_recap_handles_empty_history_bad_usage_and_provider_failure(monkeypatch)
     ], FailingProvider())
     agent._cmd_recap()
     assert warnings == ["Could not generate recap: offline"]
+
+
+def _tr_agent(messages, provider):
+    agent, output, warnings = _recap_agent(messages, provider)
+    agent._summary_output_cap = LLMAgent._summary_output_cap.__get__(agent)
+    return agent, output, warnings
+
+
+def test_tr_translates_last_assistant_response_without_changing_context(monkeypatch):
+    from ene.config import conf
+
+    monkeypatch.delitem(conf, "recap_model", raising=False)
+    requests = []
+
+    class Provider:
+        def complete(self, request):
+            requests.append(request)
+            return CompletionResult(
+                message=Message.assistant("  已完成。\n\n```py\nx = 1\n```  "),
+                usage=ProviderUsage(20, 5, 25),
+                finish_reason="stop",
+            )
+
+        def cancel(self):
+            pass
+
+    messages = [
+        Message.user("do it"),
+        Message.assistant("older reply"),
+        Message.user("again"),
+        Message.assistant("Done.\n\n```py\nx = 1\n```"),
+        Message.assistant("", tool_calls=[
+            ToolCall(id="c1", name="read_file", arguments="{}"),
+        ]),
+        Message.tool("c1", "secret tool output"),
+    ]
+    agent, output, warnings = _tr_agent(messages, Provider())
+    before = list(agent.context.messages)
+
+    agent._handle_command("/tr")
+
+    assert agent.context.messages == before
+    assert warnings == []
+    assert output == [
+        ("[bold blue]Translation (Simplified Chinese):[/bold blue]", {}),
+        ("已完成。\n\n```py\nx = 1\n```", {"markup": False}),
+    ]
+    request = requests[0]
+    prompt = request.messages[0].text
+    assert "Simplified Chinese" in prompt
+    assert "Done.\n\n```py\nx = 1\n```" in prompt
+    assert "older reply" not in prompt
+    assert "secret tool output" not in prompt
+    assert request.stream is False
+    assert request.tools == []
+    assert request.reasoning_effort == "low"
+    assert request.max_output_tokens > 128
+    assert agent.token_totals["total"] == 25
+
+    agent._handle_command("/tr EN")
+    assert "into English" in requests[1].messages[0].text
+
+
+def test_tr_chunks_long_translations(monkeypatch):
+    from ene.backend.commands import _CONTEXT_CHUNK_CHARS
+    from ene.config import conf
+
+    monkeypatch.delitem(conf, "recap_model", raising=False)
+    line = "x" * 1000
+    translated = "\n".join([line] * (2 * _CONTEXT_CHUNK_CHARS // 1000))
+    provider = NS(
+        complete=lambda request: CompletionResult(
+            message=Message.assistant(translated), usage=None, finish_reason="stop",
+        ),
+        cancel=lambda: None,
+    )
+    agent, output, warnings = _tr_agent([Message.assistant("long")], provider)
+
+    agent._cmd_tr("/tr")
+
+    assert warnings == []
+    chunks = [text for text, kwargs in output[1:]]
+    assert len(chunks) > 1
+    assert all(len(chunk) <= _CONTEXT_CHUNK_CHARS for chunk in chunks)
+    assert "\n".join(chunks) == translated
+
+
+def test_tr_handles_missing_response_bad_usage_and_provider_failure(monkeypatch):
+    from ene.config import conf
+
+    monkeypatch.delitem(conf, "recap_model", raising=False)
+    provider = NS(complete=lambda request: pytest.fail("provider should not run"))
+    agent, output, warnings = _tr_agent([Message.user("hi")], provider)
+
+    agent._cmd_tr("/tr")
+    assert output == [("There is no assistant response to translate yet.", {})]
+
+    agent.context.replace_messages([Message.assistant("reply")])
+    agent._cmd_tr("/tr fr")
+    agent._cmd_tr("/tr cn extra")
+    assert warnings == ["Usage: /tr [cn|en]", "Usage: /tr [cn|en]"]
+
+    class FailingProvider:
+        def complete(self, request):
+            raise RuntimeError("offline")
+
+        def cancel(self):
+            pass
+
+    agent, _, warnings = _tr_agent([Message.assistant("reply")], FailingProvider())
+    agent._cmd_tr("/tr")
+    assert warnings == ["Could not translate: offline"]
+
+
+def test_tr_uses_recap_alias_and_closes_temporary_provider(monkeypatch):
+    from ene.config import conf
+
+    closed = []
+    requests = []
+
+    class Provider:
+        def complete(self, request):
+            requests.append(request)
+            return CompletionResult(
+                message=Message.assistant("Hello."), usage=None, finish_reason="stop",
+            )
+
+        def cancel(self):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    temporary = Provider()
+    monkeypatch.setitem(conf, "recap_model", "fast")
+    monkeypatch.setitem(conf, "openai", {
+        "fast": {"provider": "openai", "model": "cheap-model", "api_key": "cheap-key"},
+    })
+    created = []
+    monkeypatch.setattr(
+        "ene.backend.commands.create_provider",
+        lambda name, settings: created.append((name, settings)) or temporary,
+    )
+    active = NS(close=lambda: pytest.fail("active provider was closed"))
+    agent, output, warnings = _tr_agent([Message.assistant("你好。")], active)
+
+    agent._cmd_tr("/tr en")
+
+    assert warnings == []
+    assert output[-1] == ("Hello.", {"markup": False})
+    assert created[0][1].api_key == "cheap-key"
+    assert requests[0].model == "cheap-model"
+    assert closed == [True]
+
+
+def test_check_submission_rejects_tr_only_while_working():
+    token = backend.CancellationToken(EventHub())
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.cancellation = token
+
+    agent.check_submission("/tr")
+    with token.operation("agent response"):
+        with pytest.raises(ValueError, match="/tr is unavailable while the agent is working"):
+            agent.check_submission("/TR en")
+        agent.check_submission("/context")
+        agent.check_submission("translate this")
+    agent.check_submission("/tr en")
 
 
 def test_export_writes_last_assistant_response_to_relative_path(tmp_path):

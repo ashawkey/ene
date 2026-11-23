@@ -11,6 +11,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -445,7 +446,10 @@ class Worker:
         )
 
     def start(self) -> None:
+        # Progress markers let a launcher that times out say where startup stalled.
+        update_record(self.runtime_id, startup_stage="creating the agent")
         self.agent = self._make_agent()
+        update_record(self.runtime_id, startup_stage="initializing the session")
         resume = self.record.get("options", {}).get("resume")
         if resume:
             if not self.agent.load_session(resume):
@@ -732,6 +736,8 @@ class Worker:
             agent.console.user_input(text, source=source)
             agent._run_command(text)
             return
+        if agent is not None:
+            agent.check_submission(text)
         self.inputs.submit(text, source, action_id=action_id)
 
     def _serve_terminal(self, sock: socket.socket, *, replay_history: bool = True) -> None:
@@ -948,6 +954,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         worker.start()
     except BaseException as exc:
+        if not isinstance(exc, LiveError):
+            # The launcher quotes the startup log in its error message.
+            traceback.print_exc()
         try:
             update_record(str(record["runtime_id"]), status="error", error=str(exc))
         except Exception:

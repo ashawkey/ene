@@ -29,6 +29,7 @@ from ene.utils.io import EVENT_TEXT_LIMIT, is_slash_command
 _RECAP_INPUT_MAX_CHARS = 24_000
 _RECAP_MAX_OUTPUT_TOKENS = 128
 _RECAP_TIMEOUT_SECONDS = 60
+_TRANSLATION_LANGUAGES = {"cn": "Simplified Chinese", "en": "English"}
 # Web/terminal event rendering happens at a fixed 120 columns, so rows wider
 # than that wrap and stop being one line per context message.
 _CONTEXT_LIST_WIDTH = 120
@@ -92,6 +93,7 @@ class AgentCommandsMixin:
         "compact": "Force context compaction via LLM summarization",
         "recap": "Summarize the conversation's task in one sentence",
         "export": "Export the last assistant response (/export <path/filename>)",
+        "tr": "Translate the last assistant response (/tr [cn|en], default cn)",
         "continue": "Resume an unfinished round without adding a user message",
         "usage": "Show token usage for this session and recent rounds",
         "ps": "List processes; /ps <label|id> [tail-chars] inspects; /ps stop <label|id> stops",
@@ -124,6 +126,25 @@ class AgentCommandsMixin:
     # The same, but only in their bare inspection/listing form: given an
     # argument these mutate state used or persisted by the running round.
     INSTANT_LISTING_COMMANDS = frozenset({"model", "persona", "skills"})
+    # Commands rejected, rather than queued, while the agent is working: their
+    # answer is only meaningful for the conversation as it is right now.
+    IDLE_ONLY_COMMANDS = frozenset({"tr"})
+
+    def check_submission(self, text: str) -> None:
+        """Raise ``ValueError`` when *text* cannot be accepted right now."""
+        if not is_slash_command(text):
+            return
+        cmd = text.split(maxsplit=1)[0][1:].lower()
+        cancellation = getattr(self, "cancellation", None)
+        if (
+            cmd in self.IDLE_ONLY_COMMANDS
+            and cancellation is not None
+            and cancellation.operation_id is not None
+        ):
+            raise ValueError(
+                f"/{cmd} is unavailable while the agent is working; "
+                "try again when it finishes."
+            )
 
     def is_instant_command(self, raw: str) -> bool:
         """Whether ``raw`` can run now rather than queue behind a live round."""
@@ -156,6 +177,8 @@ class AgentCommandsMixin:
             self._cmd_recap(raw)
         elif cmd == "export":
             self._cmd_export(raw)
+        elif cmd == "tr":
+            self._cmd_tr(raw)
         elif cmd == "continue":
             self._cmd_continue(raw)
         elif cmd == "usage":
@@ -332,25 +355,14 @@ class AgentCommandsMixin:
                 "are summarizing a conversation.\n\n"
                 f"{recap_input}"
             )
-            with self._operation("conversation recap"):
-                with self.console.thinking(label="Recapping", progress=True):
-                    result = run_interruptible(
-                        lambda: provider.complete(CompletionRequest(
-                            model=model,
-                            messages=[Message.user(prompt)],
-                            stream=False,
-                            max_output_tokens=_RECAP_MAX_OUTPUT_TOKENS,
-                            reasoning_effort="low",
-                            timeout=_RECAP_TIMEOUT_SECONDS,
-                        )),
-                        self.cancellation,
-                        on_cancel=provider.cancel,
-                    )
-            if self.cancellation is not None and self.cancellation.cancelled:
-                raise RequestInterrupted()
-            if result.usage is not None:
-                self._accumulate_usage(result.usage)
-            recap = " ".join(result.message.text.split())
+            text = self._side_completion(
+                provider, model, prompt,
+                label="conversation recap",
+                spinner="Recapping",
+                max_output_tokens=_RECAP_MAX_OUTPUT_TOKENS,
+                timeout=_RECAP_TIMEOUT_SECONDS,
+            )
+            recap = " ".join(text.split())
             if not recap:
                 raise RuntimeError("Recap provider returned no text")
             self.console.print(f"Recap: {recap}", markup=False)
@@ -362,14 +374,90 @@ class AgentCommandsMixin:
             if owned and provider is not None:
                 provider.close()
 
-    def _cmd_export(self, raw: str = "/export") -> None:
-        """Write the most recent assistant response to a file."""
-        parts = raw.split(maxsplit=1)
-        if len(parts) != 2 or not parts[1].strip():
-            self.console.warn("Usage: /export <path/filename>")
+    def _side_completion(
+        self,
+        provider,
+        model: str,
+        prompt: str,
+        *,
+        label: str,
+        spinner: str,
+        max_output_tokens: int,
+        timeout: float | None,
+    ) -> str:
+        """Run one cancellable request outside the conversation and return its text.
+
+        Nothing is added to the context; only token usage is accounted.
+        """
+        with self._operation(label):
+            with self.console.thinking(label=spinner, progress=True):
+                result = run_interruptible(
+                    lambda: provider.complete(CompletionRequest(
+                        model=model,
+                        messages=[Message.user(prompt)],
+                        stream=False,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort="low",
+                        timeout=timeout,
+                    )),
+                    self.cancellation,
+                    on_cancel=provider.cancel,
+                )
+        if self.cancellation is not None and self.cancellation.cancelled:
+            raise RequestInterrupted()
+        if result.usage is not None:
+            self._accumulate_usage(result.usage)
+        return result.message.text
+
+    def _cmd_tr(self, raw: str = "/tr") -> None:
+        """Translate the last assistant response without changing conversation state."""
+        parts = raw.split()
+        code = parts[1].lower() if len(parts) == 2 else "cn"
+        if len(parts) > 2 or code not in _TRANSLATION_LANGUAGES:
+            self.console.warn("Usage: /tr [cn|en]")
+            return
+        language = _TRANSLATION_LANGUAGES[code]
+        source = self._last_assistant_text()
+        if source is None:
+            self.console.system("There is no assistant response to translate yet.")
             return
 
-        response = next(
+        provider = None
+        owned = False
+        try:
+            provider, model, owned = self._recap_provider()
+            prompt = (
+                f"Translate the text below into {language}. Output only the "
+                "translation, with no preamble or notes. Preserve the Markdown "
+                "structure, and keep code blocks, inline code, commands, file "
+                "paths, identifiers, and URLs unchanged. If the text is already in "
+                f"{language}, return it unchanged.\n\n"
+                f"<text>\n{source}\n</text>"
+            )
+            text = self._side_completion(
+                provider, model, prompt,
+                label="translation",
+                spinner="Translating",
+                max_output_tokens=self._summary_output_cap(model, owned, len(prompt)),
+                # The provider default, like compaction: a long reply takes a
+                # while to translate, and Escape still cancels.
+                timeout=None,
+            ).strip()
+            if not text:
+                raise RuntimeError("Translation provider returned no text")
+            self.console.print(f"[bold blue]Translation ({language}):[/bold blue]")
+            self._print_chunked(text, markup=False)
+        except RequestInterrupted:
+            self.console.system("Translation cancelled.")
+        except Exception as e:
+            self.console.warn(f"Could not translate: {e}")
+        finally:
+            if owned and provider is not None:
+                provider.close()
+
+    def _last_assistant_text(self) -> str | None:
+        """Text of the newest assistant message that has any."""
+        return next(
             (
                 message.text
                 for message in reversed(self.context.messages)
@@ -377,6 +465,15 @@ class AgentCommandsMixin:
             ),
             None,
         )
+
+    def _cmd_export(self, raw: str = "/export") -> None:
+        """Write the most recent assistant response to a file."""
+        parts = raw.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            self.console.warn("Usage: /export <path/filename>")
+            return
+
+        response = self._last_assistant_text()
         if response is None:
             self.console.warn("There is no assistant response to export yet.")
             return

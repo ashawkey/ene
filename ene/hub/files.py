@@ -37,6 +37,7 @@ MAX_CHANGES = 500
 MAX_UNTRACKED_COUNT_BYTES = 8 * 1024 * 1024
 MAX_LOG_COMMITS = 100
 MAX_FIND_RESULTS = 50
+MAX_EXISTS_PATHS = 100
 MAX_QUERY_CHARS = 1000
 # Full-text search limits: a broad query in a large tree stops early and is
 # reported as truncated instead of stalling the hub.
@@ -185,6 +186,22 @@ def read_file(root: str | Path, relative: str) -> dict:
     truncated = len(data) > MAX_TEXT_BYTES
     text = data[:MAX_TEXT_BYTES].decode("utf-8", errors="replace")
     return {**result, "kind": "text", "text": text, "truncated": truncated}
+
+
+def existing_files(root: str | Path, paths: list[str]) -> list[str]:
+    """The subset of *paths* that :func:`read_file` would open: readable regular files."""
+    if len(paths) > MAX_EXISTS_PATHS:
+        raise WorkspaceError("Too many paths.")
+    resolve_in_workspace(root, "")  # an unavailable workspace is an error, not a miss
+    found = []
+    for path in paths:
+        try:
+            _, target = resolve_in_workspace(root, path, confined=False)
+        except WorkspaceError:
+            continue
+        if target.is_file() and os.access(target, os.R_OK):
+            found.append(path)
+    return found
 
 
 def raw_image(root: str | Path, relative: str) -> tuple[Path, str]:

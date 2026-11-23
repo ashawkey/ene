@@ -105,6 +105,11 @@ export const endSession = (id: string) => post<{ ok: boolean }>(`${sid(id)}/end`
 
 export const listFiles = (id: string, path: string) => get<DirListing>(`${sid(id)}/files`, { path })
 export const readFile = (id: string, path: string) => get<FilePreview>(`${sid(id)}/file`, { path })
+/** Which of *paths* name files the viewer can open. */
+export const existingFiles = (id: string, paths: string[]) =>
+  request<{ files: string[] }>(
+    `${sid(id)}/files/exists?${new URLSearchParams(paths.map((path) => ['path', path])).toString()}`,
+  ).then((data) => data.files)
 export const findFiles = (id: string, query: string) => get<FindResult>(`${sid(id)}/files/find`, { query })
 export const searchText = (id: string, query: string, options: SearchOptions) =>
   get<SearchResult>(`${sid(id)}/files/search`, {

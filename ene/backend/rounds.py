@@ -6,6 +6,11 @@ token deltas of the session counters, streaming latency (mean time to first
 token and output tokens per second), and tool activity. Every terminal or web session records rounds the
 same way, because this runs inside the agent rather than in a client.
 
+While a round runs, ``round_progress`` events carry a live snapshot of the same
+record (``ended_at`` is null) after each model response and tool batch, so long
+agentic rounds show their statistics before they finish. Only the final
+``round_stats`` record is persisted.
+
 Persistence: each session revision stores only the *latest* round in its state
 (``last_round``), so the delta-encoded history grows by one record per round.
 The full list is rebuilt by walking a revision's ancestors
@@ -117,8 +122,20 @@ class RoundStatsMixin:
         return "continue", ""
 
     def active_round(self) -> dict[str, Any] | None:
+        """Live snapshot of the running round, or None between rounds."""
         current = self._round_state()["current"]
-        return {"started_at": current["started_at"]} if current else None
+        return self._round_record(current, final=False) if current else None
+
+    def _publish_round_progress(self) -> None:
+        """Publish the running round's statistics so far (``round_progress``)."""
+        current = self._round_state()["current"]
+        events = getattr(self, "events", None)
+        if current is None or events is None:
+            return
+        try:
+            events.publish("round_progress", **self._round_record(current, final=False))
+        except Exception:
+            pass  # a display side channel must never fail the round
 
     @contextmanager
     def _track_round(self) -> Iterator[None]:
@@ -134,6 +151,7 @@ class RoundStatsMixin:
         totals = dict(getattr(self, "token_totals", {}) or {})
         kind, prompt = self._round_opener()
         state["current"] = {
+            "id": uuid.uuid4().hex,
             "started_at": time.time(),
             "totals": totals,
             "kind": kind,
@@ -199,24 +217,24 @@ class RoundStatsMixin:
         if current is not None:
             current["tool_time"] += max(0.0, elapsed)
 
-    def _finish_round(self, current: dict[str, Any] | None) -> None:
-        if current is None:
-            return
+    def _round_record(self, current: dict[str, Any], *, final: bool = True) -> dict[str, Any]:
+        """The statistics record for *current*: final, or a live snapshot
+        (``ended_at`` null, no outcome) of a round still running."""
         ended = time.time()
         totals = getattr(self, "token_totals", {}) or {}
         record: dict[str, Any] = {
-            "id": uuid.uuid4().hex,
+            "id": current["id"],
             "index": int(getattr(self, "round_id", 0) or 0),
             "kind": current["kind"],
             "prompt": current["prompt"],
             "model": str(getattr(self, "model", "") or ""),
             "started_at": round(current["started_at"], 3),
-            "ended_at": round(ended, 3),
+            "ended_at": round(ended, 3) if final else None,
             "duration": round(max(0.0, ended - current["started_at"]), 3),
             "tool_calls": current["tool_calls"],
             "tool_failures": current["tool_failures"],
             "edits": current["edits"],
-            "cancelled": bool(getattr(self, "_last_interrupted", False)),
+            "cancelled": final and bool(getattr(self, "_last_interrupted", False)),
             "model_calls": current["model_calls"],
             "model_time": round(current["model_time"], 3),
             "tool_time": round(current["tool_time"], 3),
@@ -229,7 +247,7 @@ class RoundStatsMixin:
                 if current["decode_time"] > 0 else None
             ),
         }
-        outcome = getattr(self, "_last_turn_outcome", None)
+        outcome = getattr(self, "_last_turn_outcome", None) if final else None
         record["outcome"] = str(getattr(outcome, "value", outcome or ""))
         for name, key in _TOKEN_KEYS:
             # Counters reset when a session restarts; never report negatives.
@@ -240,6 +258,12 @@ class RoundStatsMixin:
         except Exception:
             record["context_tokens"] = 0
         record["context_limit"] = int(getattr(self, "context_length", 0) or 0)
+        return record
+
+    def _finish_round(self, current: dict[str, Any] | None) -> None:
+        if current is None:
+            return
+        record = self._round_record(current)
         state = self._round_state()
         state["history"] = [*state["history"], record][-MAX_ROUND_HISTORY:]
         state["last"] = record
