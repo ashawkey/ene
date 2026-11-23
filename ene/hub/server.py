@@ -1721,10 +1721,27 @@ class Hub:
                 hubfiles.git_log, session_workspace(session_id), path
             )
 
+        # One `git status` scan per workspace at a time; requests arriving
+        # during a scan share its result instead of stacking slow scans.
+        change_scans: dict[str, asyncio.Future] = {}
+
         @app.get("/api/sessions/{session_id}/changes")
         async def workspace_changes(request: Request, session_id: str):
             require_login(request)
-            return await browse_call(hubfiles.git_changes, session_workspace(session_id))
+            workspace = session_workspace(session_id)
+            scan = change_scans.get(workspace)
+            if scan is None:
+                scan = asyncio.ensure_future(browse_call(hubfiles.git_changes, workspace))
+                change_scans[workspace] = scan
+
+                def finished(task: asyncio.Future) -> None:
+                    change_scans.pop(workspace, None)
+                    if not task.cancelled():
+                        task.exception()  # retrieved even if every requester left
+
+                scan.add_done_callback(finished)
+            # A disconnecting requester must not cancel a scan others await.
+            return await asyncio.shield(scan)
 
         @app.get("/api/sessions/{session_id}/branch")
         async def workspace_branch(request: Request, session_id: str):

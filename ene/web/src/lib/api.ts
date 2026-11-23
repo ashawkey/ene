@@ -36,6 +36,8 @@ export const setCsrf = (token: string) => {
 export const getCsrf = () => csrfToken
 
 const REQUEST_TIMEOUT = 20_000
+// The hub allows `git status` and then `git diff --numstat` 60 s each.
+const CHANGES_TIMEOUT = 130_000
 
 async function request<T>(path: string, init: RequestInit = {}, timeout = REQUEST_TIMEOUT): Promise<T> {
   const controller = new AbortController()
@@ -67,9 +69,9 @@ async function request<T>(path: string, init: RequestInit = {}, timeout = REQUES
   return body as T
 }
 
-function get<T>(path: string, params: Record<string, string> = {}) {
+function get<T>(path: string, params: Record<string, string> = {}, timeout?: number) {
   const query = new URLSearchParams(params).toString()
-  return request<T>(query ? `${path}?${query}` : path)
+  return request<T>(query ? `${path}?${query}` : path, {}, timeout)
 }
 
 function post<T>(path: string, body?: unknown, timeout?: number) {
@@ -122,7 +124,7 @@ export const fileDiff = (id: string, path: string, commit?: string) =>
   get<GitDiff>(`${sid(id)}/diff`, commit ? { path, commit } : { path })
 export const fileLog = (id: string, path: string) => get<GitLog>(`${sid(id)}/log`, { path })
 export const gitBranch = (id: string) => get<GitBranch>(`${sid(id)}/branch`)
-export const listChanges = (id: string) => get<GitChanges>(`${sid(id)}/changes`)
+export const listChanges = (id: string) => get<GitChanges>(`${sid(id)}/changes`, {}, CHANGES_TIMEOUT)
 export const pathCompletions = (id: string, query: string) =>
   get<{ completions: string[] }>(`${sid(id)}/path-completions`, { query }).then((data) => data.completions)
 

@@ -27,8 +27,11 @@ MAX_RAW_BYTES = 16 * 1024 * 1024
 BINARY_SNIFF_BYTES = 8192
 GIT_TIMEOUT = 3.0
 # `git status` walks the whole tree (untracked files included), which can take
-# far longer than a ref lookup in a large repo or on a network filesystem.
-GIT_STATUS_TIMEOUT = 15.0
+# far longer than a ref lookup in a large repo or on a network filesystem:
+# without saving the index (--no-optional-locks), a stale one is re-checked
+# file by file on every call.
+GIT_STATUS_TIMEOUT = 60.0
+GIT_LOG_TIMEOUT = 15.0
 MAX_CHANGES = 500
 # Line counts for untracked files read them; stop counting past this budget.
 MAX_UNTRACKED_COUNT_BYTES = 8 * 1024 * 1024
@@ -495,7 +498,7 @@ def git_log(root: str | Path, relative: str) -> dict:
                 f"-n{MAX_LOG_COMMITS + 1}", "--name-only",
                 "--format=%x1e%H%x1f%h%x1f%an%x1f%at%x1f%s", "--", repo_path,
             ],
-            cwd=repo, capture_output=True, timeout=GIT_STATUS_TIMEOUT,
+            cwd=repo, capture_output=True, timeout=GIT_LOG_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise WorkspaceError("Could not read the Git history.") from exc

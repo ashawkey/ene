@@ -1497,6 +1497,38 @@ def test_git_changes_keeps_repo_when_status_fails_or_times_out(tmp_path, monkeyp
     assert failed["error"] == "fatal: detected dubious ownership"
 
 
+def test_concurrent_change_requests_share_one_git_status_scan(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ene.hub import files as hubfiles
+
+    calls = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_changes(root):
+        calls.append(root)
+        started.set()
+        assert release.wait(5)
+        return {"git": True, "branch": "trunk", "changes": [], "scan": len(calls)}
+
+    monkeypatch.setattr(hubfiles, "git_changes", slow_changes)
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(tmp_path))
+    with TestClient(hub.app) as client, ThreadPoolExecutor(3) as pool:
+        login(client)
+        first = pool.submit(client.get, "/api/sessions/s1/changes")
+        assert started.wait(5)
+        others = [pool.submit(client.get, "/api/sessions/s1/changes") for _ in range(2)]
+        time.sleep(0.2)
+        release.set()
+        answers = [f.result(5).json() for f in (first, *others)]
+        assert [a["scan"] for a in answers] == [1, 1, 1]
+        assert len(calls) == 1
+        # A request after the scan finished starts a fresh one.
+        assert client.get("/api/sessions/s1/changes").json()["scan"] == 2
+
+
 def test_git_branch_reports_branch_unborn_and_detached(tmp_path):
     import shutil
     import subprocess
