@@ -464,7 +464,6 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .session-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .session-title { display: flex; align-items: center; gap: 6px; font-weight: 560; font-size: 13.5px; min-width: 0; }
 .session-sub { color: var(--text-3); font-size: 12px; }
-.session-cwd { flex: 0 1 auto; max-width: 45%; color: var(--text-3); font-size: 12px; font-weight: 400; }
 .session-meta { display: flex; align-items: center; gap: 4px; color: var(--text-3); }
 .attach-hint { opacity: 0; transition: opacity 0.15s; }
 .session-row:hover .attach-hint { opacity: 1; }

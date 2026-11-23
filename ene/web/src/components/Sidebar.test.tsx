@@ -111,4 +111,11 @@ describe('session search', () => {
     expect(screen.getByPlaceholderText(/Search sessions/)).toHaveAttribute('placeholder', 'Search sessions  ⌘K')
     expect(screen.getByRole('button', { name: 'Collapse sidebar (⌘B)' })).toBeInTheDocument()
   })
+
+  it('shows the session name on the first line and workdir on the second without the user message', () => {
+    renderSidebar([{ ...session('a', 'web'), name: 'my-session', cwd: '/home/user/workspace/repo', preview: 'last user message' }])
+    expect(document.querySelector('.session-title')?.textContent).toBe('my-session')
+    expect(document.querySelector('.session-sub')?.textContent).toBe('repo')
+    expect(screen.queryByText('last user message')).not.toBeInTheDocument()
+  })
 })

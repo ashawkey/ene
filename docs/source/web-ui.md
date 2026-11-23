@@ -56,7 +56,7 @@ The sidebar groups every live session on the machine:
 | **Available** | Running, unattached | Click to attach |
 | **In a terminal** | Owned by a terminal | Run `/detach` or Ctrl+D there first |
 
-- **Title:** the sidebar, header, and browser tab show the session name, or the session ID if unnamed. Sidebar rows add the workspace folder after the title.
+- **Title:** the sidebar, header, and browser tab show the session name, or the session ID if unnamed. Sidebar rows show the workspace folder under the title.
 - **Scroll position:** each session keeps its place when you switch away; one that was following the latest output stays at the bottom.
 - **Rename:** click the session name in the header; Enter saves (same as `/name <name>`), Escape cancels.
 - **Fork:** `/fork [name]` opens the new session here and switches to it; the original stays open under **Open here**.

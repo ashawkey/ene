@@ -60,10 +60,9 @@ function SessionRow({
         <span className="session-text">
           <span className="session-title">
             <span className="clamp">{title}</span>
-            {session.cwd ? <span className="session-cwd clamp">{basename(session.cwd)}</span> : null}
             {unread ? <span className="unread" aria-label="Finished" /> : null}
           </span>
-          <span className="session-sub clamp">{session.preview || 'No messages yet'}</span>
+          {session.cwd ? <span className="session-sub clamp">{basename(session.cwd)}</span> : null}
         </span>
         <span className="session-meta">
           {busy ? <Spinner size={13} /> : terminal ? <Terminal size={13} /> : !owned ? <Link2 size={13} className="attach-hint" /> : null}
