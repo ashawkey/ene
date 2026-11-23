@@ -110,6 +110,33 @@ def test_consume_stream_reassembles_tool_call_fragments():
     assert tc.to_wire()["type"] == "function"
 
 
+def test_tool_call_provider_fields_round_trip_to_the_wire():
+    # Gemini thought signatures arrive as extra tool-call fields and must be
+    # replayed; the stream-only index must not be.
+    signature = {"google": {"thought_signature": "sig"}}
+    stream = [
+        _chunk(_delta(tool_calls=[NS(
+            index=0, id="call_1", function=NS(name="read_file", arguments='{"file":'),
+            model_extra={"extra_content": signature, "index": 0},
+        )])),
+        _chunk(_delta(tool_calls=[_tc(0, args=' "a.py"}')])),
+    ]
+    message, _, _ = consume_stream(stream)
+    wire = message.tool_calls[0].to_wire()
+    assert wire["extra_content"] == signature
+    assert "index" not in wire
+    assert wire["function"] == {"name": "read_file", "arguments": '{"file": "a.py"}'}
+
+    sdk_call = NS(
+        id="call_2", function=NS(name="f", arguments="{}", model_extra={}),
+        model_extra={"provider_specific_fields": {"thought_signature": "s2"}},
+    )
+    message = message_from_sdk(NS(content=None, tool_calls=[sdk_call], model_extra={}))
+    assert message.tool_calls[0].to_wire()["provider_specific_fields"] == {
+        "thought_signature": "s2",
+    }
+
+
 def test_message_from_sdk_reads_vllm_style_reasoning():
     # vLLM 0.27 (qwen3 reasoning parser) emits thinking in a top-level
     # "reasoning" field, which the SDK surfaces via model_extra.

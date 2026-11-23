@@ -42,18 +42,41 @@ def _first_reasoning(value: Any) -> str | None:
     return None
 
 
+def _merge_tool_call_extra(extra: dict[str, Any], tool_call: Any) -> None:
+    """Merge non-standard fields of an SDK tool call (or fragment) into *extra*.
+
+    Servers attach provider state to tool calls, such as Gemini thought
+    signatures (Google's ``extra_content`` or LiteLLM's
+    ``provider_specific_fields``), which must be replayed with the call.
+    The stream-only ``index`` is not part of a request message.
+    """
+    fields = getattr(tool_call, "model_extra", None)
+    if isinstance(fields, dict):
+        extra.update(
+            {key: value for key, value in fields.items() if key != "index" and value is not None}
+        )
+    function_fields = getattr(getattr(tool_call, "function", None), "model_extra", None)
+    if isinstance(function_fields, dict):
+        function_extra = {
+            key: value for key, value in function_fields.items() if value is not None
+        }
+        if function_extra:
+            extra.setdefault("function", {}).update(function_extra)
+
+
 def message_from_sdk(message: Any) -> Message:
     """Convert an SDK ``ChatCompletionMessage`` into a typed :class:`Message`."""
     tool_calls = None
     if message.tool_calls:
-        tool_calls = [
-            ToolCall(
+        tool_calls = []
+        for tc in message.tool_calls:
+            call = ToolCall(
                 id=tc.id,
                 name=tc.function.name,
                 arguments=tc.function.arguments or "",
             )
-            for tc in message.tool_calls
-        ]
+            _merge_tool_call_extra(call.extra, tc)
+            tool_calls.append(call)
     return Message.assistant(
         content=message.content,
         tool_calls=tool_calls,
@@ -73,8 +96,10 @@ class _ToolCallAccumulator:
         self.id: str | None = None
         self.name: str = ""
         self.arguments: str = ""
+        self.extra: dict[str, Any] = {}
 
     def update(self, delta_tool_call: Any) -> None:
+        _merge_tool_call_extra(self.extra, delta_tool_call)
         call_id = getattr(delta_tool_call, "id", None)
         if call_id:
             self.id = call_id
@@ -87,7 +112,7 @@ class _ToolCallAccumulator:
 
     def build(self) -> ToolCall:
         return ToolCall(
-            id=self.id or "", name=self.name, arguments=self.arguments
+            id=self.id or "", name=self.name, arguments=self.arguments, extra=self.extra
         )
 
 

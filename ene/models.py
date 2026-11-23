@@ -136,17 +136,15 @@ def reasoning_kwargs(style: str | None, effort: ReasoningEffort) -> dict[str, An
         mapped = {"none": "low", "minimal": "low", "xhigh": "max"}.get(effort, effort)
         return {"extra_body": {"output_config": {"effort": mapped}}}
     if style == "gemini":
-        # Gemini 3 uses qualitative thinking levels; it has no xhigh/max level.
+        # Gemini 3+ cannot disable thinking and most models lack xhigh. Use
+        # standard reasoning_effort, which both Google's endpoint and LiteLLM
+        # gateways translate; LiteLLM ignores Google's extra_body thinking
+        # level. A thinking level must not be combined with reasoning_effort,
+        # but include_thoughts alone asks Google for thought summaries.
         mapped = {"none": "minimal", "xhigh": "high", "max": "high"}.get(effort, effort)
         return {
-            "extra_body": {
-                "google": {
-                    "thinking_config": {
-                        "thinking_level": mapped,
-                        "include_thoughts": True,
-                    }
-                }
-            }
+            "reasoning_effort": mapped,
+            "extra_body": {"google": {"thinking_config": {"include_thoughts": True}}},
         }
     if style in ("deepseek", "glm"):
         # Legacy two-tier thinking effort for older DeepSeek/GLM models: only

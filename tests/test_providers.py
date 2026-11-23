@@ -54,6 +54,22 @@ def test_reasoning_effort_maps_provider_specific_max_levels():
     }
 
 
+def test_reasoning_effort_gemini_uses_standard_effort_with_thoughts():
+    thoughts = {"google": {"thinking_config": {"include_thoughts": True}}}
+    for effort, mapped in {
+        "none": "minimal",
+        "minimal": "minimal",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "high",
+        "max": "high",
+    }.items():
+        assert reasoning_kwargs("gemini", effort) == {
+            "reasoning_effort": mapped,
+            "extra_body": thoughts,
+        }
+
+
 def test_reasoning_effort_preserves_openai_and_deepseek_mappings():
     # Legacy DeepSeek/GLM models honor only high and max.
     assert reasoning_kwargs("openai", "none") == {"reasoning_effort": "none"}
