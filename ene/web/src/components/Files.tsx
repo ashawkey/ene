@@ -33,10 +33,12 @@ import {
   Search,
   SquareTerminal,
   TextSearch as TextSearchIcon,
+  Upload,
   WrapText,
   X,
 } from 'lucide-react'
 import {
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -50,7 +52,7 @@ import {
   useState,
 } from 'react'
 
-import { ApiError, downloadUrl, errorMessage, fileDiff, fileLog, findFiles, listChanges, listFiles, rawFileUrl, readFile } from '../lib/api'
+import { ApiError, checkZip, downloadUrl, errorMessage, fileDiff, fileLog, findFiles, listChanges, listFiles, rawFileUrl, readFile, zipUrl } from '../lib/api'
 import { type LineMatch, canHighlight, findInElement, findInLines, gotoLine, lineRef, lineSpan, textRange } from '../lib/codeFind'
 import { bytes, relativeTime } from '../lib/format'
 import { highlight, languageForPath, splitHighlightedLines } from '../lib/highlight'
@@ -60,10 +62,12 @@ import { type FilesFocus, type Range, QueryCache, narrowMatches, pathMatchRanges
 import { type SplitLine, splitLines } from '../lib/splitDiff'
 import { store } from '../lib/storage'
 import { toast } from '../lib/toast'
+import { droppedFiles, hasFiles } from '../lib/transfers'
 import { ContextMenu, type MenuEntry, useContextMenu } from './ContextMenu'
 import { CopyButton, Markdown } from './Markdown'
 import { Highlighted, TextSearch } from './Search'
 import { SplitDiff } from './SplitDiff'
+import { TransferList, useWorkspaceUpload } from './Transfers'
 import { Empty, IconButton, LoadingHint, Modal, Spinner, copyText } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 
@@ -100,6 +104,8 @@ export function FileItem({
   onMention,
   onMenu,
   expanded,
+  selected,
+  drop,
   depth,
   attrs,
   children,
@@ -108,12 +114,16 @@ export function FileItem({
   path: string
   className?: string
   title?: string
-  onClick: () => void
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void
   onMention: (path: string) => void
   /** Opens the actions menu (right click, the context-menu key, or the ⋯ button). */
   onMenu?: (event: ReactMouseEvent<HTMLElement>) => void
   /** Set for rows that fold a group (search results, tree folders). */
   expanded?: boolean
+  /** Part of a multi-selection (Ctrl/Cmd or Shift click). */
+  selected?: boolean
+  /** Drag-and-drop upload handlers for the folder this row stands for. */
+  drop?: { onDragOver: (event: ReactDragEvent) => void; onDrop: (event: ReactDragEvent) => void }
   /** Indentation level in the tree. */
   depth?: number
   /** Data attributes for keyboard navigation. */
@@ -122,11 +132,19 @@ export function FileItem({
 }) {
   return (
     <div
-      className={`file-item ${className}`}
+      className={`file-item ${selected ? 'selected' : ''} ${className}`}
       style={depth ? { paddingLeft: depth * 14 } : undefined}
       onContextMenu={onMenu}
+      {...drop}
     >
-      <button type="button" className="file-row" onClick={onClick} title={title} aria-expanded={expanded} {...attrs}>
+      <button
+        type="button"
+        className="file-row"
+        onClick={onClick}
+        title={title}
+        aria-expanded={expanded}
+        {...attrs}
+      >
         {children}
       </button>
       <span className="row-actions">
@@ -180,14 +198,34 @@ function loadOpen(sessionId: string): Set<string> {
   }
 }
 
-/** Download a workspace file through a temporary link (the login cookie authorizes it). */
-function download(sessionId: string, path: string) {
+/** Save *url* through a temporary link (the login cookie authorizes it). The
+ * browser's own download manager shows progress and can cancel. */
+function saveUrl(url: string, name: string) {
   const link = document.createElement('a')
-  link.href = downloadUrl(sessionId, path)
-  link.download = baseName(path)
+  link.href = url
+  link.download = name
   document.body.appendChild(link)
   link.click()
   link.remove()
+}
+
+const download = (sessionId: string, path: string) => saveUrl(downloadUrl(sessionId, path), baseName(path))
+
+/** Download files and folders: one file as is, anything else as a zip built on the fly. */
+async function downloadPaths(sessionId: string, targets: FoundPath[]) {
+  if (targets.length === 1 && targets[0].type === 'file') {
+    download(sessionId, targets[0].path)
+    return
+  }
+  const paths = targets.map((target) => target.path)
+  try {
+    // Checked first, so a limit is a message here rather than a failed download.
+    const plan = await checkZip(sessionId, paths)
+    toast(`Downloading ${plan.name}: ${plan.files} file${plan.files === 1 ? '' : 's'}, ${bytes(plan.bytes)} before compression.`, 'info', 4000)
+    saveUrl(zipUrl(sessionId, paths), plan.name)
+  } catch (exc) {
+    toast(errorMessage(exc, 'Could not download.'))
+  }
 }
 
 async function copyFileContents(sessionId: string, path: string) {
@@ -290,6 +328,20 @@ export const FileBrowser = memo(function FileBrowser({
     mounted.current = false
   }, [])
   const { menu, open: openMenu, close: closeMenu } = useContextMenu()
+  // Multi-selection in the tree (Ctrl/Cmd and Shift click), for downloads.
+  const [selection, setSelection] = useState<Map<string, FoundPath['type']>>(() => new Map())
+  const anchor = useRef<string | null>(null)
+  // The folder a drag is over ('' is the root on screen), or null.
+  const [dropDir, setDropDir] = useState<string | null>(null)
+  const dragDepth = useRef(0)
+  const picker = useRef<HTMLInputElement>(null)
+  const pickTarget = useRef('')
+  const refresh = useCallback(() => setTick((value) => value + 1), [])
+  const { upload, dialog: uploadDialog } = useWorkspaceUpload(sessionId, refresh)
+  useEffect(() => {
+    setSelection(new Map())
+    anchor.current = null
+  }, [sessionId, path, mode])
 
   useFilesFocus(useCallback((target: FilesFocus) => {
     if (target === 'search') {
@@ -555,7 +607,86 @@ export const FileBrowser = memo(function FileBrowser({
     if (hit) openFound(hit)
   }
 
+  // A plain click opens and clears the selection; Ctrl/Cmd toggles a row,
+  // Shift selects the visible range from the last clicked row.
+  const clickRow = (event: ReactMouseEvent<HTMLButtonElement>, item: FoundPath, open: () => void) => {
+    if (hasShortcutModifier(event) || event.shiftKey) {
+      event.preventDefault()
+      const range = event.shiftKey && anchor.current !== null
+      const order = range ? [...rows.map((row) => ({ path: row.full, type: row.entry.type })), ...workspaceHits] : []
+      const from = order.findIndex((row) => row.path === anchor.current)
+      const to = order.findIndex((row) => row.path === item.path)
+      if (!range) anchor.current = item.path
+      // Functional, so clicks landing before a re-render still add up.
+      setSelection((current) => {
+        const next = new Map(range ? [] : current)
+        if (range && from >= 0 && to >= 0) {
+          for (const row of order.slice(Math.min(from, to), Math.max(from, to) + 1)) next.set(row.path, row.type)
+        } else if (range) next.set(item.path, item.type)
+        else if (next.has(item.path)) next.delete(item.path)
+        else next.set(item.path, item.type)
+        return next
+      })
+      return
+    }
+    anchor.current = item.path
+    if (selection.size) setSelection(new Map())
+    open()
+  }
+  const selectedItems = (): FoundPath[] => [...selection].map(([path, type]) => ({ path, type }))
+
+  // -- uploads: drop on a folder row, the list, or a breadcrumb; or pick files
+  const dropProps = (dir: string) => ({
+    onDragOver: (event: ReactDragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.dataTransfer.dropEffect = 'copy'
+      if (dropDir !== dir) setDropDir(dir)
+    },
+    onDrop: (event: ReactDragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return
+      event.preventDefault()
+      event.stopPropagation()
+      dragDepth.current = 0
+      setDropDir(null)
+      // Entries must be read before the handler returns.
+      void droppedFiles(event.dataTransfer).then((items) => upload(dir, items))
+    },
+  })
+  const listDrag = {
+    onDragEnter: (event: ReactDragEvent) => {
+      if (hasFiles(event.dataTransfer)) dragDepth.current++
+    },
+    // Over the panel but not a drop zone (those stop propagation).
+    onDragOver: () => {
+      if (dropDir !== null) setDropDir(null)
+    },
+    onDragLeave: (event: ReactDragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return
+      dragDepth.current = Math.max(0, dragDepth.current - 1)
+      if (!dragDepth.current) setDropDir(null)
+    },
+  }
+  const pickFiles = (dir: string) => {
+    pickTarget.current = dir
+    picker.current?.click()
+  }
+  const currentDir = listing?.path ?? ''
+
   const menuFor = (target: string, type: 'dir' | 'file', inTree: boolean) => (event: ReactMouseEvent<HTMLElement>) => {
+    // Right-clicking inside a selection acts on all of it.
+    if (selection.size > 1 && selection.has(target)) {
+      const picked = selectedItems()
+      openMenu(event, `Actions for ${picked.length} items`, [
+        { label: `Download ${picked.length} items as zip`, icon: Download, onSelect: () => void downloadPaths(sessionId, picked) },
+        { label: 'Mention in message', icon: AtSign, onSelect: () => onMention(picked.map((item) => (item.type === 'dir' ? `${item.path}/` : item.path)).join(' @')) },
+        { label: 'Copy relative paths', icon: Link, onSelect: () => void copyText(picked.map((item) => item.path).join('\n')) },
+        'separator',
+        { label: 'Clear selection', icon: X, onSelect: () => setSelection(new Map()) },
+      ])
+      return
+    }
     const changed = type === 'file' && changeMap.has(target)
     const mention = type === 'dir' ? `${target}/` : target
     const absolute = listing ? `${listing.root.replace(/\/+$/, '')}/${target}` : null
@@ -578,6 +709,11 @@ export const FileBrowser = memo(function FileBrowser({
       items.push(
         { label: 'Copy contents', icon: Copy, onSelect: () => void copyFileContents(sessionId, target) },
         { label: 'Download', icon: Download, onSelect: () => download(sessionId, target) },
+      )
+    } else {
+      items.push(
+        { label: 'Download as zip', icon: Download, onSelect: () => void downloadPaths(sessionId, [{ path: target, type }]) },
+        { label: 'Upload files here', icon: Upload, onSelect: () => pickFiles(target) },
       )
     }
     if (onTerminal) {
@@ -607,7 +743,7 @@ export const FileBrowser = memo(function FileBrowser({
   ) : null
 
   return (
-    <div className="files">
+    <div className="files" {...listDrag}>
       <div className="panel-toolbar files-toolbar">
         <div className="files-tabs" role="tablist" aria-label="Files view">
           <button type="button" role="tab" aria-selected={mode === 'browse'} aria-label="Files" className={mode === 'browse' ? 'on' : ''} onClick={() => setMode('browse')}>
@@ -654,6 +790,9 @@ export const FileBrowser = memo(function FileBrowser({
             }}
           />
         ) : null}
+        {mode === 'browse' ? (
+          <IconButton icon={Upload} size="sm" label="Upload files here (or drop them on a folder)" disabled={!listing} onClick={() => pickFiles(currentDir)} />
+        ) : null}
         <IconButton
           icon={showHidden ? Eye : EyeOff}
           size="sm"
@@ -665,18 +804,41 @@ export const FileBrowser = memo(function FileBrowser({
           }}
         />
         <IconButton icon={RefreshCw} size="sm" label="Refresh" busy={loading || changesLoading} onClick={() => setTick(tick + 1)} />
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          hidden
+          aria-hidden
+          tabIndex={-1}
+          onChange={(event) => {
+            const files = [...(event.target.files ?? [])]
+            event.target.value = ''
+            void upload(pickTarget.current, files.map((file) => ({ file, name: file.name })))
+          }}
+        />
       </div>
       {mode === 'browse' && crumbs.length ? (
         <div className="crumbs" role="navigation" aria-label="Folder path">
-          <button type="button" onClick={() => browse('')} data-tip={listing?.root ?? 'Workspace'} aria-label="Workspace root">
+          <button
+            type="button"
+            className={dropDir === '' && crumbs.length ? 'drop-target' : ''}
+            onClick={() => browse('')}
+            data-tip={listing?.root ?? 'Workspace'}
+            aria-label="Workspace root"
+            {...dropProps('')}
+          >
             <House size={14} />
           </button>
-          {crumbs.map((crumb, index) => (
-            <span className="crumb" key={`${index}-${crumb}`}>
-              <ChevronRight size={12} />
-              <button type="button" onClick={() => browse(crumbs.slice(0, index + 1).join('/'))}>{crumb}</button>
-            </span>
-          ))}
+          {crumbs.map((crumb, index) => {
+            const dir = crumbs.slice(0, index + 1).join('/')
+            return (
+              <span className="crumb" key={`${index}-${crumb}`}>
+                <ChevronRight size={12} />
+                <button type="button" className={dropDir === dir && index < crumbs.length - 1 ? 'drop-target' : ''} onClick={() => browse(dir)} {...dropProps(dir)}>{crumb}</button>
+              </span>
+            )
+          })}
         </div>
       ) : null}
       {mode === 'browse' ? (
@@ -756,7 +918,24 @@ export const FileBrowser = memo(function FileBrowser({
           ))}
         </div>
       ) : (
-        <div className="file-list" ref={list} onKeyDown={(event) => onTreeKey(event, toggle)}>
+        <div
+          className={`file-list ${dropDir === currentDir && listing ? 'drop-target' : ''}`}
+          ref={list}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && selection.size) {
+              event.preventDefault()
+              setSelection(new Map())
+            } else onTreeKey(event, toggle)
+          }}
+          {...dropProps(currentDir)}
+        >
+          {selection.size ? (
+            <div className="selection-bar" role="status">
+              <span className="grow">{selection.size} selected</span>
+              <IconButton icon={Download} size="sm" label="Download selection" onClick={() => void downloadPaths(sessionId, selectedItems())} />
+              <IconButton icon={X} size="sm" label="Clear selection (Esc)" onClick={() => setSelection(new Map())} />
+            </div>
+          ) : null}
           {listing?.path && !needle ? (
             <button type="button" className="file-row up" onClick={() => browse(crumbs.slice(0, -1).join('/'))}>
               <Folder size={15} className="file-icon" />
@@ -776,10 +955,12 @@ export const FileBrowser = memo(function FileBrowser({
                 path={isDir ? `${full}/` : full}
                 onMention={onMention}
                 onMenu={menuFor(full, entry.type, true)}
-                className={entry.hidden ? 'hidden-entry' : ''}
+                className={`${entry.hidden ? 'hidden-entry' : ''} ${isDir && dropDir === full ? 'drop-target' : ''}`}
                 depth={depth}
                 expanded={expanded}
-                onClick={() => (isDir && !needle ? toggle(full) : openFound({ path: full, type: entry.type }))}
+                selected={selection.has(full)}
+                onClick={(event) => clickRow(event, { path: full, type: entry.type }, () => (isDir && !needle ? toggle(full) : openFound({ path: full, type: entry.type })))}
+                drop={dropProps(isDir ? full : parent)}
                 title={relativeTime(entry.mtime)}
                 attrs={{ 'data-path': full, 'data-kind': entry.type, 'data-parent': parent }}
               >
@@ -814,7 +995,8 @@ export const FileBrowser = memo(function FileBrowser({
                 path={item.type === 'dir' ? `${item.path}/` : item.path}
                 onMention={onMention}
                 onMenu={menuFor(item.path, item.type, false)}
-                onClick={() => openFound(item)}
+                selected={selection.has(item.path)}
+                onClick={(event) => clickRow(event, item, () => openFound(item))}
                 attrs={{ 'data-path': item.path, 'data-kind': 'file' }}
               >
                 <Icon size={15} className={`file-icon ${item.type}`} />
@@ -836,7 +1018,9 @@ export const FileBrowser = memo(function FileBrowser({
           {!listing && loading ? <LoadingHint>Loading files…</LoadingHint> : null}
         </div>
       )}
+      {mode === 'browse' ? <TransferList sessionId={sessionId} /> : null}
       {menu ? <ContextMenu menu={menu} onClose={closeMenu} /> : null}
+      {uploadDialog}
     </div>
   )
 })

@@ -3,6 +3,7 @@ import {
   AtSign,
   Brain,
   ChevronDown,
+  CircleAlert,
   Clock,
   CornerDownLeft,
   Cpu,
@@ -10,11 +11,13 @@ import {
   Folder,
   ListEnd,
   ListPlus,
+  Paperclip,
   SquareSlash,
   Square,
   Undo2,
+  X,
 } from 'lucide-react'
-import type { KeyboardEvent } from 'react'
+import type { ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { pathCompletions, sessionOptions } from '../lib/api'
@@ -26,6 +29,19 @@ import { IconButton, LoadingHint, Spinner, useNow } from './ui'
 import { NO_AUTOFILL } from '../lib/noAutofill'
 import { caretRows, lineBounds } from '../lib/caret'
 import { QueryCache, narrowMatches } from '../lib/search'
+import { toast } from '../lib/toast'
+import {
+  MAX_ATTACHMENTS,
+  MAX_UPLOAD_BYTES,
+  type Transfer,
+  dismissTransfer,
+  droppedFiles,
+  hasFiles,
+  releaseTransfer,
+  uploadAttachment,
+  useTransfers,
+} from '../lib/transfers'
+import { ProgressBar, transferDetail } from './Transfers'
 
 type Suggestion = { value: string; label: string; detail: string; kind: 'command' | 'path' }
 
@@ -104,6 +120,15 @@ export function Composer({
   const stash = useRef('')
   const composing = useRef(false)
   const [options, reloadOptions] = useSessionOptions(cwd)
+  // Message attachments: transfer ids, in the order they were added.
+  const [attachments, setAttachments] = useState<number[]>([])
+  const [dragging, setDragging] = useState(false)
+  const filePicker = useRef<HTMLInputElement>(null)
+  const transfers = useTransfers()
+  const attached = attachments
+    .map((id) => transfers.find((item) => item.id === id))
+    .filter((item): item is Transfer => item !== undefined)
+  const attaching = attached.some((item) => item.state === 'queued' || item.state === 'running')
 
   useEffect(() => {
     if (focusSignal) field.current?.focus()
@@ -220,11 +245,66 @@ export function Composer({
   }
 
   const send = () => {
-    if (!draft.trim() || !connected) return
-    if (onSubmit(draft)) {
+    if (!connected) return
+    if (attaching) {
+      toast('Wait for the attachments to finish uploading.', 'info')
+      return
+    }
+    const saved = attached.filter((item) => item.state === 'done' && item.path)
+    if (!draft.trim() && !saved.length) return
+    const refs = saved.map((item) => `@${item.path}`).join(' ')
+    const text = saved.length ? `${draft.trimEnd()}${draft.trim() ? '\n\n' : ''}Attached: ${refs}` : draft
+    if (onSubmit(text)) {
       historyIndex.current = null
       setText('')
+      // Sent: the files stay for the agent; only failed chips are dropped.
+      attached.forEach((item) => (item.state === 'done' ? releaseTransfer(item.id) : dismissTransfer(item.id)))
+      setAttachments([])
     }
+  }
+
+  const attach = (files: File[]) => {
+    if (!files.length) return
+    const room = MAX_ATTACHMENTS - attachments.length
+    if (files.length > room) toast(`Attach at most ${MAX_ATTACHMENTS} files to a message.`)
+    const accepted: number[] = []
+    for (const file of files.slice(0, Math.max(0, room))) {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        toast(`${file.name} is over the ${MAX_UPLOAD_BYTES / 1024 / 1024} MB upload limit.`)
+        continue
+      }
+      accepted.push(uploadAttachment(sessionId, file))
+    }
+    if (accepted.length) setAttachments((current) => [...current, ...accepted])
+    field.current?.focus()
+  }
+  const detachFile = (id: number) => {
+    dismissTransfer(id)
+    setAttachments((current) => current.filter((item) => item !== id))
+  }
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...event.clipboardData.files]
+    if (!files.length) return
+    event.preventDefault()
+    attach(files)
+  }
+  const dropProps = {
+    onDragOver: (event: DragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'copy'
+      setDragging(true)
+    },
+    onDragLeave: (event: DragEvent) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false)
+    },
+    onDrop: (event: DragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return
+      event.preventDefault()
+      setDragging(false)
+      // Folders are flattened; attachments are single files.
+      void droppedFiles(event.dataTransfer, MAX_ATTACHMENTS + 1).then((items) => attach(items.map((item) => item.file)))
+    },
   }
 
   // Up/Down move through the text first; only on its first (or last) visual
@@ -335,7 +415,7 @@ export function Composer({
     field.current?.focus()
   }
 
-  const hasText = draft.trim().length > 0
+  const hasText = draft.trim().length > 0 || attached.some((item) => item.state === 'done')
   const showStop = busy && !hasText
 
   return (
@@ -365,7 +445,7 @@ export function Composer({
           ) : null}
         </div>
       ) : null}
-      <div className={`composer glass ${connected ? '' : 'offline'}`}>
+      <div className={`composer glass ${connected ? '' : 'offline'} ${dragging ? 'drop-target' : ''}`} {...dropProps}>
         {popup ? (
           <div className="suggestions" role="listbox" id={`suggest-${sessionId}`}>
             {suggestions.map((item, position) => (
@@ -391,6 +471,20 @@ export function Composer({
             {pathNote === 'none' ? <div className="s-none">No matching files.</div> : null}
           </div>
         ) : null}
+        {attached.length ? (
+          <div className="attachments" aria-label="Attachments">
+            {attached.map((item) => (
+              <div className={`attachment ${item.state}`} key={item.id} data-tip={item.state === 'done' ? item.path : transferDetail(item)}>
+                {item.state === 'failed' ? <CircleAlert size={13} className="fail" /> : <Paperclip size={13} />}
+                <span className="clamp">{item.name}</span>
+                {item.state === 'queued' || item.state === 'running'
+                  ? <ProgressBar value={item.size ? Math.round((item.loaded / item.size) * 100) : 0} state={item.state} />
+                  : null}
+                <button type="button" aria-label={`Remove ${item.name}`} onClick={() => detachFile(item.id)}><X size={12} /></button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <textarea
           {...NO_AUTOFILL}
           ref={field}
@@ -413,10 +507,25 @@ export function Composer({
           onCompositionStart={() => { composing.current = true }}
           onCompositionEnd={() => { composing.current = false }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
+        />
+        <input
+          ref={filePicker}
+          type="file"
+          multiple
+          hidden
+          aria-hidden
+          tabIndex={-1}
+          onChange={(event) => {
+            const files = [...(event.target.files ?? [])]
+            event.target.value = ''
+            attach(files)
+          }}
         />
         <div className="composer-bar">
           <IconButton icon={SquareSlash} label="Commands" size="sm" onClick={() => insertToken('/')} />
           <IconButton icon={AtSign} label="Mention a file" size="sm" onClick={() => insertToken('@')} />
+          <IconButton icon={Paperclip} label="Attach files (or drop or paste them)" size="sm" disabled={!connected} onClick={() => filePicker.current?.click()} />
           <span className="grow" />
           <ModelPicker
             models={options.models}
@@ -440,10 +549,11 @@ export function Composer({
           ) : (
             <IconButton
               icon={busy ? ListPlus : ArrowUp}
-              label={busy ? 'Queue message' : 'Send (Enter)'}
+              label={attaching ? 'Uploading attachments…' : busy ? 'Queue message' : 'Send (Enter)'}
               tone="accent"
               className="send"
-              disabled={!hasText || !connected}
+              busy={attaching}
+              disabled={!hasText || !connected || attaching}
               onClick={send}
             />
           )}

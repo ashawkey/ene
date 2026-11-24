@@ -4,7 +4,7 @@ Every path a browser supplies is relative to a live session's workspace and is
 resolved (following symlinks) before use. Listing, search, and diffs refuse
 anything that lands outside the workspace root; single-file previews may read
 any file the hub's user can read, since agents often point at paths elsewhere.
-Nothing here writes to disk.
+Nothing here writes to disk; uploads live in :mod:`ene.hub.transfers`.
 """
 
 from __future__ import annotations

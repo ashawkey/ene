@@ -124,6 +124,70 @@ export const rawFileUrl = (id: string, path: string) =>
   `${sid(id)}/raw?${new URLSearchParams({ path }).toString()}`
 export const downloadUrl = (id: string, path: string) =>
   `${sid(id)}/download?${new URLSearchParams({ path }).toString()}`
+/** A zip of *paths* (files or folders), streamed as it is built. */
+export const zipUrl = (id: string, paths: string[]) =>
+  `${sid(id)}/download/zip?${new URLSearchParams(paths.map((path) => ['path', path])).toString()}`
+/** What a zip of *paths* would hold; fails with the hub's limit message. */
+export const checkZip = (id: string, paths: string[]) =>
+  request<{ name: string; files: number; bytes: number }>(`${zipUrl(id, paths)}&check=1`, {}, 60_000)
+/** Which of *names* (relative to workspace folder *dir*) an upload would replace. */
+export const existingUploads = (id: string, dir: string, names: string[]) =>
+  post<{ existing: string[] }>(`${sid(id)}/upload/check`, { dir, names }).then((data) => data.existing)
+export const uploadUrl = (id: string, dir: string, name: string, overwrite: boolean) =>
+  `${sid(id)}/upload?${new URLSearchParams({ dir, name, overwrite: overwrite ? '1' : '' }).toString()}`
+export const attachmentUrl = (id: string, name: string) =>
+  `${sid(id)}/attachments?${new URLSearchParams({ name }).toString()}`
+export const deleteAttachment = (id: string, path: string) =>
+  post<{ ok: boolean }>(`${sid(id)}/attachments/delete`, { path })
+
+export type UploadProgress = (loaded: number, total: number) => void
+
+/**
+ * POST *body* raw to *url*, reporting progress; abort through *signal*.
+ * XMLHttpRequest because fetch reports no upload progress.
+ */
+export function uploadRaw<T>(url: string, body: Blob, onProgress: UploadProgress, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const abort = () => xhr.abort()
+    const done = () => signal.removeEventListener('abort', abort)
+    xhr.open('POST', url)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('x-csrf-token', csrfToken)
+    xhr.setRequestHeader('content-type', 'application/octet-stream')
+    xhr.upload.onprogress = (event) => onProgress(event.loaded, event.lengthComputable ? event.total : body.size)
+    xhr.onload = () => {
+      done()
+      let data: unknown = null
+      try {
+        data = JSON.parse(xhr.responseText)
+      } catch {
+        // Fall back to the status text below.
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T)
+      else {
+        const detail = data && typeof (data as { detail?: unknown }).detail === 'string'
+          ? (data as { detail: string }).detail
+          : xhr.status === 413 ? 'The file is too large for the server or proxy.' : xhr.statusText || 'Upload failed'
+        reject(new ApiError(detail, xhr.status))
+      }
+    }
+    xhr.onerror = () => {
+      done()
+      reject(new ApiError('Network error. Check the connection.', 0))
+    }
+    xhr.onabort = () => {
+      done()
+      reject(new DOMException('Cancelled', 'AbortError'))
+    }
+    if (signal.aborted) {
+      reject(new DOMException('Cancelled', 'AbortError'))
+      return
+    }
+    signal.addEventListener('abort', abort)
+    xhr.send(body)
+  })
+}
 /** The working tree against HEAD, or with *commit*, that commit against its parent. */
 export const fileDiff = (id: string, path: string, commit?: string) =>
   get<GitDiff>(`${sid(id)}/diff`, commit ? { path, commit } : { path })

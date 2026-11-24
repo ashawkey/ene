@@ -3,10 +3,17 @@ import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { pathCompletions, sessionOptions } from '../lib/api'
+import { deleteAttachment, pathCompletions, sessionOptions, uploadRaw } from '../lib/api'
+import { resetTransfers } from '../lib/transfers'
 import { Composer } from './Composer'
 
-vi.mock('../lib/api', () => ({ pathCompletions: vi.fn(), sessionOptions: vi.fn() }))
+vi.mock('../lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/api')>()),
+  pathCompletions: vi.fn(),
+  sessionOptions: vi.fn(),
+  uploadRaw: vi.fn(),
+  deleteAttachment: vi.fn(async () => ({ ok: true })),
+}))
 
 function Input(props: Partial<ComponentProps<typeof Composer>>) {
   const [draft, setDraft] = useState('')
@@ -262,5 +269,37 @@ describe('composer keyboard navigation', () => {
     expect([field.selectionStart, field.selectionEnd, field.selectionDirection]).toEqual([4, 6, 'backward'])
     fireEvent.keyDown(field, { key: 'End', shiftKey: true })
     expect([field.selectionStart, field.selectionEnd]).toEqual([6, 7])
+  })
+})
+
+describe('message attachments', () => {
+  afterEach(() => act(() => resetTransfers()))
+
+  it('uploads pasted files, waits for them, and sends their paths', async () => {
+    let finish: (value: unknown) => void = () => {}
+    vi.mocked(uploadRaw).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const onSubmit = vi.fn(() => true)
+    render(<Input onSubmit={onSubmit} />)
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(field, { target: { value: 'What is this?' } })
+    fireEvent.paste(field, { clipboardData: { files: [new File(['png'], 'shot.png')] } })
+    expect(screen.getByText('shot.png')).toBeInTheDocument()
+    const send = screen.getByRole('button', { name: 'Uploading attachments…' })
+    expect(send).toBeDisabled()
+    await act(async () => finish({ path: '.ene/uploads/c/t/shot.png' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send (Enter)' }))
+    expect(onSubmit).toHaveBeenCalledWith('What is this?\n\nAttached: @.ene/uploads/c/t/shot.png')
+    expect(screen.queryByText('shot.png')).toBeNull()
+    expect(deleteAttachment).not.toHaveBeenCalled()
+  })
+
+  it('deletes an attachment removed before sending', async () => {
+    vi.mocked(uploadRaw).mockResolvedValue({ path: '.ene/uploads/c/t/notes.txt' })
+    render(<Input />)
+    fireEvent.paste(screen.getByRole('textbox', { name: 'Message' }), { clipboardData: { files: [new File(['n'], 'notes.txt')] } })
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: 'Remove notes.txt' }))
+    expect(deleteAttachment).toHaveBeenCalledWith('s1', '.ene/uploads/c/t/notes.txt')
+    expect(screen.queryByText('notes.txt')).toBeNull()
   })
 })

@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, fileDiff, fileLog, findFiles, listChanges, listFiles, readFile } from '../lib/api'
+import { ApiError, checkZip, existingUploads, fileDiff, fileLog, findFiles, listChanges, listFiles, readFile, uploadRaw } from '../lib/api'
+import { resetTransfers } from '../lib/transfers'
 import type { DirEntry, DirListing, GitChange, GitChanges } from '../lib/protocol'
 import { FileBrowser, FileViewer } from './Files'
 import { Toasts, copyText } from './ui'
@@ -14,6 +15,9 @@ vi.mock('../lib/api', async (importOriginal) => ({
   listChanges: vi.fn(),
   listFiles: vi.fn(),
   readFile: vi.fn(),
+  checkZip: vi.fn(),
+  existingUploads: vi.fn(),
+  uploadRaw: vi.fn(),
 }))
 
 vi.mock('./ui', async (importOriginal) => ({
@@ -52,6 +56,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  act(() => resetTransfers())
   vi.clearAllMocks()
   localStorage.clear()
 })
@@ -344,5 +349,67 @@ describe('file viewer', () => {
     await waitFor(() => expect(container.querySelector('.code-view')).not.toBeNull())
     expect(container.querySelector('.split-diff')).toBeNull()
     expect(screen.getByText(/2 lines/)).toBeInTheDocument()
+  })
+})
+
+/** A drop of plain files (no folder entries), as jsdom can build it. */
+const fileDrop = (...files: File[]) => ({
+  dataTransfer: { types: ['Files'], items: files.map(() => ({ kind: 'file' })), files, dropEffect: 'none' },
+})
+
+describe('file browser transfers', () => {
+  it('uploads files dropped on a folder there, asking before replacing', async () => {
+    serveFolders()
+    vi.mocked(existingUploads).mockResolvedValue(['main.py'])
+    vi.mocked(uploadRaw).mockImplementation(async (url) => ({ path: url }))
+    render(<Browser />)
+    const src = (await screen.findByText('src')).closest('.file-item')!
+    fireEvent.dragOver(src, fileDrop())
+    expect(src).toHaveClass('drop-target')
+    fireEvent.drop(src, fileDrop(new File(['x'], 'main.py'), new File(['y'], 'new.py')))
+    const dialog = await screen.findByRole('dialog', { name: 'Replace existing files?' })
+    expect(existingUploads).toHaveBeenCalledWith('s1', 'src', ['main.py', 'new.py'])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Skip existing' }))
+    await waitFor(() => expect(uploadRaw).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(uploadRaw).mock.calls[0][0]).toBe('/api/sessions/s1/upload?dir=src&name=new.py&overwrite=')
+    expect(await screen.findByText('Uploaded 1 file to src.')).toBeInTheDocument()
+  })
+
+  it('shows upload progress with a cancel button', async () => {
+    serveFolders()
+    vi.mocked(existingUploads).mockResolvedValue([])
+    let signal: AbortSignal | undefined
+    vi.mocked(uploadRaw).mockImplementation((_url, _body, progress, abort) => new Promise((_resolve, reject) => {
+      signal = abort
+      progress(1, 4)
+      abort.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')))
+    }))
+    render(<Browser />)
+    const list = (await screen.findByText('src')).closest('.file-list')!
+    fireEvent.drop(list, fileDrop(new File(['abcd'], 'big.bin')))
+    const region = await screen.findByRole('region', { name: 'Uploads' })
+    expect(within(region).getByText('big.bin')).toBeInTheDocument()
+    expect(within(region).getByRole('progressbar')).toBeInTheDocument()
+    fireEvent.click(within(region).getByRole('button', { name: 'Cancel upload of big.bin' }))
+    expect(signal?.aborted).toBe(true)
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Uploads' })).toBeNull())
+  })
+
+  it('downloads a multi-selection as one zip', async () => {
+    serveFolders()
+    vi.mocked(checkZip).mockResolvedValue({ name: 'work.zip', files: 2, bytes: 10 })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<Browser />)
+    fireEvent.click(await screen.findByText('src'), { ctrlKey: true, metaKey: true })
+    fireEvent.click(screen.getByText('README.md'), { ctrlKey: true, metaKey: true })
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    fireEvent.contextMenu(screen.getByText('README.md'))
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Download 2 items as zip' }))
+    await waitFor(() => expect(click).toHaveBeenCalled())
+    expect(checkZip).toHaveBeenCalledWith('s1', ['src', 'README.md'])
+    const link = click.mock.contexts[0] as HTMLAnchorElement
+    expect(link.getAttribute('href')).toBe('/api/sessions/s1/download/zip?path=src&path=README.md')
+    expect(link.download).toBe('work.zip')
+    click.mockRestore()
   })
 })

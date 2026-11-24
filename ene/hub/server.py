@@ -22,6 +22,7 @@ endpoint annotations eagerly, and ``fastapi`` types are only imported inside
 """
 
 import asyncio
+import errno
 import hmac
 import json
 import math
@@ -34,12 +35,13 @@ from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from prompt_toolkit.document import Document
 from starlette.websockets import WebSocketDisconnect
 
 from ene.hub import files as hubfiles
+from ene.hub import transfers as hubtransfers
 from ene.hub.link import WorkerLink
 from ene.hub.terminal import SUPPORTED as TERMINALS_SUPPORTED
 from ene.hub.terminal import TerminalError, TerminalManager, clamp_size
@@ -84,6 +86,11 @@ HUB_BIND_HOST = "0.0.0.0"
 DEFAULT_HUB_PORT = 8765
 REGISTRY_POLL_INTERVAL = 2.0    # live-session registry refresh period
 MAX_CREATE_BODY_BYTES = 8192
+MAX_UPLOAD_CHECK_BYTES = 512 * 1024
+# Uploads streaming at once across all browsers; more are refused with 429.
+MAX_ACTIVE_UPLOADS = 8
+# Upload bytes gathered before each disk write (writes run off the loop).
+UPLOAD_WRITE_BYTES = 1024 * 1024
 # Browser actions remembered per session so a client that re-sends after a
 # dropped connection gets the original verdict instead of a duplicate submit.
 MAX_REMEMBERED_ACTIONS = 512
@@ -612,6 +619,11 @@ class Hub:
         )
         # Browser terminals, owned by the hub and closed with their session.
         self.terminals = TerminalManager()
+        # Message attachments not yet referenced by a delivered message, per
+        # session: (workspace, relative path). Deleted when the session ends.
+        self._attachments: dict[str, set[tuple[str, str]]] = {}
+        self._attachment_lock = threading.Lock()
+        self._active_uploads = 0
 
         self._thread: threading.Thread | None = None
         self._server = None
@@ -831,6 +843,7 @@ class Hub:
             return
         self.terminals.close_session(runtime_id)
         session.touch()
+        self._discard_attachments(runtime_id)
         self._log(
             f"session ended: {session.meta.get('title', runtime_id)} "
             f"(session {runtime_id[:8]})"
@@ -884,9 +897,30 @@ class Hub:
             if attached:
                 self._detach_session(runtime_id)
             kill_session(record)
+        self._discard_attachments(runtime_id)
         self._log(f"ended: {record.get('name') or runtime_id[:8]} (session {runtime_id[:8]})")
         self.refresh_records()
         self._notify_control()
+
+    def _keep_attachments(self, runtime_id: str, text: str) -> None:
+        """Attachments a delivered message mentions are kept for good."""
+        with self._attachment_lock:
+            pending = self._attachments.get(runtime_id)
+            if pending:
+                pending.difference_update({item for item in pending if item[1] in text})
+
+    def _discard_attachments(self, runtime_id: str) -> None:
+        """Delete a session's attachments that no delivered message mentions.
+
+        Blocking file work: callers run off the event loop.
+        """
+        with self._attachment_lock:
+            pending = self._attachments.pop(runtime_id, set())
+        for workspace, path in pending:
+            try:
+                hubtransfers.delete_attachment(workspace, path)
+            except hubfiles.WorkspaceError:
+                pass
 
     def path_completer(self, work_dir: Path) -> AtFileCompleter:
         """Cached path index for one workspace; hold ``_path_completion_lock``."""
@@ -963,9 +997,10 @@ class Hub:
     def _create_app(self):
         try:
             from fastapi import FastAPI, HTTPException, Request, WebSocket
-            from fastapi.responses import FileResponse, JSONResponse
+            from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
             from fastapi.staticfiles import StaticFiles
             from starlette.middleware.gzip import GZipMiddleware
+            from starlette.requests import ClientDisconnect
         except ImportError as exc:
             raise RuntimeError(
                 "Web UI dependencies are missing. Install or update ene."
@@ -1632,6 +1667,12 @@ class Hub:
             except hubfiles.WorkspaceError as exc:
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
+        def content_disposition(filename: str) -> str:
+            quoted = quote(filename)
+            if quoted == filename:
+                return f'attachment; filename="{filename}"'
+            return f"attachment; filename*=utf-8''{quoted}"
+
         @app.get("/api/sessions/{session_id}/files")
         async def workspace_files(request: Request, session_id: str, path: str = ""):
             require_login(request)
@@ -1718,6 +1759,147 @@ class Hub:
             response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
             response.headers["X-Content-Type-Options"] = "nosniff"
             return response
+
+        @app.get("/api/sessions/{session_id}/download/zip")
+        async def workspace_download_zip(request: Request, session_id: str, check: str = ""):
+            """Stream a zip of the ``path`` params (files or folders) as it is built.
+
+            With ``check``, only report what the archive would hold, so the
+            browser can show limit errors before it starts saving.
+            """
+            require_login(request)
+            name, files, total = await browse_call(
+                hubtransfers.zip_plan,
+                session_workspace(session_id),
+                request.query_params.getlist("path"),
+            )
+            if flag(check):
+                return {"name": name, "files": len(files), "bytes": total}
+            response = StreamingResponse(
+                hubtransfers.zip_stream(files),
+                media_type="application/zip",
+                headers={"Content-Disposition": content_disposition(name)},
+            )
+            response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+            return response
+
+        # -- uploads (the only workspace writes; see ene/hub/transfers.py) ---
+
+        async def stream_upload(request: Request, open_upload) -> dict:
+            """Stream the raw request body into an upload from *open_upload*.
+
+            The part file is deleted unless every declared byte arrives and
+            the commit succeeds, so a cancelled or dropped upload leaves
+            nothing behind. Disk writes run off the event loop.
+            """
+            try:
+                declared = int(request.headers.get("content-length", ""))
+            except ValueError as exc:
+                raise HTTPException(status_code=411, detail="Content-Length is required.") from exc
+            if declared < 0:
+                raise HTTPException(status_code=400, detail="Invalid Content-Length.")
+            if declared > hubtransfers.MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Files over {hubtransfers.MAX_UPLOAD_BYTES // (1024 * 1024)} MB cannot be uploaded.",
+                )
+            # Counted on the event loop only, so no lock is needed.
+            if self._active_uploads >= MAX_ACTIVE_UPLOADS:
+                raise HTTPException(status_code=429, detail="Too many uploads at once. Try again shortly.")
+            self._active_uploads += 1
+            loop = asyncio.get_running_loop()
+            upload = None
+            try:
+                upload = await browse_call(open_upload)
+                buffer = bytearray()
+                received = 0
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > declared:
+                        raise HTTPException(status_code=400, detail="The upload is larger than declared.")
+                    buffer += chunk
+                    if len(buffer) >= UPLOAD_WRITE_BYTES:
+                        data = bytes(buffer)
+                        buffer.clear()
+                        await loop.run_in_executor(None, upload.write, data)
+                if received != declared:
+                    raise HTTPException(status_code=400, detail="The upload was incomplete.")
+                if buffer:
+                    await loop.run_in_executor(None, upload.write, bytes(buffer))
+                result = await browse_call(upload.commit)
+                upload = None
+                return result
+            except ClientDisconnect as exc:
+                raise HTTPException(status_code=400, detail="The upload was cancelled.") from exc
+            except OSError as exc:
+                full = exc.errno in (errno.ENOSPC, errno.EDQUOT)
+                raise HTTPException(
+                    status_code=507 if full else 403,
+                    detail="The disk is full." if full else "Could not write the file.",
+                ) from exc
+            finally:
+                self._active_uploads -= 1
+                if upload is not None:
+                    upload.abort()
+
+        def flag(value: str) -> bool:
+            return value.lower() in {"1", "true", "yes"}
+
+        @app.post("/api/sessions/{session_id}/upload")
+        async def workspace_upload(
+            request: Request, session_id: str, dir: str = "", name: str = "", overwrite: str = ""
+        ):
+            """Save the raw body as *name* (may contain ``/``) in workspace folder *dir*."""
+            require_csrf(request)
+            workspace = session_workspace(session_id)
+            result = await stream_upload(
+                request,
+                lambda: hubtransfers.prepare_upload(workspace, dir, name, flag(overwrite)),
+            )
+            self._log_dim(f"upload: {result['path']} ({result['size']} bytes)")
+            return result
+
+        @app.post("/api/sessions/{session_id}/upload/check")
+        async def workspace_upload_check(request: Request, session_id: str):
+            """Which of ``names`` would replace an existing entry in ``dir``."""
+            require_csrf(request)
+            body = await read_json_body(request, MAX_UPLOAD_CHECK_BYTES)
+            names = body.get("names")
+            if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
+                raise HTTPException(status_code=400, detail="Invalid file names.")
+            existing = await browse_call(
+                hubtransfers.existing_uploads,
+                session_workspace(session_id),
+                str(body.get("dir", "")),
+                names,
+            )
+            return {"existing": existing}
+
+        @app.post("/api/sessions/{session_id}/attachments")
+        async def upload_attachment(request: Request, session_id: str, name: str = ""):
+            """Save the raw body as a message attachment under ``.ene/uploads/``."""
+            require_csrf(request)
+            workspace = session_workspace(session_id)
+            session = self.get_session(session_id)
+            bucket = str(session.meta.get("conversation_id", "")) if session is not None else ""
+            result = await stream_upload(
+                request,
+                lambda: hubtransfers.prepare_attachment(workspace, bucket or session_id, name),
+            )
+            with self._attachment_lock:
+                self._attachments.setdefault(session_id, set()).add((workspace, result["path"]))
+            return result
+
+        @app.post("/api/sessions/{session_id}/attachments/delete")
+        async def delete_attachment(request: Request, session_id: str):
+            require_csrf(request)
+            body = await read_json_body(request, MAX_BODY_BYTES)
+            workspace = session_workspace(session_id)
+            path = str(body.get("path", ""))
+            await browse_call(hubtransfers.delete_attachment, workspace, path)
+            with self._attachment_lock:
+                self._attachments.get(session_id, set()).discard((workspace, path))
+            return {"ok": True}
 
         @app.get("/api/sessions/{session_id}/diff")
         async def workspace_diff(
@@ -2292,6 +2474,8 @@ class Hub:
             except LiveError:
                 return False
             if response.get("ok"):
+                if action == "submit":
+                    self._keep_attachments(session_id, str(payload.get("text", "")))
                 return True
             error = str(response.get("error", "The session rejected the action."))
             # Publishing into the session stream reaches every browser viewing
@@ -2428,6 +2612,10 @@ class Hub:
                 sessions = list(self._sessions.values())
                 self._sessions.clear()
             self.terminals.close_all(timeout=3)
+            with self._attachment_lock:
+                unsent = list(self._attachments)
+            for runtime_id in unsent:
+                self._discard_attachments(runtime_id)
             for session in sessions:
                 if session.link is not None:
                     try:

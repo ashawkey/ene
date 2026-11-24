@@ -95,10 +95,18 @@ The sidebar groups every live session on the machine:
 - While the agent works, messages queue; the queued message can be pulled back for editing. Commands cannot join a queue.
 - The queued chip shows a clock for a message that joins the running round and a list-end icon for a `/wait` message that runs after it, with any remaining delay in parentheses.
 - Escape or the stop button stops the round.
+- **Attachments:** drop files on the message box, paste them, or click the paperclip. See [attachments](#attachments).
 - **Model:** the picker next to the send button shows the current model as `alias (model name)`; choosing another sends `/model <name>`. It is locked while a round runs.
 - **Reasoning effort:** the picker beside it sends `/effort <level>` and applies from the next model request, even mid-round. It is hidden for models without effort control.
 - **Status line:** above the composer while the agent works: activity, elapsed time, session tokens, and, while a reply streams, its time to first token (`TTFT 1.8s`) and estimated output speed (`~42 tok/s`).
 - **Background processes:** an "N running" chip in the status line stays visible, even while idle, until every background process exits; click it to open Processes.
+
+### Attachments
+
+- Each file becomes a chip with upload progress; × removes it (and deletes the uploaded file). Send waits until every chip has finished.
+- Sending appends `Attached: @.ene/uploads/<conversation>/<id>/<name>` to the message, so the agent can read the files with its file tools.
+- Up to 10 files per message, 100 MB each. Spaces in names become `_`.
+- **Cleanup:** attachments never sent are deleted when the session ends or the hub stops. Sent ones are kept for resumed conversations and swept after 7 days. `.ene/` is ignored by Git.
 
 ## Inspector
 
@@ -126,7 +134,8 @@ Open the side panel with the panel icon in the session header (it reopens the la
 - **Keys:** Down from the filter enters the list; Up/Down move, Right/Left expand or collapse (Left on a file goes to its folder), Enter opens.
 - **Mention:** hover a row and click `@` to insert its workspace-relative path into the message box.
 - **Changes:** lists changed files in **Staged**, **Changes** (including partially staged), and **Untracked** groups, with lines added and removed. The caption shows commits ahead (↑) and behind (↓) the upstream branch.
-- File browsing is read-only. Listing, find, search, diffs, history, and downloads stay inside the workspace; opening a file link or image may preview any file the hub user can read.
+- **Select:** Ctrl/Cmd+click toggles rows, Shift+click selects a range; Escape clears. Right-click a selected row to act on all of them.
+- Listing, find, search, diffs, history, and downloads stay inside the workspace; opening a file link or image may preview any file the hub user can read. [Uploads](#uploading-and-downloading) are the only writes.
 
 ### File actions
 
@@ -139,8 +148,24 @@ Right-click a row, press the context-menu key, or click the `…` button that ap
 | Mention in message | Insert `@path`. |
 | Ask to explain / review changes / write tests | Put a prompt naming the file in the message box; nothing is sent. |
 | Copy relative path, Copy absolute path, Copy contents | Copy to the clipboard (contents: text files, first 512 KB). |
-| Download | Save the file through the browser. |
+| Download | Save the file through the browser. On a folder or a selection: **Download as zip**. |
+| Upload files here | On a folder: pick files to upload into it. |
 | Open in terminal | Open a new [terminal](#terminal) in the folder (a file's parent). |
+
+### Uploading and downloading
+
+- **Upload:** drop files or folders on a folder row, the list (the open folder), or a breadcrumb. The toolbar's upload button picks files for the open folder.
+- **Existing files:** a dialog offers **Replace**, **Skip existing**, or **Cancel**. Folders are never replaced.
+- **Progress:** the **Uploads** list under the tree shows each file's progress, speed, and time left, with a cancel button; **Cancel all** stops the batch. Two files upload at a time.
+- Uploads continue while you switch panels or sessions; closing the page asks first, since it cancels them.
+- **Safety:** a file is written under a hidden temporary name and renamed into place only when complete. A cancelled or failed upload leaves nothing behind.
+- **Downloads** use the browser's download manager, which shows progress and can cancel. Zips are built while they download, so they show no total size.
+
+| Limit | Value |
+| --- | --- |
+| Upload size | 100 MB per file (a proxy may allow less) |
+| Upload batch | 50 files, 1 GB |
+| Zip download | 1,000 files, 2 GB before compression; symlinks leaving the workspace are skipped |
 
 ### File viewer
 

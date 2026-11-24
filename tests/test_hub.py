@@ -1473,6 +1473,178 @@ def test_download_endpoint_serves_workspace_files_as_attachments(tmp_path):
         assert client.get("/api/sessions/s1/download", params={"path": ""}).status_code == 400
 
 
+def _upload_hub(tmp_path):
+    workspace = tmp_path / "ws"
+    (workspace / "sub").mkdir(parents=True)
+    (workspace / "keep.txt").write_text("old", encoding="utf-8")
+    hub = make_hub()
+    add_session(hub, "s1", cwd=str(workspace), conversation_id="conv-1")
+    return hub, workspace
+
+
+def _upload(client, csrf, body=b"data", **params):
+    return client.post(
+        "/api/sessions/s1/upload", params=params, content=body, headers={"x-csrf-token": csrf}
+    )
+
+
+def test_upload_writes_into_workspace_folders_atomically(tmp_path):
+    hub, workspace = _upload_hub(tmp_path)
+    with TestClient(hub.app) as client:
+        csrf = login(client)
+        response = _upload(client, csrf, b"hello", dir="sub", name="nested/a.bin")
+        assert response.json() == {"path": "sub/nested/a.bin", "size": 5}
+        assert (workspace / "sub/nested/a.bin").read_bytes() == b"hello"
+        # Existing files need an explicit overwrite, folders are never replaced.
+        assert _upload(client, csrf, dir="", name="keep.txt").status_code == 409
+        assert (workspace / "keep.txt").read_text(encoding="utf-8") == "old"
+        assert _upload(client, csrf, b"new", dir="", name="keep.txt", overwrite="1").status_code == 200
+        assert (workspace / "keep.txt").read_text(encoding="utf-8") == "new"
+        assert _upload(client, csrf, dir="", name="sub", overwrite="1").status_code == 409
+        check = client.post(
+            "/api/sessions/s1/upload/check",
+            json={"dir": "", "names": ["keep.txt", "sub/nested/a.bin", "missing"]},
+            headers={"x-csrf-token": csrf},
+        )
+        assert check.json() == {"existing": ["keep.txt", "sub/nested/a.bin"]}
+    assert not [path for path in workspace.rglob("*") if path.name.endswith(".part")]
+
+
+def test_upload_refuses_escapes_bad_names_and_missing_csrf(tmp_path):
+    hub, workspace = _upload_hub(tmp_path)
+    (workspace / "out").symlink_to(tmp_path)
+    with TestClient(hub.app) as client:
+        csrf = login(client)
+        assert client.post(
+            "/api/sessions/s1/upload", params={"name": "x"}, content=b"x"
+        ).status_code == 403
+        assert _upload(client, csrf, dir="..", name="x").status_code == 403
+        assert _upload(client, csrf, dir="out", name="x").status_code == 403
+        assert _upload(client, csrf, dir="", name="out/x").status_code == 403
+        for name in ("", "../x", "a/../../x", ".", "a\\b", "bad\x01"):
+            assert _upload(client, csrf, dir="", name=name).status_code == 400, name
+    assert not (tmp_path / "x").exists()
+
+
+def test_upload_limits_and_incomplete_bodies_leave_nothing(tmp_path, monkeypatch):
+    from ene.hub import transfers as hubtransfers
+
+    hub, workspace = _upload_hub(tmp_path)
+    monkeypatch.setattr(hubtransfers, "MAX_UPLOAD_BYTES", 4)
+    with TestClient(hub.app) as client:
+        csrf = login(client)
+        assert _upload(client, csrf, b"12345", dir="", name="big").status_code == 413
+
+        def short_body():
+            yield b"12"
+
+        response = client.post(
+            "/api/sessions/s1/upload",
+            params={"name": "short"},
+            content=short_body(),
+            headers={"x-csrf-token": csrf, "content-length": "4"},
+        )
+        assert response.status_code == 400
+    assert not (workspace / "big").exists() and not (workspace / "short").exists()
+    assert not [path for path in workspace.rglob("*") if path.name.endswith(".part")]
+
+
+def test_upload_part_file_is_removed_on_abort(tmp_path):
+    from ene.hub import transfers as hubtransfers
+
+    upload = hubtransfers.prepare_upload(tmp_path, "", "a.txt", False)
+    upload.write(b"partial")
+    assert upload.part.exists()
+    upload.abort()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_zip_download_streams_selection_within_limits(tmp_path, monkeypatch):
+    import io
+    import zipfile
+
+    from ene.hub import transfers as hubtransfers
+
+    hub, workspace = _upload_hub(tmp_path)
+    (workspace / "sub/a.txt").write_text("A", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("nope", encoding="utf-8")
+    (workspace / "sub/leak.txt").symlink_to(tmp_path / "secret.txt")
+    with TestClient(hub.app) as client:
+        login(client)
+        response = client.get(
+            "/api/sessions/s1/download/zip", params=[("path", "sub"), ("path", "keep.txt")]
+        )
+        assert response.status_code == 200
+        assert response.headers["content-disposition"] == 'attachment; filename="ws.zip"'
+        assert "sandbox" in response.headers["content-security-policy"]
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        assert sorted(archive.namelist()) == ["keep.txt", "sub/a.txt"]
+        assert archive.read("sub/a.txt") == b"A"
+        check = client.get(
+            "/api/sessions/s1/download/zip", params={"path": "sub", "check": "1"}
+        )
+        assert check.json() == {"name": "sub.zip", "files": 1, "bytes": 1}
+        assert client.get(
+            "/api/sessions/s1/download/zip", params={"path": "../secret.txt"}
+        ).status_code == 403
+        monkeypatch.setattr(hubtransfers, "MAX_ZIP_FILES", 1)
+        assert client.get(
+            "/api/sessions/s1/download/zip", params=[("path", "sub"), ("path", "keep.txt")]
+        ).status_code == 413
+
+
+def test_attachments_are_kept_once_sent_and_removed_otherwise(tmp_path):
+    hub, workspace = _upload_hub(tmp_path)
+    with TestClient(hub.app) as client:
+        csrf = login(client)
+        headers = {"x-csrf-token": csrf}
+
+        def attach(name):
+            response = client.post(
+                "/api/sessions/s1/attachments", params={"name": name}, content=b"img", headers=headers
+            )
+            assert response.status_code == 200
+            return response.json()["path"]
+
+        sent = attach("my photo.png")
+        assert sent.startswith(".ene/uploads/conv-1/") and sent.endswith("/my_photo.png")
+        assert (workspace / ".ene/.gitignore").exists()
+        removed = attach("removed.txt")
+        unsent = attach("unsent.txt")
+        assert client.post(
+            "/api/sessions/s1/attachments/delete", json={"path": removed}, headers=headers
+        ).json() == {"ok": True}
+        assert not (workspace / removed).parent.exists()
+        # Only attachment folders can be deleted this way.
+        assert client.post(
+            "/api/sessions/s1/attachments/delete", json={"path": "keep.txt"}, headers=headers
+        ).status_code == 403
+        assert client.post(
+            "/api/sessions/s1/attachments/delete",
+            json={"path": ".ene/uploads/conv-1/../../../keep.txt"},
+            headers=headers,
+        ).status_code == 403
+    assert (workspace / "keep.txt").exists()
+    hub._keep_attachments("s1", f"Look at this\n\nAttached: @{sent}")
+    hub._discard_attachments("s1")
+    assert (workspace / sent).exists()
+    assert not (workspace / unsent).exists()
+
+
+def test_stale_attachments_are_swept(tmp_path):
+    from ene.hub import transfers as hubtransfers
+
+    old = hubtransfers.prepare_attachment(tmp_path, "conv", "old.txt")
+    old.write(b"x")
+    old.commit()
+    stale = time.time() - hubtransfers.ATTACHMENT_TTL - 10
+    os.utime(old.final.parent, (stale, stale))
+    fresh = hubtransfers.prepare_attachment(tmp_path, "conv", "new.txt")
+    fresh.abort()
+    assert not old.final.parent.exists()
+    assert not fresh.final.parent.exists()
+
+
 def test_git_changes_keeps_repo_when_status_fails_or_times_out(tmp_path, monkeypatch):
     import shutil
     import subprocess
