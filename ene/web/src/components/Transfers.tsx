@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, Upload, X } from 'lucide-react'
+import { AtSign, CircleAlert, CircleCheck, Upload, X } from 'lucide-react'
 import { useCallback, useState } from 'react'
 
 import { errorMessage, existingUploads } from '../lib/api'
@@ -38,22 +38,30 @@ export function ProgressBar({ value, state }: { value: number; state: Transfer['
   )
 }
 
-/** Workspace uploads of one session, with progress and cancel buttons. */
-export function TransferList({ sessionId }: { sessionId: string }) {
+/** Workspace uploads of one session: progress and cancel while running; finished
+ * rows stay until dismissed and can be mentioned in the message. */
+export function TransferList({ sessionId, onMention }: { sessionId: string; onMention: (path: string) => void }) {
   const items = useTransfers().filter((item) => item.sessionId === sessionId && item.kind === 'upload')
   if (!items.length) return null
   const active = items.filter((item) => item.state === 'queued' || item.state === 'running')
+  const finished = items.filter((item) => item.state === 'done' || item.state === 'failed')
   const total = active.reduce((sum, item) => sum + item.size, 0)
   const loaded = active.reduce((sum, item) => sum + item.loaded, 0)
+  const saved = items.filter((item) => item.state === 'done').length
   return (
     <div className="transfers" role="region" aria-label="Uploads">
       <div className="transfers-head">
         <Upload size={13} />
         <span className="grow">
-          {active.length ? `Uploading ${active.length} file${active.length === 1 ? '' : 's'} · ${bytes(loaded)} of ${bytes(total)}` : 'Uploads'}
+          {active.length
+            ? `Uploading ${active.length} file${active.length === 1 ? '' : 's'} · ${bytes(loaded)} of ${bytes(total)}`
+            : `Uploaded ${saved} of ${items.length} file${items.length === 1 ? '' : 's'}`}
         </span>
         {active.length > 1 ? (
           <button type="button" className="link-btn" onClick={() => active.forEach((item) => cancelTransfer(item.id))}>Cancel all</button>
+        ) : null}
+        {!active.length ? (
+          <IconButton icon={X} size="sm" label="Close uploads" onClick={() => finished.forEach((item) => dismissTransfer(item.id))} />
         ) : null}
       </div>
       <div className="transfers-list">
@@ -67,6 +75,9 @@ export function TransferList({ sessionId }: { sessionId: string }) {
                 {running ? <ProgressBar value={percentOf(item)} state={item.state} /> : null}
                 <span className="transfer-detail">{transferDetail(item)}</span>
               </div>
+              {item.state === 'done' && item.path ? (
+                <IconButton icon={AtSign} size="sm" label={`Mention ${item.path} in message`} onClick={() => onMention(item.path!)} />
+              ) : null}
               <IconButton
                 icon={X}
                 size="sm"
@@ -92,10 +103,7 @@ export function useWorkspaceUpload(sessionId: string, onSettled: (saved: number)
 
   const start = useCallback((dir: string, items: UploadItem[], replace: Set<string>) => {
     if (!items.length) return
-    uploadFiles(sessionId, dir, items, replace, (saved) => {
-      if (saved) toast(`Uploaded ${saved} file${saved === 1 ? '' : 's'}${dir ? ` to ${dir}` : ''}.`, 'success', 3000)
-      onSettled(saved)
-    })
+    uploadFiles(sessionId, dir, items, replace, onSettled)
   }, [sessionId, onSettled])
 
   const upload = useCallback(async (dir: string, items: UploadItem[]) => {

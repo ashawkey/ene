@@ -361,8 +361,9 @@ describe('file browser transfers', () => {
   it('uploads files dropped on a folder there, asking before replacing', async () => {
     serveFolders()
     vi.mocked(existingUploads).mockResolvedValue(['main.py'])
-    vi.mocked(uploadRaw).mockImplementation(async (url) => ({ path: url }))
-    render(<Browser />)
+    vi.mocked(uploadRaw).mockResolvedValue({ path: 'src/new.py' })
+    const onMention = vi.fn()
+    render(<FileBrowser sessionId="s1" onOpen={() => {}} onMention={onMention} refreshKey={0} />)
     const src = (await screen.findByText('src')).closest('.file-item')!
     fireEvent.dragOver(src, fileDrop())
     expect(src).toHaveClass('drop-target')
@@ -372,7 +373,13 @@ describe('file browser transfers', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Skip existing' }))
     await waitFor(() => expect(uploadRaw).toHaveBeenCalledTimes(1))
     expect(vi.mocked(uploadRaw).mock.calls[0][0]).toBe('/api/sessions/s1/upload?dir=src&name=new.py&overwrite=')
-    expect(await screen.findByText('Uploaded 1 file to src.')).toBeInTheDocument()
+    // Finished uploads stay listed (no toast) until closed, and can be mentioned.
+    const region = await screen.findByRole('region', { name: 'Uploads' })
+    expect(await within(region).findByText('Uploaded 1 of 1 file')).toBeInTheDocument()
+    fireEvent.click(within(region).getByRole('button', { name: 'Mention src/new.py in message' }))
+    expect(onMention).toHaveBeenCalledWith('src/new.py')
+    fireEvent.click(within(region).getByRole('button', { name: 'Close uploads' }))
+    expect(screen.queryByRole('region', { name: 'Uploads' })).toBeNull()
   })
 
   it('shows upload progress with a cancel button', async () => {

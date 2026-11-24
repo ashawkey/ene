@@ -13,8 +13,6 @@ export const MAX_BATCH_BYTES = 1024 ** 3
 export const MAX_ATTACHMENTS = 10
 /** Uploads running at once; the rest wait their turn. */
 const PARALLEL = 2
-/** Finished uploads stay listed this long. */
-const DONE_TTL = 4000
 /** Progress is re-rendered at most this often per upload. */
 const TICK_MS = 200
 
@@ -96,8 +94,8 @@ function run(job: Job) {
   ).then(
     (result) => {
       jobs.delete(id)
+      // Finished uploads stay listed until dismissed.
       update(id, { state: 'done', loaded: job.transfer.size, path: result.path })
-      if (job.transfer.kind === 'upload') window.setTimeout(() => remove(id), DONE_TTL)
       job.done(true)
     },
     (exc: unknown) => {

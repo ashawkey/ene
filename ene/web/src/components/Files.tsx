@@ -1018,7 +1018,7 @@ export const FileBrowser = memo(function FileBrowser({
           {!listing && loading ? <LoadingHint>Loading files…</LoadingHint> : null}
         </div>
       )}
-      {mode === 'browse' ? <TransferList sessionId={sessionId} /> : null}
+      {mode === 'browse' ? <TransferList sessionId={sessionId} onMention={onMention} /> : null}
       {menu ? <ContextMenu menu={menu} onClose={closeMenu} /> : null}
       {uploadDialog}
     </div>

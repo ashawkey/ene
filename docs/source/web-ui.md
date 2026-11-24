@@ -157,6 +157,7 @@ Right-click a row, press the context-menu key, or click the `…` button that ap
 - **Upload:** drop files or folders on a folder row, the list (the open folder), or a breadcrumb. The toolbar's upload button picks files for the open folder.
 - **Existing files:** a dialog offers **Replace**, **Skip existing**, or **Cancel**. Folders are never replaced.
 - **Progress:** the **Uploads** list under the tree shows each file's progress, speed, and time left, with a cancel button; **Cancel all** stops the batch. Two files upload at a time.
+- **Finished:** saved files stay listed with a check mark; `@` mentions one in the message box. × dismisses a row; the header's × closes the list.
 - Uploads continue while you switch panels or sessions; closing the page asks first, since it cancels them.
 - **Safety:** a file is written under a hidden temporary name and renamed into place only when complete. A cancelled or failed upload leaves nothing behind.
 - **Downloads** use the browser's download manager, which shows progress and can cancel. Zips are built while they download, so they show no total size.
