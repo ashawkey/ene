@@ -58,6 +58,8 @@ export type TimelineItem =
     })
   | (Base & { kind: 'diff' } & DiffData)
   | (Base & { kind: 'output' } & OutputBlock)
+  /** A slash command's answer, shown inline like a reply; *markdown* renders it as one. */
+  | (Base & { kind: 'command'; markdown: boolean } & OutputBlock)
   | (Base & { kind: 'notice'; level: 'system' | 'debug' | 'warning' | 'error'; text: string })
   | (Base & { kind: 'round'; round: RoundStats })
 
@@ -263,6 +265,10 @@ function append(items: TimelineItem[], item: TimelineItem): TimelineItem[] {
   const last = items.at(-1)
   // Consecutive command output and system notices read as one block.
   if (last && last.kind === 'output' && item.kind === 'output') {
+    return [...items.slice(0, -1), { ...last, ...mergeOutput(last, item) }]
+  }
+  // Chunks of one command answer (see AgentConsole.markdown) join back up.
+  if (last && last.kind === 'command' && item.kind === 'command' && last.markdown === item.markdown) {
     return [...items.slice(0, -1), { ...last, ...mergeOutput(last, item) }]
   }
   if (last && last.kind === 'notice' && item.kind === 'notice' && last.level === item.level && item.level === 'system') {
@@ -588,7 +594,13 @@ export function reduce(view: SessionView, message: ServerEvent): [SessionView, S
       // view wraps lines itself.
       const ansi = typeof data.wide_ansi === 'string' ? data.wide_ansi : data.ansi
       const block: OutputBlock = { text: str(data.wide_text, str(data.text)), ansi: typeof ansi === 'string' ? ansi : null }
-      next.items = attachOutput(items, block) ?? append(items, { kind: 'output', key, seq, ts, ...block })
+      const markdown = data.markdown === true
+      if (markdown || data.command === true) {
+        // Not tool activity, even when an instant command answers mid-call.
+        next.items = append(items, { kind: 'command', key, seq, ts, markdown, ...block, ansi: markdown ? null : block.ansi })
+      } else {
+        next.items = attachOutput(items, block) ?? append(items, { kind: 'output', key, seq, ts, ...block })
+      }
       break
     }
     case 'system':

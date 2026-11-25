@@ -164,6 +164,11 @@ class AgentCommandsMixin:
 
     def _handle_command(self, raw: str) -> bool:
         """Handle a /command.  Returns True if the agent loop should stop."""
+        command_output = getattr(self.console, "command_output", None)
+        with command_output() if command_output is not None else nullcontext():
+            return self._dispatch_command(raw)
+
+    def _dispatch_command(self, raw: str) -> bool:
         cmd = raw.split()[0][1:].lower()
 
         if cmd in ("exit", "quit"):
@@ -445,8 +450,7 @@ class AgentCommandsMixin:
             ).strip()
             if not text:
                 raise RuntimeError("Translation provider returned no text")
-            self.console.print(f"[bold blue]Translation ({language}):[/bold blue]")
-            self._print_chunked(text, markup=False)
+            self.console.markdown(f"**Translation ({language}):**\n\n{text}")
         except RequestInterrupted:
             self.console.system("Translation cancelled.")
         except Exception as e:

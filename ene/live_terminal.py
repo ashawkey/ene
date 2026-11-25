@@ -654,7 +654,9 @@ class LiveTerminal:
             self.console.debug(text)
         elif kind == "output":
             ansi = data.get("ansi")
-            if isinstance(ansi, str):
+            if data.get("markdown") is True:
+                self.console.markdown(text)
+            elif isinstance(ansi, str):
                 self.console.stream_output(ansi, dim=False)
             else:
                 self.console.print(text, markup=False)

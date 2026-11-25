@@ -8,6 +8,7 @@ import { groupItems, itemText } from '../lib/timeline'
 import {
   ActivityGroup,
   AssistantMessage,
+  CommandOutput,
   DiffCard,
   Notice,
   Output,
@@ -375,6 +376,7 @@ export const Timeline = memo(function Timeline({
       case 'tool': return <ToolCall item={item} live={isLive} onOpenFile={onOpenFile} />
       case 'diff': return <DiffCard diff={item} onOpenFile={onOpenFile} />
       case 'output': return <Output item={item} />
+      case 'command': return <CommandOutput item={item} />
       case 'notice': return <Notice item={item} />
       case 'round': return <div className="reply-foot"><RoundChip round={item.round} onOpen={onOpenStats} /></div>
     }

@@ -279,6 +279,20 @@ describe('session reducer', () => {
     expect(view.items[1]).toMatchObject({ kind: 'output', text: 'after' })
   })
 
+  it('keeps slash command answers out of tool output', () => {
+    const { view } = run([
+      state(),
+      ev(1, 'tool_start', { name: 'exec_command', primary: 'sleep 9' }),
+      ev(2, 'output', { text: 'Context log', ansi: 'Context log', command: true }),
+      ev(3, 'output', { text: '**Translation:**\n\npart 1', markdown: true }),
+      ev(4, 'output', { text: 'part 2', markdown: true }),
+    ])
+    expect(view.items).toHaveLength(3)
+    expect(view.items[0]).toMatchObject({ kind: 'tool', output: null })
+    expect(view.items[1]).toMatchObject({ kind: 'command', markdown: false, text: 'Context log' })
+    expect(view.items[2]).toMatchObject({ kind: 'command', markdown: true, text: '**Translation:**\n\npart 1\npart 2', ansi: null })
+  })
+
   it('settles edit calls with their diffs', () => {
     const diff = (seq: number, path: string, success = true) =>
       ev(seq, 'diff', { path, old_text: 'a', new_text: 'b', success })

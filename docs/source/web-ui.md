@@ -72,6 +72,7 @@ The sidebar groups every live session on the machine:
 ## Conversation
 
 - **Timeline:** messages, reasoning, and tool calls. A tool call holds its command output, diffs, and result.
+- **Slash commands:** answers show inline and in full, never folded or grouped with tool calls. `/tr` renders as Markdown, like a reply.
 - **History:** opening or reloading a session shows the newest turns; scrolling up loads earlier ones, back to the start of the conversation. Full detail covers the latest 2,000 events; before a marked point, only messages are kept, without tool activity.
 - **Folding:** every step folds by its chevron. Results longer than 12 lines start folded; failures and running calls start open. Three or more consecutive tool calls fold into one row.
 - **Long output:** a tool call keeps the newest 200,000 characters of its command output and says how many earlier lines it no longer shows.

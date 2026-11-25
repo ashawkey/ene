@@ -418,6 +418,30 @@ export const Output = memo(function Output({ item }: { item: ItemOf<'output'> })
   )
 })
 
+/**
+ * A slash command's answer: shown in full like a reply, never folded. Markdown
+ * answers (/tr) render as Markdown; listings keep their monospace columns.
+ */
+export const CommandOutput = memo(function CommandOutput({ item }: { item: ItemOf<'command'> }) {
+  if (!item.markdown) {
+    return (
+      <div className="command-output">
+        <TrimmedNote lines={item.trimmed} />
+        <OutputBlock text={item.text} ansi={item.ansi} className="command-text" />
+      </div>
+    )
+  }
+  return (
+    <div className="assistant command-output">
+      <TrimmedNote lines={item.trimmed} />
+      <Markdown text={item.text} />
+      <div className="reply-foot">
+        <CopyButton text={item.text} label="Copy" />
+      </div>
+    </div>
+  )
+})
+
 export const Notice = memo(function Notice({ item }: { item: ItemOf<'notice'> }) {
   const Icon = item.level === 'error' ? CircleAlert : item.level === 'warning' ? TriangleAlert : Info
   return (

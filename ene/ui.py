@@ -30,6 +30,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from ene.models import model_icon
+from ene.utils.io import EVENT_TEXT_LIMIT
 
 if TYPE_CHECKING:
     from ene.utils.io import EventHub, PromptBroker
@@ -1068,6 +1069,7 @@ class AgentConsole:
         self._indicator_stack: list[ThinkingIndicator] = []
         self._indicator_lock = threading.RLock()
         self._round_timer_state = threading.local()
+        self._command_state = threading.local()
         self._quiet_depth = 0
         self._visible_depth = 0
 
@@ -1121,8 +1123,24 @@ class AgentConsole:
             self._visible_depth -= 1
             self._console.quiet = was_quiet
 
+    @contextmanager
+    def command_output(self, active: bool = True) -> Iterator[None]:
+        """Mark output printed on this thread as a slash command's answer.
+
+        Web clients show it inline rather than as tool output. Per thread,
+        because instant commands print while a round runs on another thread.
+        """
+        previous = getattr(self._command_state, "active", False)
+        self._command_state.active = active
+        try:
+            yield
+        finally:
+            self._command_state.active = previous
+
     def _emit(self, event_type: str, **data) -> None:
         if self.events is not None and not self.quiet:
+            if event_type == "output" and getattr(self._command_state, "active", False):
+                data["command"] = True
             self.events.publish(event_type, **data)
 
     def _render_plain(self, *objects, markup: bool = True, width: int = 120) -> str:
@@ -1151,7 +1169,9 @@ class AgentConsole:
             self._round_timer_state.stack = stack
         stack.append(time.monotonic())
         try:
-            yield
+            # A round started by a command (/continue) prints tool output.
+            with self.command_output(False):
+                yield
         finally:
             stack.pop()
 
@@ -1254,6 +1274,24 @@ class AgentConsole:
                 data["wide_text"] = self._render_plain(wide, markup=markup, width=WIDE_RENDER_WIDTH)
                 data["wide_ansi"] = self._render_ansi(wide, markup=markup, width=WIDE_RENDER_WIDTH)
             self._emit("output", **data)
+
+    def markdown(self, text: str) -> None:
+        """Print Markdown that is not a model reply, such as a translation.
+
+        Published in line-aligned chunks that each survive the event hub's
+        per-field clip; web clients join them back into one block.
+        """
+        if self.render_terminal:
+            self._console.print(_Gutter(_CompactMarkdown(text), _BODY))
+        chunk: list[str] = []
+        size = 0
+        for line in text.split("\n"):
+            if chunk and size + len(line) > EVENT_TEXT_LIMIT:
+                self._emit("output", text="\n".join(chunk), markdown=True)
+                chunk, size = [], 0
+            chunk.append(line)
+            size += len(line) + 1
+        self._emit("output", text="\n".join(chunk), markdown=True)
 
     def local(self, *args, **kwargs):
         """Print terminal-only information such as authentication secrets.

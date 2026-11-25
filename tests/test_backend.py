@@ -746,6 +746,7 @@ def test_recap_handles_empty_history_bad_usage_and_provider_failure(monkeypatch)
 def _tr_agent(messages, provider):
     agent, output, warnings = _recap_agent(messages, provider)
     agent._summary_output_cap = LLMAgent._summary_output_cap.__get__(agent)
+    agent.console.markdown = lambda text: output.append((text, {"markdown": True}))
     return agent, output, warnings
 
 
@@ -784,10 +785,10 @@ def test_tr_translates_last_assistant_response_without_changing_context(monkeypa
 
     assert agent.context.messages == before
     assert warnings == []
-    assert output == [
-        ("[bold blue]Translation (Simplified Chinese):[/bold blue]", {}),
-        ("已完成。\n\n```py\nx = 1\n```", {"markup": False}),
-    ]
+    assert output == [(
+        "**Translation (Simplified Chinese):**\n\n已完成。\n\n```py\nx = 1\n```",
+        {"markdown": True},
+    )]
     request = requests[0]
     prompt = request.messages[0].text
     assert "Simplified Chinese" in prompt
@@ -804,28 +805,37 @@ def test_tr_translates_last_assistant_response_without_changing_context(monkeypa
     assert "into English" in requests[1].messages[0].text
 
 
-def test_tr_chunks_long_translations(monkeypatch):
-    from ene.backend.commands import _CONTEXT_CHUNK_CHARS
-    from ene.config import conf
+def test_markdown_output_is_chunked_and_marked_for_web_clients():
+    from ene.utils.io import EVENT_TEXT_LIMIT
 
-    monkeypatch.delitem(conf, "recap_model", raising=False)
+    hub = EventHub()
+    console = AgentConsole(events=hub, render_terminal=False)
     line = "x" * 1000
-    translated = "\n".join([line] * (2 * _CONTEXT_CHUNK_CHARS // 1000))
-    provider = NS(
-        complete=lambda request: CompletionResult(
-            message=Message.assistant(translated), usage=None, finish_reason="stop",
-        ),
-        cancel=lambda: None,
-    )
-    agent, output, warnings = _tr_agent([Message.assistant("long")], provider)
+    text = "\n".join([line] * (2 * EVENT_TEXT_LIMIT // 1000))
 
-    agent._cmd_tr("/tr")
+    console.markdown(text)
 
-    assert warnings == []
-    chunks = [text for text, kwargs in output[1:]]
-    assert len(chunks) > 1
-    assert all(len(chunk) <= _CONTEXT_CHUNK_CHARS for chunk in chunks)
-    assert "\n".join(chunks) == translated
+    events = hub.snapshot()
+    assert len(events) > 1
+    assert all(e.type == "output" and e.data["markdown"] is True for e in events)
+    assert all(len(e.data["text"]) <= EVENT_TEXT_LIMIT for e in events)
+    assert "\n".join(e.data["text"] for e in events) == text
+
+
+def test_command_output_is_marked_except_inside_rounds():
+    hub = EventHub()
+    agent = type("Agent", (AgentCommandsMixin,), {})()
+    agent.console = AgentConsole(events=hub, render_terminal=False)
+    agent.COMMAND_HELP = AgentCommandsMixin.COMMAND_HELP
+
+    agent._handle_command("/help")
+    with agent.console.command_output():
+        with agent.console.round_timer():
+            agent.console.print("tool output")
+    agent.console.print("plain")
+
+    flags = [e.data.get("command") for e in hub.snapshot() if e.type == "output"]
+    assert flags == [True, None, None]
 
 
 def test_tr_handles_missing_response_bad_usage_and_provider_failure(monkeypatch):
@@ -890,7 +900,7 @@ def test_tr_uses_recap_alias_and_closes_temporary_provider(monkeypatch):
     agent._cmd_tr("/tr en")
 
     assert warnings == []
-    assert output[-1] == ("Hello.", {"markup": False})
+    assert output[-1] == ("**Translation (English):**\n\nHello.", {"markdown": True})
     assert created[0][1].api_key == "cheap-key"
     assert requests[0].model == "cheap-model"
     assert closed == [True]
