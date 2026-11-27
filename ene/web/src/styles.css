@@ -1015,17 +1015,29 @@ button.step-head:hover { background: var(--hover); }
 .s-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
 .s-enter { margin-left: auto; color: var(--text-3); }
 
-.prompt-sheet { width: min(calc(var(--conv-width) - 48px), 100%); margin: 0 auto 10px; padding: 12px 14px; border-radius: 20px; animation: rise 0.18s ease-out; }
+/* Leave room for the composer and keep the dismiss button outside the scroll area. */
+.prompt-sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(calc(var(--conv-width) - 48px), 100%);
+  max-height: 45dvh;
+  margin: 0 auto 10px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  animation: rise 0.18s ease-out;
+}
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
-.prompt-head { display: flex; align-items: center; gap: 8px; color: var(--accent); font-weight: 600; font-size: 13px; }
+.prompt-head { flex: none; display: flex; align-items: center; gap: 8px; color: var(--accent); font-weight: 600; font-size: 13px; }
+.prompt-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 4px; margin: -4px; }
 .prompt-message { margin: 6px 0 10px; }
 .prompt-choices { display: flex; flex-direction: column; gap: 6px; }
 .choice { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); text-align: left; }
 .choice:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
 .choice.default { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.choice-key { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; background: var(--hover); font: 600 11.5px var(--mono); color: var(--text-2); }
+.choice-key { flex: none; display: grid; place-items: center; min-width: 22px; height: 22px; padding: 0 3px; border-radius: 7px; background: var(--hover); font: 600 11.5px var(--mono); color: var(--text-2); }
+.choice > :last-child { min-width: 0; overflow-wrap: anywhere; }
 .prompt-text { display: flex; gap: 8px; align-items: flex-end; }
-.prompt-text textarea { flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); outline: 0; resize: vertical; }
+.prompt-text textarea { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); outline: 0; resize: vertical; }
 
 /* ---------- inspector ---------- */
 

@@ -73,6 +73,23 @@ describe('PromptSheet keys', () => {
     expect(screen.getByText('no').closest('button')).toBeEnabled()
   })
 
+  it('keeps the scroll position on updates and resets it for the next question', () => {
+    const choices = Array.from({ length: 100 }, (_, index) => `Round ${index + 1}`)
+    const onAnswer = vi.fn()
+    const sheet = (id: string, connected = true) => (
+      <PromptSheet prompt={{ ...question, id, choices }} active connected={connected} onAnswer={onAnswer} onCancel={() => undefined} />
+    )
+    const { rerender } = render(sheet('fork'))
+    const scrollArea = () => screen.getByText('Round 100').closest('.prompt-body')!
+    scrollArea().scrollTop = 400
+    rerender(sheet('fork', false))
+    expect(scrollArea().scrollTop).toBe(400)
+    rerender(sheet('rewind'))
+    expect(scrollArea().scrollTop).toBe(0)
+    fireEvent.click(screen.getByText('Round 100'))
+    expect(onAnswer).toHaveBeenCalledWith('Round 100')
+  })
+
   it('leaves other fields their own keys', () => {
     const { onAnswer, onCancel } = setup()
     const find = screen.getByLabelText('Find in conversation')

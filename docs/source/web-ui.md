@@ -84,7 +84,7 @@ The sidebar groups every live session on the machine:
 - **Images:** a `read_image` call shows a thumbnail; click it to open the image in the file viewer. Unreadable or unsupported images show only the text result.
 - **Reply images:** Markdown images with a local raster path (for example `![plot](out/fig.png)`) render inline. Remote, SVG, or unreadable images show their alt text.
 - **Find:** Ctrl/Cmd+F; Enter / Shift+Enter step through matches in the loaded history.
-- **Questions:** answer with a click or the choice's number key (when the composer is empty); Escape dismisses.
+- **Questions:** long choice lists (such as `/fork` and `/rewind`) scroll inside the question panel. Click a choice or press its number key (when the composer is empty); Escape dismisses.
 
 ### Composer
 

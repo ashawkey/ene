@@ -88,46 +88,48 @@ export function PromptSheet({
         <span className="grow">Input needed</span>
         <IconButton icon={X} label="Dismiss (Esc)" size="sm" onClick={onCancel} disabled={!connected} />
       </div>
-      <div className="prompt-message"><Markdown text={prompt.message} /></div>
-      {prompt.kind === 'select' ? (
-        <div className="prompt-choices">
-          {prompt.choices.map((choice, index) => (
-            <button
-              type="button"
-              key={`${index}-${choice}`}
-              className={`choice ${choice === prompt.default ? 'default' : ''}`}
-              disabled={sent || !connected}
-              onClick={() => answer(choice)}
-            >
-              <span className="choice-key">{index + 1}</span>
-              <span>{choice}</span>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <form
-          className="prompt-text"
-          onSubmit={(event) => {
-            event.preventDefault()
-            answer(text)
-          }}
-        >
-          <textarea
-            {...NO_AUTOFILL}
-            ref={input}
-            value={text}
-            rows={2}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault()
-                answer(text)
-              }
+      <div className="prompt-body" key={prompt.id}>
+        <div className="prompt-message"><Markdown text={prompt.message} /></div>
+        {prompt.kind === 'select' ? (
+          <div className="prompt-choices">
+            {prompt.choices.map((choice, index) => (
+              <button
+                type="button"
+                key={`${index}-${choice}`}
+                className={`choice ${choice === prompt.default ? 'default' : ''}`}
+                disabled={sent || !connected}
+                onClick={() => answer(choice)}
+              >
+                <span className="choice-key">{index + 1}</span>
+                <span>{choice}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <form
+            className="prompt-text"
+            onSubmit={(event) => {
+              event.preventDefault()
+              answer(text)
             }}
-          />
-          <IconButton icon={CornerDownLeft} label="Answer" tone="accent" type="submit" disabled={sent || !connected} />
-        </form>
-      )}
+          >
+            <textarea
+              {...NO_AUTOFILL}
+              ref={input}
+              value={text}
+              rows={2}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  answer(text)
+                }
+              }}
+            />
+            <IconButton icon={CornerDownLeft} label="Answer" tone="accent" type="submit" disabled={sent || !connected} />
+          </form>
+        )}
+      </div>
     </div>
   )
 }
